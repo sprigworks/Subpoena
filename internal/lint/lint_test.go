@@ -20,10 +20,9 @@ func registry(t *testing.T) *Registry {
 	return reg
 }
 
-// lintTree writes files into a temp dir and lints it, returning the rules hit.
-func lintTree(t *testing.T, files map[string]string) []Finding {
+// writeTree writes files under dir and returns dir.
+func writeTree(t *testing.T, files map[string]string, dir string) string {
 	t.Helper()
-	dir := t.TempDir()
 	for name, src := range files {
 		p := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -33,6 +32,13 @@ func lintTree(t *testing.T, files map[string]string) []Finding {
 			t.Fatal(err)
 		}
 	}
+	return dir
+}
+
+// lintTree writes files into a temp dir and lints it, returning the findings.
+func lintTree(t *testing.T, files map[string]string) []Finding {
+	t.Helper()
+	dir := writeTree(t, files, t.TempDir())
 	fs, err := Run([]string{dir}, registry(t))
 	if err != nil {
 		t.Fatal(err)

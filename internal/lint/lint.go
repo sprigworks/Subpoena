@@ -24,6 +24,8 @@ const (
 	RuleUnwitnessedEnforcement = "unwitnessed-enforcement"
 	RuleUnguardedAbsence       = "unguarded-absence"
 	RuleMissingProvenance      = "missing-provenance"
+	RuleOrphanInvariant        = "orphan-invariant"
+	RuleRegistryDrift          = "registry-drift"
 )
 
 // Markers recognised in source comments.
@@ -59,8 +61,9 @@ func (f Finding) String() string {
 
 // Registry is the set of telemetry names the generated semconv package defines.
 type Registry struct {
-	Values map[string]bool // string values: span names and attribute keys
-	Names  map[string]bool // Go identifiers: SpanAgentSessionOpen, AttrSessionId, ...
+	Values  map[string]bool   // string values: span names and attribute keys
+	Names   map[string]bool   // Go identifiers: SpanAgentSessionOpen, AttrSessionId, ...
+	ByValue map[string]string // value -> Go identifier ("session.id" -> "AttrSessionId")
 }
 
 // LoadRegistry reads the string constants of the generated semconv package in dir.
@@ -72,7 +75,7 @@ func LoadRegistry(dir string) (*Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lint: load registry %s: %w", dir, err)
 	}
-	r := &Registry{Values: map[string]bool{}, Names: map[string]bool{}}
+	r := &Registry{Values: map[string]bool{}, Names: map[string]bool{}, ByValue: map[string]string{}}
 	for _, pkg := range pkgs {
 		for _, f := range pkg.Files {
 			for _, d := range f.Decls {
@@ -96,6 +99,7 @@ func LoadRegistry(dir string) (*Registry, error) {
 						}
 						r.Names[id.Name] = true
 						r.Values[val] = true
+						r.ByValue[val] = id.Name
 					}
 				}
 			}
@@ -118,8 +122,19 @@ type tree struct {
 	files []file
 }
 
+// Options tune a Run.
+type Options struct {
+	// InvariantsDir is the directory of *.traceql invariants used by
+	// orphan-invariant. If empty it is found by walking up from each root; if
+	// none exists the invariant set is empty, so every TraceQL literal is an orphan.
+	InvariantsDir string
+}
+
 // Run lints every .go file under each root and returns findings sorted by position.
-func Run(roots []string, reg *Registry) ([]Finding, error) {
+func Run(roots []string, reg *Registry) ([]Finding, error) { return RunWith(roots, reg, Options{}) }
+
+// RunWith is Run with explicit Options.
+func RunWith(roots []string, reg *Registry, opts Options) ([]Finding, error) {
 	var out []Finding
 	for _, root := range roots {
 		t, err := load(root)
@@ -131,6 +146,11 @@ func Run(roots []string, reg *Registry) ([]Finding, error) {
 		out = append(out, checkUnwitnessedEnforcement(t)...)
 		out = append(out, checkUnguardedAbsence(t)...)
 		out = append(out, checkMissingProvenance(t)...)
+		invs, err := loadInvariants(root, opts.InvariantsDir)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, checkOrphanInvariant(t, invs)...)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i].Pos, out[j].Pos
