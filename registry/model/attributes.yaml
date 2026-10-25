@@ -1,0 +1,39 @@
+# Custom attribute `tier` annotation:
+#   test - never exported in production (high cardinality / diagnostic only)
+#   all  - safe to export in every environment
+groups:
+  - id: registry.session
+    type: attribute_group
+    display_name: Agent session attributes
+    brief: Attributes describing an agent gateway session.
+    stability: stable
+    attributes:
+      - id: session.id
+        type: string
+        stability: stable
+        brief: Identifier of the agent session.
+        note: High cardinality; tier test, so it is never exported in production.
+        examples: ["sess-7f3a"]
+        annotations:
+          tier: test
+
+  - id: registry.authorization
+    type: attribute_group
+    display_name: Authorization attributes
+    brief: Attributes describing an authorization decision.
+    stability: stable
+    attributes:
+      - id: authorization.allowed
+        type: boolean
+        stability: stable
+        brief: Whether the authorization decision allowed the requested action.
+        examples: [true, false]
+        annotations:
+          tier: all
+      - id: authorization.policy_id
+        type: string
+        stability: stable
+        brief: Identifier of the policy that produced the decision.
+        examples: ["deny-prod-nonadmin"]
+        annotations:
+          tier: all

@@ -1,0 +1,5 @@
+# Registry changes need explicit review: the registry is the telemetry contract.
+# TODO: confirm the team handle exists in the sprigworks org and has write access.
+/registry/   @sprigworks/registry-owners
+/generated/  @sprigworks/registry-owners
+/invariants/ @sprigworks/registry-owners
