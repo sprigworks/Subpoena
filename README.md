@@ -75,6 +75,14 @@ Other things to know:
   (`examples/internal/otlpjson`) instead of the standard OTLP exporter, for the
   same reason (protobuf and gRPC live on unreachable hosts).
 
+## Where the thinking lives
+
+- `docs/design.md` — the original design: thesis, prior art, architecture, test taxonomy, the agent drop-in, worked example.
+- `docs/decisions.md` — positioning and the resolved open questions, with amendments.
+- `docs/architecture.md` — what was actually built, in text.
+- `docs/traceql-subset.md`, `docs/migrating-an-existing-service.md` — the subset grammar and the migration playbook.
+- `docs/background/tdd-vs-telemetry.md` — the analysis that started the project: whether OTel assertions can replace test suites (they can't; this is what they can do).
+
 ## Layout
 
 ```
