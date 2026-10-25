@@ -266,3 +266,20 @@ func TestLintCatchesMutatedGateway(t *testing.T) {
 		t.Fatalf("want 1 unknown-telemetry, got %v", fs)
 	}
 }
+
+// Enum member constants are references the linter must accept as names, while
+// their values ("cgroup") must not turn a bare literal into a valid span name.
+func TestRegistryEnumValueConstantsAreNamesNotTelemetry(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, map[string]string{"s.go": "package semconv\nconst (\n\tSpanA = \"a.b\"\n\tAttrX = \"x.y\"\n\tValXOne = \"one\"\n)\n"}, dir)
+	r, err := LoadRegistry(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Names["ValXOne"] || r.Values["one"] || r.ByValue["one"] != "" {
+		t.Fatalf("enum value constant misclassified: %+v", r)
+	}
+	if !r.Values["a.b"] || !r.Values["x.y"] {
+		t.Fatalf("names and keys lost: %+v", r)
+	}
+}

@@ -46,6 +46,11 @@ var attributeCtors = map[string]bool{
 	"StringSlice": true, "BoolSlice": true, "IntSlice": true, "Int64Slice": true, "Float64Slice": true,
 }
 
+// enumValuePrefix marks generated constants for the members of enum-typed
+// attributes (ValSubpoenaWitnessCorrelationCgroup). They are valid Go names to
+// reference but their values are not telemetry names.
+const enumValuePrefix = "Val"
+
 var provenanceRE = regexp.MustCompile(`^//\s*subpoena:(spec_derived|impl_derived)\b`)
 
 // Finding is one lint result.
@@ -61,7 +66,7 @@ func (f Finding) String() string {
 
 // Registry is the set of telemetry names the generated semconv package defines.
 type Registry struct {
-	Values  map[string]bool   // string values: span names and attribute keys
+	Values  map[string]bool   // string values: span names and attribute keys (not enum member values)
 	Names   map[string]bool   // Go identifiers: SpanAgentSessionOpen, AttrSessionId, ...
 	ByValue map[string]string // value -> Go identifier ("session.id" -> "AttrSessionId")
 }
@@ -98,6 +103,11 @@ func LoadRegistry(dir string) (*Registry, error) {
 							continue
 						}
 						r.Names[id.Name] = true
+						if strings.HasPrefix(id.Name, enumValuePrefix) {
+							// An enum member's value ("cgroup") is not a span name or
+							// attribute key, so it must not make a literal acceptable.
+							continue
+						}
 						r.Values[val] = true
 						r.ByValue[val] = id.Name
 					}
