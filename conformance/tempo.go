@@ -16,10 +16,12 @@ import (
 	"github.com/sprigworks/subpoena/pkg/traceql"
 )
 
-// Default endpoints of conformance/docker-compose.yml.
+// Default endpoints of conformance/docker-compose.yml. The host ports are
+// offset from Tempo's own (3200, 4318) so the conformance Tempo can run beside
+// a local LGTM stack that already holds those.
 const (
-	DefaultTempoURL = "http://localhost:3200"
-	DefaultOTLPURL  = "http://localhost:4318"
+	DefaultTempoURL = "http://localhost:13200"
+	DefaultOTLPURL  = "http://localhost:14318"
 )
 
 // Client talks to a Tempo over HTTP: OTLP/HTTP JSON in, /api/search out. It is

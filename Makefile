@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift gate conformance check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift gate test-cgroup conformance check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -47,6 +47,14 @@ lint-drift:
 # Fault gate: remove each enforcement statement; the suite must go red.
 gate:
 	go run ./cmd/subpoena-gate ./examples/gateway
+
+# The real-cgroup tests (pkg/cgroup, examples/gateway) without root: run them in
+# a systemd user scope with cgroup delegation, rooted inside that scope. They
+# skip under plain `make test` when /sys/fs/cgroup is not writable.
+test-cgroup:
+	systemd-run --user --scope -q -p Delegate=yes -- sh -c 'cg=/sys/fs/cgroup$$(cut -d: -f3 /proc/self/cgroup); \
+	SUBPOENA_CGROUP_ROOT=$$cg/subpoena SUBPOENA_CGROUP_REAL_ROOT=$$cg/subpoena-gw \
+	go test -count=1 -v -run "Real|StartInto" ./pkg/cgroup ./examples/gateway'
 
 # Subset-vs-Tempo conformance. Needs Docker. SUBPOENA_CONFORMANCE_REQUIRE makes
 # an unreachable Tempo a failure instead of a skip, so this target cannot go

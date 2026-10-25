@@ -19,5 +19,7 @@ services:
     volumes:
       - ./tempo.yaml:/etc/tempo.yaml:ro
     ports:
-      - "3200:3200"   # query API: /ready, /api/search (SUBPOENA_TEMPO_URL)
-      - "4318:4318"   # OTLP/HTTP receiver: /v1/traces (SUBPOENA_OTLP_URL)
+      # Host ports offset from Tempo's defaults so this can run beside a local
+      # LGTM stack that already publishes 3200 and 4318.
+      - "13200:3200"   # query API: /ready, /api/search (SUBPOENA_TEMPO_URL)
+      - "14318:4318"   # OTLP/HTTP receiver: /v1/traces (SUBPOENA_OTLP_URL)

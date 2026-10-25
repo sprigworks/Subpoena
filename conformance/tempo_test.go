@@ -1,7 +1,8 @@
 //subpoena:impl_derived
 
 // The Tempo half of the conformance suite. TestTempoAgreesWithSubset needs a
-// running Tempo (see README.md) and skips without one. The other tests drive
+// running Tempo (see README.md) and is opt-in: it never probes the network
+// unless asked to. The other tests drive
 // the same client code against an in-process fake that answers /api/search
 // with pkg/traceql itself, so the push/poll/search/compare machinery is tested
 // everywhere, including its ability to notice a disagreement.
@@ -23,14 +24,22 @@ import (
 
 // TestTempoAgreesWithSubset pushes the fixtures to a real Tempo and requires
 // Tempo and pkg/traceql to return the same trace IDs for every query.
-// SUBPOENA_CONFORMANCE_REQUIRE=1 turns the skip into a failure (make conformance).
+//
+// It runs only when SUBPOENA_CONFORMANCE_REQUIRE=1 (make conformance) or
+// SUBPOENA_TEMPO_URL is set. Probing a default port unasked would make
+// `make test` depend on, and push fixture spans into, whatever Tempo happens
+// to be listening on the machine.
 func TestTempoAgreesWithSubset(t *testing.T) {
+	require := os.Getenv("SUBPOENA_CONFORMANCE_REQUIRE") == "1"
+	if !require && os.Getenv("SUBPOENA_TEMPO_URL") == "" {
+		t.Skip("Tempo comparison is opt-in: run `make conformance`, or set SUBPOENA_TEMPO_URL (and SUBPOENA_OTLP_URL) to a Tempo you are willing to push fixtures into")
+	}
 	c := ClientFromEnv()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if !c.Reachable(ctx) {
 		msg := "no Tempo at " + c.TempoURL + " (set SUBPOENA_TEMPO_URL, and SUBPOENA_OTLP_URL for the OTLP/HTTP port; start one with `make conformance` or `docker compose -f conformance/docker-compose.yml up -d`)"
-		if os.Getenv("SUBPOENA_CONFORMANCE_REQUIRE") == "1" {
+		if require {
 			t.Fatal(msg)
 		}
 		t.Skip(msg)
@@ -248,7 +257,7 @@ func TestClientFromEnvDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("SUBPOENA_TEMPO_URL", "")
 	t.Setenv("SUBPOENA_OTLP_URL", "")
 	c := ClientFromEnv()
-	if c.TempoURL != "http://localhost:3200" || c.OTLPURL != "http://localhost:4318" {
+	if c.TempoURL != "http://localhost:13200" || c.OTLPURL != "http://localhost:14318" {
 		t.Fatalf("defaults wrong: %+v", c)
 	}
 	t.Setenv("SUBPOENA_TEMPO_URL", "http://tempo:3200/")

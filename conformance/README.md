@@ -14,7 +14,7 @@ linked dependency. Nothing here imports Tempo code.
 | Test | Needs | What it proves |
 | --- | --- | --- |
 | `TestSubsetMatchesExpected` (and the fixture checks) | nothing | `pkg/traceql` returns exactly the results in `expected.yaml` for every query over every fixture. The fixtures and the table are verified in CI. |
-| `TestTempoAgreesWithSubset` | Tempo, Docker | A real Tempo returns the same trace IDs as `pkg/traceql` for every query over every fixture. Skips with a message when no Tempo answers. |
+| `TestTempoAgreesWithSubset` | Tempo, Docker | A real Tempo returns the same trace IDs as `pkg/traceql` for every query over every fixture. Opt-in: skips unless `SUBPOENA_CONFORMANCE_REQUIRE=1` or `SUBPOENA_TEMPO_URL` is set, so `make test` never touches the network. |
 
 `expected.yaml` was derived by hand from the subset documentation, before the
 evaluator was run against it. Together the two tests say: the docs, the
@@ -26,20 +26,20 @@ evaluator and Tempo agree.
 make conformance
 ```
 
-starts `docker-compose.yml` (Tempo only, pinned image, OTLP/HTTP on 4318 and
-the query API on 3200), runs the Tempo test with `SUBPOENA_CONFORMANCE_REQUIRE=1`
+starts `docker-compose.yml` (Tempo only, pinned image, OTLP/HTTP on host port
+14318 and the query API on 13200, offset so it can run beside a local LGTM stack), runs the Tempo test with `SUBPOENA_CONFORMANCE_REQUIRE=1`
 (an unreachable Tempo is a failure, not a skip), and tears it down. By hand:
 
 ```
 docker compose -f conformance/docker-compose.yml up -d
-go test ./conformance -run TestTempo -v -count=1
+SUBPOENA_CONFORMANCE_REQUIRE=1 go test ./conformance -run TestTempo -v -count=1
 docker compose -f conformance/docker-compose.yml down -v
 ```
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SUBPOENA_TEMPO_URL` | `http://localhost:3200` | Tempo query API (`/ready`, `/api/search`) |
-| `SUBPOENA_OTLP_URL` | `http://localhost:4318` | OTLP/HTTP receiver (`/v1/traces`) |
+| `SUBPOENA_TEMPO_URL` | `http://localhost:13200` | Tempo query API (`/ready`, `/api/search`); setting it opts in to the comparison |
+| `SUBPOENA_OTLP_URL` | `http://localhost:14318` | OTLP/HTTP receiver (`/v1/traces`) |
 | `SUBPOENA_CONFORMANCE_REQUIRE` | unset | `1`: fail instead of skip when Tempo is unreachable |
 
 Point the URLs at any Tempo (the OATS stack's, for example). Stray traces from
@@ -48,7 +48,8 @@ compared.
 
 ## What the Tempo test does
 
-1. `GET /ready` decides between running and skipping, then waits for 200.
+1. `GET /ready` decides between running and skipping (opted in, unreachable
+   is a skip, or a failure under `SUBPOENA_CONFORMANCE_REQUIRE=1`), then waits for 200.
 2. Pushes each fixture to `POST <otlp>/v1/traces` as OTLP/JSON, with timestamps
    rebased to now (Tempo searches a time window; the fixtures carry fixed ones).
 3. Waits for ingestion by polling `/api/search` until every fixture trace ID is
