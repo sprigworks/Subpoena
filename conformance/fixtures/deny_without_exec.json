@@ -1,0 +1,17 @@
+{
+  "_comment": "Denied authorization and nothing after it: enforcement worked, no match.",
+  "resourceSpans": [
+    {
+      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "conformance-fixture-deny_without_exec"}}]},
+      "scopeSpans": [
+        {
+          "scope": {"name": "subpoena.conformance"},
+          "spans": [
+          {"traceId":"c0de0000000000000000000200000001","spanId":"0201000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000002001000000","endTimeUnixNano":"1700000002001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-d1"}}]},
+          {"traceId":"c0de0000000000000000000200000001","spanId":"0201000000000002","parentSpanId":"0201000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000002002000000","endTimeUnixNano":"1700000002002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-d1"}},{"key":"authorization.allowed","value":{"boolValue":false}},{"key":"authorization.policy_id","value":{"stringValue":"deny-prod-nonadmin"}}]}
+          ]
+        }
+      ]
+    }
+  ]
+}

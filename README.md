@@ -39,6 +39,7 @@ Details in [docs/architecture.md](docs/architecture.md).
 ```
 make test      # tier 1: harness, traceql, witness, lint, gate and gateway tests
 make check     # test + vet + subpoena-lint + subpoena-gate over examples/gateway
+make conformance  # subset vs a real Tempo in Docker (optional)
 ```
 
 Needs Go 1.24 or newer. In a sandbox that cannot reach the Go module proxy or
@@ -55,14 +56,15 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | Tier 2: `examples/gateway/oats`, docker compose | Written, **not executed** (needs Docker) |
 | Tetragon witness, `witnesses/tetragon` | Written, **not executed** (needs eBPF and root); the policy is an unvalidated draft |
 | Tier 3: `examples/gateway/alerts` | Written, **not validated** against Grafana |
-| Conformance (subset vs real Tempo) | Planned, `conformance/README.md` |
+| Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
+| Conformance, subset vs real Tempo (`make conformance`) | Written, **not executed** (needs Docker); the client is tested against an in-process fake |
 
 Other things to know:
 
 - TraceQL is a documented subset (`docs/traceql-subset.md`), not Tempo's engine,
   by design: Tempo is AGPL-3.0, and linking its `pkg/traceql` into this
   Apache-2.0 library would put the combined work under AGPL. Querying a
-  running Tempo over HTTP carries no such obligation, which is how the planned
+  running Tempo over HTTP carries no such obligation, which is how the
   conformance suite (`conformance/README.md`) keeps the subset honest.
 - Weaver generation is the real path (`make generate`). Weaver is a Rust binary:
   download it from https://github.com/open-telemetry/weaver/releases.
@@ -87,7 +89,7 @@ invariants/           *.traceql invariants (+ embedded loader)
 cmd/subpoena-lint/    static checks (see lint/README.md)
 cmd/subpoena-gate/    fault gate
 examples/gateway/     toy agent gateway, tests, OATS stack, alert rule
-conformance/          planned subset-vs-Tempo conformance test
+conformance/          fixtures + expected results, subset-vs-Tempo conformance test
 docs/                 architecture, TraceQL subset
 ```
 

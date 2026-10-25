@@ -1,0 +1,1 @@
+{ name = "agent.session.exec" || name = "agent.session.authorize" && span.authorization.allowed = true }

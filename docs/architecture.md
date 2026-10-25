@@ -87,4 +87,5 @@ to reviewers and to tooling.
 ## Not decided here
 
 Cross-service registry migration policy, the Python and TypeScript harnesses,
-production cgroup-per-session wiring, and real Tempo conformance are deferred.
+production cgroup-per-session wiring on a real node, and a first run of the real-Tempo
+conformance comparison are deferred.

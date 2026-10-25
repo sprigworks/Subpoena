@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift gate check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift gate conformance check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -47,6 +47,15 @@ lint-drift:
 # Fault gate: remove each enforcement statement; the suite must go red.
 gate:
 	go run ./cmd/subpoena-gate ./examples/gateway
+
+# Subset-vs-Tempo conformance. Needs Docker. SUBPOENA_CONFORMANCE_REQUIRE makes
+# an unreachable Tempo a failure instead of a skip, so this target cannot go
+# green by skipping. (`go test ./conformance` without Tempo still runs the
+# fixture checks and skips only the Tempo comparison.)
+conformance:
+	docker compose -f conformance/docker-compose.yml up -d
+	SUBPOENA_CONFORMANCE_REQUIRE=1 go test ./conformance -run TestTempo -count=1 -v; rc=$$?; \
+	docker compose -f conformance/docker-compose.yml down -v; exit $$rc
 
 # Everything that runs without Docker or eBPF.
 check: build vet test lint gate
