@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint gate check generate registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift gate check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -38,6 +38,12 @@ test:
 lint:
 	go run ./cmd/subpoena-lint ./examples/gateway
 
+# registry-drift: does a change set touch registry/ and a test that asserts on
+# the changed identifiers? Working tree vs HEAD by default; in CI or on a
+# branch use `make lint-drift BASE=origin/main`.
+lint-drift:
+	go run ./cmd/subpoena-lint registry-drift $(if $(BASE),--base $(BASE)) .
+
 # Fault gate: remove each enforcement statement; the suite must go red.
 gate:
 	go run ./cmd/subpoena-gate ./examples/gateway
@@ -49,6 +55,10 @@ check: build vet test lint gate
 generate:
 	$(WEAVER) registry generate -r $(REGISTRY) --templates weaver-templates go generated/go/semconv
 	gofmt -w generated/go/semconv/semconv.go
+
+# Regenerate invariants/names.go from invariants/*.traceql.
+generate-invariants:
+	go generate ./invariants
 
 registry-check:
 	$(WEAVER) registry check -r $(REGISTRY) --future

@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+//go:generate go run gen.go
+
 //go:embed *.traceql
 var files embed.FS
 
@@ -30,7 +32,3 @@ func MustLoad(name string) string {
 	}
 	return q
 }
-
-// NoExecAfterDeny is the first invariant: a denied authorization must never be
-// followed by an exec in the same causal chain.
-const NoExecAfterDeny = "no_exec_after_deny"
