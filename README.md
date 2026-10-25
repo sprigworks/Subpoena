@@ -1,0 +1,92 @@
+# Subpoena
+
+Trace-native testing for OpenTelemetry. The application's own instrumentation
+is the primary way tests observe it, and the same assertion, written once as a
+TraceQL string, runs in unit tests, in an integration environment and in
+production. The distinctive part: a system's spans are testimony, not proof.
+The code that enforces a policy is also the code that reports having enforced
+it, so enforcement is only proven by an independent witness, a process-exec
+observer the application does not control, and a fault gate checks that the
+suite can tell the difference.
+
+**Status: pre-alpha.** Go only so far (Python and TypeScript later; the
+registry is language-neutral). APIs will change.
+
+## The three tiers
+
+One invariant, `invariants/no_exec_after_deny.traceql`:
+
+```
+{ name = "agent.session.authorize" && span.authorization.allowed = false } >> { name = "agent.session.exec" }
+```
+
+Any matching trace is a violation. It is evaluated three times:
+
+1. Tier 1, unit tests. An in-memory exporter (`pkg/harness`) captures spans;
+   `Collect()` force-flushes and errors if a span was dropped or left unfinished.
+   Absence assertions return Pass, Fail or Inconclusive, and Inconclusive fails
+   by default, because "we saw nothing" from an incomplete capture proves nothing.
+2. Tier 2, integration, via Grafana OATS: a real collector and Tempo, plus the
+   witness (Tetragon exec events in Loki), in `examples/gateway/oats`.
+3. Tier 3, production: the same TraceQL string as a Grafana alert rule, in
+   `examples/gateway/alerts`.
+
+Promotion between tiers is copy and paste; a test checks the strings match.
+Details in [docs/architecture.md](docs/architecture.md).
+
+## Quickstart
+
+```
+make test      # tier 1: harness, traceql, witness, lint, gate and gateway tests
+make check     # test + vet + subpoena-lint + subpoena-gate over examples/gateway
+```
+
+Needs Go 1.24. The Makefile sets `GOPROXY=direct GOSUMDB=off`; see the notes
+below for why.
+
+## What runs here, and what does not
+
+| Piece | Status |
+| --- | --- |
+| Registry (`registry/`), Weaver check and Go generation | Runs. Weaver 0.28 checked the registry and generated `generated/go/semconv` |
+| `pkg/harness`, `pkg/traceql`, `pkg/witness` (`ProcWitness`) | Runs, in `make test` |
+| `examples/gateway` tier-1 tests | Runs, in `make test` |
+| `subpoena-lint`, `subpoena-gate` | Runs; the gate kills the gateway mutant |
+| Tier 2: `examples/gateway/oats`, docker compose | Written, **not executed** (needs Docker) |
+| Tetragon witness, `witnesses/tetragon` | Written, **not executed** (needs eBPF and root); the policy is an unvalidated draft |
+| Tier 3: `examples/gateway/alerts` | Written, **not validated** against Grafana |
+| Conformance (subset vs real Tempo) | Planned, `conformance/README.md` |
+
+Other things to know:
+
+- TraceQL is a documented subset (`docs/traceql-subset.md`), not Tempo's engine.
+  Embedding Tempo's `pkg/traceql` was tried and was impractical.
+- Weaver generation is the real path (`make generate`). Weaver is a Rust binary:
+  download it from https://github.com/open-telemetry/weaver/releases.
+- The sandbox this was scaffolded in could not reach proxy.golang.org or the
+  vanity hosts for `go.opentelemetry.io` and `golang.org`, so `go.mod` has
+  `replace` directives to GitHub mirrors. They are harmless to consumers and
+  can be dropped where those hosts are reachable.
+- The OATS stack uses a small stdlib OTLP/JSON exporter
+  (`examples/internal/otlpjson`) instead of the standard OTLP exporter, for the
+  same reason (protobuf and gRPC live on unreachable hosts).
+
+## Layout
+
+```
+registry/             Weaver registry: manifest + model/ (tier annotation per attribute)
+weaver-templates/     Weaver template that generates the Go constants
+generated/go/semconv/ generated constants
+pkg/harness/          in-memory exporter, Collect, Trace, Verdict
+pkg/traceql/          TraceQL subset evaluator
+pkg/witness/          Witness interface, ProcWitness
+witnesses/            witness design notes, Tetragon policy
+invariants/           *.traceql invariants (+ embedded loader)
+cmd/subpoena-lint/    static checks (see lint/README.md)
+cmd/subpoena-gate/    fault gate
+examples/gateway/     toy agent gateway, tests, OATS stack, alert rule
+conformance/          planned subset-vs-Tempo conformance test
+docs/                 architecture, TraceQL subset
+```
+
+Licensed under Apache-2.0.

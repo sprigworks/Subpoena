@@ -1,0 +1,6 @@
+# NOT EXECUTED in the scaffold environment (needs Docker). Run with `oats` from
+# this directory; see https://github.com/grafana/oats.
+meta:
+  version: 3
+cases:
+  - oats-case.yaml

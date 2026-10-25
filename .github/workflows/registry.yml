@@ -1,0 +1,67 @@
+name: registry
+
+# Registry governance: the registry is the telemetry contract, so every change
+# is checked, diffed against main, and needs a CODEOWNERS review.
+on:
+  pull_request:
+    paths:
+      - "registry/**"
+      - "weaver-templates/**"
+      - "generated/**"
+      - ".github/workflows/registry.yml"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  WEAVER_VERSION: v0.28.0
+
+jobs:
+  weaver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check out main as the diff baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+      - name: Install Weaver
+        run: |
+          curl -fsSL -o weaver.tar.xz \
+            "https://github.com/open-telemetry/weaver/releases/download/${WEAVER_VERSION}/weaver-x86_64-unknown-linux-gnu.tar.xz"
+          tar -xf weaver.tar.xz
+          sudo install weaver-x86_64-unknown-linux-gnu/weaver /usr/local/bin/weaver
+          weaver --version
+      - name: weaver registry check
+        # --future is deliberately off: it rejects the legacy registry_manifest.yaml
+        # file name (Weaver now prefers manifest.yaml). Rename, then enable it.
+        run: weaver registry check -r registry --diagnostic-format gh_workflow_command
+      - name: weaver registry diff against main
+        run: |
+          if [ ! -d baseline/registry ]; then
+            echo "main has no registry yet; nothing to diff." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          weaver registry diff -r registry --baseline-registry baseline/registry \
+            --format markdown --output diff-out
+          cat diff-out/* | tee -a "$GITHUB_STEP_SUMMARY"
+          # Removing or obsoleting telemetry breaks consumers (tests, OATS cases,
+          # alert rules). Fail unless a maintainer applies the label.
+          if grep -qE '^### (Removed|Obsoleted)' diff-out/* ; then
+            echo "::warning::registry removes or obsoletes entries"
+            echo "BREAKING=1" >> "$GITHUB_ENV"
+          fi
+      - name: Require approval label for breaking registry changes
+        if: env.BREAKING == '1' && !contains(github.event.pull_request.labels.*.name, 'registry-breaking-approved')
+        run: |
+          echo "This PR removes or obsoletes registry entries. A maintainer must add the 'registry-breaking-approved' label." >&2
+          exit 1
+      - name: generated/ matches registry/
+        run: |
+          weaver registry generate -r registry --templates weaver-templates go generated/go/semconv
+          gofmt -w generated/go/semconv/semconv.go
+          git diff --exit-code generated/ || (echo "generated/ is stale: run 'make generate' and commit." >&2; exit 1)
