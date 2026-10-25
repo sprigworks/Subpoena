@@ -2,10 +2,11 @@
 
 Oct 25, 2026 · Nick Henggeler
 
-> Exported from the decisions doc. Two amendments made after it was written:
+> Exported from the decisions doc. Three amendments made after it was written:
 >
 > 1. **TraceQL engine.** The row below says "in Go, embed Tempo's TraceQL engine." That was withdrawn: Grafana Tempo is AGPL-3.0 and cannot be linked into this Apache-2.0 library. The documented subset in `pkg/traceql` plus the Tempo-over-HTTP conformance suite is the design. See `docs/traceql-subset.md`.
 > 2. **Petiole license.** The table says BSL. Petiole's license is not settled (BSL or FSL are the candidates). Subpoena is Apache-2.0 regardless.
+> 3. **The witness, tested (2026-10-25).** The "witness propagation" row assumes Tetragon events carry the session cgroup. Outside Kubernetes they do not: Tetragon v1.7.1 reports a container ID only when the leaf cgroup name looks like one. The cgroup-per-session decision stands; Subpoena now has its own kernel-side witness (`pkg/witness/execbpf`, eBPF), which reports each exec's cgroup ID and path, and Tetragon is kept for enforcement only. See `witnesses/README.md`. **Open:** the table puts "exec/session witnesses" in the Petiole layer; `ProcWitness` and now `execbpf` live in this Apache-2.0 repository. Whether the kernel witness stays in the open core or moves to the Petiole layer is undecided.
 >
 > Name and repo chosen after this doc: **Subpoena**, `github.com/sprigworks/subpoena`, `subpoena.dev` (with `subpena.dev` as a typo redirect).
 

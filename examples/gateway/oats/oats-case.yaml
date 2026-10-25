@@ -19,7 +19,7 @@ fixture:
 
 input:
   # Control: an allowed session. Proves the whole pipeline (gateway -> Tempo and
-  # Tetragon -> Loki) is live, so the denial below is not vacuous.
+  # subpoena-witness -> Loki) is live, so the denial below is not vacuous.
   - path: /sessions
     method: POST
     headers:

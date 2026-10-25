@@ -27,7 +27,8 @@ Any matching trace is a violation. It is evaluated three times:
    Absence assertions return Pass, Fail or Inconclusive, and Inconclusive fails
    by default, because "we saw nothing" from an incomplete capture proves nothing.
 2. Tier 2, integration, via Grafana OATS: a real collector and Tempo, plus the
-   witness (Tetragon exec events in Loki), in `examples/gateway/oats`.
+   witness (kernel-side exec events from `subpoena-witness` in Loki), in
+   `examples/gateway/oats`.
 3. Tier 3, production: the same TraceQL string as a Grafana alert rule, in
    `examples/gateway/alerts`.
 
@@ -40,7 +41,8 @@ Details in [docs/architecture.md](docs/architecture.md).
 make test      # tier 1: harness, traceql, witness, lint, gate and gateway tests
 make check     # test + vet + subpoena-lint + subpoena-gate over examples/gateway
 make conformance  # subset vs a real Tempo in Docker (optional)
-make oats         # tier 2: OATS + Tetragon (rootful Docker, cgroup v2, BTF)
+make oats         # tier 2: OATS + the eBPF witness (rootful Docker, cgroup v2, BTF)
+make test-ebpf    # the eBPF witness against the real kernel, in a privileged container
 make test-cgroup  # real-cgroup tests without root, in a delegated systemd scope
 ```
 
@@ -55,8 +57,9 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | `pkg/harness`, `pkg/traceql`, `pkg/witness` (`ProcWitness`), `pkg/cgroup` | Runs, in `make test`. Cgroup tests use a real cgroup v2 when the machine allows it and skip that part otherwise |
 | `examples/gateway` tier-1 tests | Runs, in `make test` |
 | `subpoena-lint`, `subpoena-gate` | Runs; the gate kills the gateway mutant |
-| Tier 2: `examples/gateway/oats` (`make oats`) | Runs (needs rootful Docker, cgroup v2, BTF): the argument-correlated case passes and fails against the enforcement mutant. The cgroup-correlated case is blocked: Tetragon events do not carry the session cgroup name |
-| Tetragon witness, `witnesses/tetragon` | Runs in the OATS stack (Tetragon v1.7.1); exec events reach Loki. The policy loads; not used for enforcement |
+| Tier 2: `examples/gateway/oats` (`make oats`) | Runs (needs rootful Docker, cgroup v2, BTF): both cases pass, cgroup-correlated and argument-correlated, and both fail against the enforcement mutant |
+| Kernel-side witness, `pkg/witness/execbpf`, `cmd/subpoena-witness` | Runs: unit tests in `make test`, kernel tests in `make test-ebpf` (privileged container); the tier-2 witness |
+| Tetragon policy, `witnesses/tetragon` | Loads on Tetragon v1.7.1; kept for enforcement, not used. Not the witness: outside Kubernetes its events lack the session cgroup |
 | Tier 3: `examples/gateway/alerts` | Written, **not validated** against Grafana |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
 | Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses |
@@ -94,11 +97,13 @@ generated/go/semconv/ generated constants
 pkg/harness/          in-memory exporter, Collect, Trace, Verdict
 pkg/traceql/          TraceQL subset evaluator
 pkg/witness/          Witness interface, ProcWitness
+pkg/witness/execbpf/  kernel-side witness (eBPF)
 pkg/cgroup/           one cgroup per session, named with the trace ID
-witnesses/            witness design notes, Tetragon policy
+witnesses/            witness design notes, Tetragon policy (enforcement)
 invariants/           *.traceql invariants (+ embedded loader)
 cmd/subpoena-lint/    static checks (see lint/README.md)
 cmd/subpoena-gate/    fault gate
+cmd/subpoena-witness/ runs the kernel-side witness, JSON lines out
 examples/gateway/     toy agent gateway, tests, OATS stack, alert rule
 conformance/          fixtures + expected results, subset-vs-Tempo conformance test
 docs/                 architecture, TraceQL subset, migrating an existing service

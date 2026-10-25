@@ -51,7 +51,9 @@ the gateway puts each session's processes in a cgroup named with the trace ID
 (`pkg/cgroup`), and the witness reads `/proc/<pid>/cgroup` to tie a process to a
 trace, falling back to parent-process lineage when there is no session cgroup.
 The exec span records which correlation applies (`subpoena.witness.correlation`).
-Production adds Tetragon `process_exec` events shipped to Loki. See
+Tier 2 and production use `pkg/witness/execbpf`: an eBPF program on the exec
+tracepoint that reads each process's cgroup in the kernel, run as
+`cmd/subpoena-witness` with its events shipped to Loki. See
 `witnesses/README.md` for the gaps in each.
 
 The toy gateway makes this concrete. `Authorize` is marked
@@ -89,6 +91,6 @@ to reviewers and to tooling.
 ## Not decided here
 
 Cross-service registry migration policy, the Python and TypeScript harnesses,
-and cgroup names reaching Tetragon events are deferred. The last was checked
-on a real node: Tetragon v1.7.1 does not put the session cgroup name in its
-exec events (`witnesses/README.md`), so tier 2 correlates by argument.
+and enforcement at the kernel (killing a denied session's process) are
+deferred. Tetragon was the first tier-2 witness; outside Kubernetes its events
+lack the session cgroup, so Subpoena has its own (`witnesses/README.md`).

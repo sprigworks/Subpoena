@@ -28,7 +28,7 @@ groups:
           summary: A denied agent session was followed by an exec in the same trace.
           description: >-
             Any match is a violation of invariants/no_exec_after_deny.traceql.
-            Cross-check the witness: {service_name="tetragon"} |= "process_exec".
+            Cross-check the witness: {service_name="subpoena-witness"} | json | attribution="cgroup".
         data:
           - refId: A
             relativeTimeRange: {from: 300, to: 0}

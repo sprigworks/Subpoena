@@ -190,7 +190,10 @@ if n := len(w.Spawned(traceID)); n != 0 {            // the proof, not the spans
 To correlate by trace rather than lineage, start the session's processes in a
 cgroup named with the trace ID (`pkg/cgroup`, as `gateway.Open` does).
 `witnesses/README.md` has the modes and their gaps; note that `ProcWitness`
-polls and can miss a process shorter than its interval.
+polls and can miss a process shorter than its interval. Where the tests can
+run as root (CI in a privileged container), `pkg/witness/execbpf` is a
+drop-in `witness.Witness` that sees every exec in the kernel; it is also the
+tier-2 and production witness (`cmd/subpoena-witness`).
 
 Other side effects need another observer: an egress proxy for outbound
 connections, an audit log for file or database changes. `witness.Witness` is

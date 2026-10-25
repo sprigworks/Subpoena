@@ -16,7 +16,7 @@ fixture:
 
 input:
   # Control: an allowed session. Proves the whole pipeline (gateway -> Tempo and
-  # Tetragon -> Loki) is live, so the absences below are not vacuous. This is the
+  # subpoena-witness -> Loki) is live, so the absences below are not vacuous. This is the
   # tier-2 analogue of the harness's Inconclusive verdict.
   - path: /sessions
     method: POST
