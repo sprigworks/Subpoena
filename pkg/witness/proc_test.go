@@ -3,10 +3,12 @@
 package witness
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -163,12 +165,20 @@ func TestLiveProc(t *testing.T) {
 	defer cmd.Wait()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(w.Events()) == 0 {
+	// The first sighting can be the fork child still showing its parent's
+	// command line; wait for a poll to observe the exec.
+	for time.Now().Before(deadline) {
+		if evs := w.Events(); len(evs) > 0 && evs[0].Command == sleep+" 0.2" {
+			break
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	evs := w.Spawned(tid)
-	if len(evs) != 1 || evs[0].PID != cmd.Process.Pid || evs[0].Command != sleep+" 0.2" {
-		t.Fatalf("live witness saw %+v (want pid %d)", evs, cmd.Process.Pid)
+	if len(evs) != 1 {
+		t.Fatalf("want exactly the sleep child (pid %d), got %d events: %s", cmd.Process.Pid, len(evs), brief(evs))
+	}
+	if evs[0].PID != cmd.Process.Pid || evs[0].Command != sleep+" 0.2" || evs[0].Exe == "" || evs[0].PPID != os.Getpid() {
+		t.Fatalf("unexpected event pid=%d ppid=%d exe=%q cmd=%q (want pid %d, me %d)", evs[0].PID, evs[0].PPID, evs[0].Exe, evs[0].Command, cmd.Process.Pid, os.Getpid())
 	}
 }
 
@@ -177,4 +187,12 @@ func TestStartTwiceFails(t *testing.T) {
 	if err := w.Start(); err == nil {
 		t.Fatal("second Start must fail")
 	}
+}
+
+func brief(evs []ProcessEvent) string {
+	var b strings.Builder
+	for _, e := range evs {
+		fmt.Fprintf(&b, "[pid=%d ppid=%d exe=%q cmd=%q] ", e.PID, e.PPID, e.Exe, e.Command)
+	}
+	return b.String()
 }

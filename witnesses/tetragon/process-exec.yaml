@@ -16,12 +16,5 @@ spec:
       args:
         - index: 0
           type: "linux_binprm"
-      selectors:
-        # Only watch execs from the gateway's session cgroups. Cgroup
-        # filtering is by the cgroup the process runs in; the sessions live
-        # under /sys/fs/cgroup/subpoena/<trace-id>. Adjust the root to match
-        # the gateway's cgroup layout.
-        - matchBinaries:
-            - operator: "NotIn"
-              values:
-                - "/usr/bin/containerd-shim-runc-v2"
+      # No selectors: observe every exec. Filtering to session cgroups happens
+      # downstream (Alloy/Loki), keyed on the cgroup named with the trace ID.

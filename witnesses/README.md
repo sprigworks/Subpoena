@@ -25,6 +25,10 @@ It is a unit-test stand-in, and it is honest about its gaps:
 - Polling can miss a process that lives less than the polling interval (2ms by
   default). Tests spawn something that lives a little longer (the toy gateway
   runs `sleep 0.15`). A kernel-side witness has no such gap.
+- A Go program's first `os/exec` call forks a throwaway probe (the runtime
+  checking pidfd support) that briefly carries the parent's command line.
+  `Start()` absorbs it with a warm-up exec; found the hard way as an
+  intermittent phantom second process.
 - Lineage is lost if an intermediate parent exits first.
 - Lineage alone cannot say which trace a process belongs to. `Spawned` therefore
   returns lineage-only events for every trace and excludes only events whose

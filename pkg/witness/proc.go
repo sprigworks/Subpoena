@@ -3,7 +3,9 @@ package witness
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,9 @@ import (
 //     Tests that rely on seeing a process should run one that lives a few
 //     polling intervals. The production witness (Tetragon) is kernel-side and
 //     does not have this gap.
+//   - A Go program's first os/exec call forks a throwaway pidfd probe; Start
+//     absorbs it with a warm-up. A process that never ran Start before its first
+//     exec could still see that probe as an extra event.
 //   - Lineage is lost if an intermediate parent exits and the child is
 //     reparented to init.
 //   - Without a cgroup carrying the trace ID, an event is attributed by lineage
@@ -57,9 +62,28 @@ func (w *ProcWitness) root() string {
 	return w.ProcRoot
 }
 
+var warmOnce sync.Once
+
+// warmUp runs one throwaway child process. On its first os/exec use a Go
+// program forks a short-lived probe child (the runtime checking pidfd support)
+// that carries the parent's command line; a witness started before that would
+// report the probe as a spawned process. Doing it first, once, keeps the probe
+// out of the observation window.
+func warmUp() {
+	warmOnce.Do(func() {
+		for _, p := range []string{"/bin/true", "/usr/bin/true"} {
+			if _, err := os.Stat(p); err == nil {
+				_ = exec.Command(p).Run()
+				return
+			}
+		}
+	})
+}
+
 // Start takes a baseline of existing processes and begins polling. Processes
 // that already exist are never reported.
 func (w *ProcWitness) Start() error {
+	warmUp()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.stop != nil {
@@ -175,7 +199,14 @@ func (w *ProcWitness) Poll() {
 	if w.tracked == nil {
 		return
 	}
-	for k, p := range procs {
+	// Deterministic discovery order within one poll: by PID.
+	keys := make([]procKey, 0, len(procs))
+	for k := range procs {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].pid < keys[j].pid })
+	for _, k := range keys {
+		p := procs[k]
 		if w.baseline[k] || p.pid == w.RootPID || !descends(p.pid, w.RootPID, byPID) {
 			continue
 		}
