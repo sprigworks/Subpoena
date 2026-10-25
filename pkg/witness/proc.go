@@ -10,12 +10,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sprigworks/subpoena/pkg/cgroup"
 )
 
-// ProcWitness is the tier-1 witness. It polls /proc, notices processes that
-// appear after Start and descend (by ppid lineage) from a root process, and
-// reads /proc/<pid>/cgroup to tie a process to a trace when a cgroup named
-// with the trace ID exists.
+// ProcWitness is the tier-1 witness. It polls /proc and notices processes that
+// appear after Start. It prefers cgroup correlation: a process whose
+// /proc/<pid>/cgroup path contains a session cgroup (<root base>/<trace ID>,
+// see pkg/cgroup) is attributed to that trace, and is noticed even if it is not
+// a descendant of the root process (a double-forked or reparented child). A
+// process in no session cgroup falls back to ppid lineage from the root process.
 //
 // Limitations, deliberately visible:
 //   - Polling can miss a process that starts and exits between two polls.
@@ -38,6 +42,10 @@ type ProcWitness struct {
 	RootPID int
 	// Interval is the polling interval; 2ms if zero.
 	Interval time.Duration
+	// CgroupRoot is the directory the gateway creates session cgroups under;
+	// only its last element is compared with /proc/<pid>/cgroup paths. If
+	// empty, $SUBPOENA_CGROUP_ROOT or the default is used.
+	CgroupRoot string
 
 	mu       sync.Mutex
 	baseline map[procKey]bool
@@ -54,6 +62,14 @@ type procKey struct {
 
 // NewProcWitness watches descendants of rootPID.
 func NewProcWitness(rootPID int) *ProcWitness { return &ProcWitness{RootPID: rootPID} }
+
+func (w *ProcWitness) cgroupBase() string {
+	root := w.CgroupRoot
+	if root == "" {
+		root = cgroup.FromEnv().Root
+	}
+	return cgroup.RootBase(root)
+}
 
 func (w *ProcWitness) root() string {
 	if w.ProcRoot == "" {
@@ -207,7 +223,11 @@ func (w *ProcWitness) Poll() {
 	sort.Slice(keys, func(i, j int) bool { return keys[i].pid < keys[j].pid })
 	for _, k := range keys {
 		p := procs[k]
-		if w.baseline[k] || p.pid == w.RootPID || !descends(p.pid, w.RootPID, byPID) {
+		if w.baseline[k] || p.pid == w.RootPID {
+			continue
+		}
+		// Cgroup membership is checked first: it finds processes lineage loses.
+		if !w.inSessionCgroup(p.pid) && !descends(p.pid, w.RootPID, byPID) {
 			continue
 		}
 		ev, seen := w.tracked[k]
@@ -237,8 +257,20 @@ func (w *ProcWitness) refresh(ev *ProcessEvent) {
 	if b, err := os.ReadFile(filepath.Join(dir, "cgroup")); err == nil {
 		ev.Cgroup = strings.TrimSpace(string(b))
 	}
-	ev.Attribution = ByLineage
-	ev.TraceID = ""
+	ev.Attribution, ev.TraceID = ByLineage, ""
+	if id, ok := cgroup.SessionTrace(ev.Cgroup, w.cgroupBase()); ok {
+		ev.Attribution, ev.TraceID = ByCgroup, id
+	}
+}
+
+// inSessionCgroup reports whether the process is in a session cgroup.
+func (w *ProcWitness) inSessionCgroup(pid int) bool {
+	b, err := os.ReadFile(filepath.Join(w.root(), strconv.Itoa(pid), "cgroup"))
+	if err != nil {
+		return false
+	}
+	_, ok := cgroup.SessionTrace(string(b), w.cgroupBase())
+	return ok
 }
 
 func descends(pid, root int, byPID map[int]procInfo) bool {
@@ -278,13 +310,20 @@ func (w *ProcWitness) Events() []ProcessEvent {
 	return out
 }
 
-// Spawned implements Witness. It returns events whose cgroup carries traceID,
-// plus lineage-only events (which cannot be excluded; see the type comment).
-// Events whose cgroup names a different trace are excluded.
+// Spawned implements Witness. Cgroup correlation wins: an event in a session
+// cgroup is returned for that trace only. Otherwise it returns events whose
+// cgroup path merely carries traceID, plus lineage-only events (which cannot
+// be excluded; see the type comment). Events whose cgroup names a different
+// trace are excluded.
 func (w *ProcWitness) Spawned(traceID string) []ProcessEvent {
 	var out []ProcessEvent
 	for _, ev := range w.Events() {
 		switch {
+		case ev.Attribution == ByCgroup && ev.TraceID != "":
+			// A session cgroup: this process belongs to exactly one trace.
+			if strings.EqualFold(ev.TraceID, traceID) {
+				out = append(out, ev)
+			}
 		case cgroupHasTrace(ev.Cgroup, traceID):
 			ev.Attribution, ev.TraceID = ByCgroup, traceID
 			out = append(out, ev)

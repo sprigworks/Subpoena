@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sprigworks/subpoena/pkg/cgroup"
 )
 
 const tid = "0123456789abcdef0123456789abcdef"
@@ -195,4 +197,119 @@ func brief(evs []ProcessEvent) string {
 		fmt.Fprintf(&b, "[pid=%d ppid=%d exe=%q cmd=%q] ", e.PID, e.PPID, e.Exe, e.Command)
 	}
 	return b.String()
+}
+
+// ---- cgroup-preferred correlation ----
+
+const sessionBase = "subpoena"
+
+func session(id string) string { return "0::/" + sessionBase + "/" + id + "\n" }
+
+func freshFake(t *testing.T, mutate func(w *ProcWitness)) (*ProcWitness, string) {
+	t.Helper()
+	w, root := newFake(t)
+	w.Stop()
+	if mutate != nil {
+		mutate(w)
+	}
+	w.mu.Lock()
+	w.tracked = map[procKey]*ProcessEvent{}
+	w.mu.Unlock()
+	return w, root
+}
+
+func byCmd(evs []ProcessEvent) map[string]ProcessEvent {
+	m := map[string]ProcessEvent{}
+	for _, e := range evs {
+		m[e.Command] = e
+	}
+	return m
+}
+
+func TestSessionCgroupBeatsLineage(t *testing.T) {
+	w, root := freshFake(t, func(w *ProcWitness) { w.CgroupRoot = "/sys/fs/cgroup/" + sessionBase })
+	fakeProc(t, root, 700, 100, "60", "inside\x00", session(tid))         // descendant, in the session cgroup
+	fakeProc(t, root, 701, 100, "61", "elsewhere\x00", session(otherTid)) // descendant, in another session
+	fakeProc(t, root, 702, 100, "62", "outside\x00", "0::/\n")            // descendant, no session cgroup
+	// Reparented to init, so lineage cannot see it; the cgroup still can.
+	fakeProc(t, root, 703, 1, "63", "escaped\x00", session(tid))
+	// Not a descendant and in no session cgroup: not ours.
+	fakeProc(t, root, 704, 1, "64", "stranger\x00", "0::/\n")
+	w.Poll()
+
+	all := byCmd(w.Events())
+	if _, seen := all["stranger"]; seen {
+		t.Fatal("a process in neither lineage nor a session cgroup must not be reported")
+	}
+	if e, ok := all["escaped"]; !ok || e.Attribution != ByCgroup || e.TraceID != tid {
+		t.Fatalf("reparented process in the session cgroup must be found by cgroup: %+v", all["escaped"])
+	}
+
+	got := byCmd(w.Spawned(tid))
+	if e, ok := got["inside"]; !ok || e.Attribution != ByCgroup || e.TraceID != tid {
+		t.Fatalf("inside: %+v", got)
+	}
+	if _, ok := got["escaped"]; !ok {
+		t.Fatalf("escaped missing for its own trace: %v", got)
+	}
+	if _, ok := got["elsewhere"]; ok {
+		t.Fatal("another session's process leaked into this trace")
+	}
+	if e, ok := got["outside"]; !ok || e.Attribution != ByLineage {
+		t.Fatalf("lineage-only descendant must still be returned (an absence claim must not pass on a gap): %+v", got)
+	}
+
+	other := byCmd(w.Spawned(otherTid))
+	if _, ok := other["elsewhere"]; !ok {
+		t.Fatalf("other trace lost its own process: %v", other)
+	}
+	if _, ok := other["inside"]; ok {
+		t.Fatal("this trace's process leaked into another")
+	}
+}
+
+func TestLineageFallbackWithoutAnySessionCgroup(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 710, 100, "70", "plain\x00", "0::/\n")
+	w.Poll()
+	evs := w.Spawned(tid)
+	if len(evs) != 1 || evs[0].Attribution != ByLineage || evs[0].TraceID != "" {
+		t.Fatalf("fallback broken: %+v", evs)
+	}
+}
+
+func TestProcessMovedIntoSessionCgroupIsReattributed(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 720, 100, "80", "late\x00", "0::/\n")
+	w.Poll()
+	if e := w.Events()[0]; e.Attribution != ByLineage {
+		t.Fatalf("first sighting: %+v", e)
+	}
+	// The fallback placement path writes the PID after start.
+	must(t, os.WriteFile(filepath.Join(root, "720", "cgroup"), []byte(session(otherTid)), 0o644))
+	w.Poll()
+	if e := w.Events()[0]; e.Attribution != ByCgroup || e.TraceID != otherTid {
+		t.Fatalf("after the move: %+v", e)
+	}
+	if len(w.Spawned(tid)) != 0 {
+		t.Fatal("process now belongs to another trace")
+	}
+}
+
+func TestCgroupRootBaseComesFromFieldOrEnvironment(t *testing.T) {
+	w, root := freshFake(t, func(w *ProcWitness) { w.CgroupRoot = "/custom/lab" })
+	fakeProc(t, root, 730, 1, "90", "lab\x00", "0::/lab/"+tid+"\n")
+	fakeProc(t, root, 731, 1, "91", "default\x00", session(tid)) // "subpoena" is not this witness's base
+	w.Poll()
+	if got := byCmd(w.Events()); len(got) != 1 || got["lab"].TraceID != tid {
+		t.Fatalf("field base: %+v", got)
+	}
+
+	t.Setenv(cgroup.EnvRoot, "/x/envbase")
+	w2, root2 := freshFake(t, nil)
+	fakeProc(t, root2, 740, 1, "92", "envproc\x00", "0::/envbase/"+tid+"\n")
+	w2.Poll()
+	if got := byCmd(w2.Events()); got["envproc"].TraceID != tid {
+		t.Fatalf("env base: %+v", got)
+	}
 }
