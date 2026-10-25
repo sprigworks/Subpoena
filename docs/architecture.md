@@ -89,5 +89,4 @@ to reviewers and to tooling.
 ## Not decided here
 
 Cross-service registry migration policy, the Python and TypeScript harnesses,
-cgroup names reaching Tetragon events on a real node, and a first run of the real-Tempo
-conformance comparison are deferred.
+and cgroup names reaching Tetragon events on a real node are deferred.

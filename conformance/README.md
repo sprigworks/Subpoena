@@ -26,20 +26,22 @@ evaluator and Tempo agree.
 make conformance
 ```
 
-starts `docker-compose.yml` (Tempo only, pinned image, OTLP/HTTP on host port
-14318 and the query API on 13200, offset so it can run beside a local LGTM stack), runs the Tempo test with `SUBPOENA_CONFORMANCE_REQUIRE=1`
+starts `docker-compose.yml` (Tempo only, pinned image, OTLP/HTTP and the query
+API on ephemeral loopback host ports so it never collides with a local stack), runs the Tempo test with `SUBPOENA_CONFORMANCE_REQUIRE=1`
 (an unreachable Tempo is a failure, not a skip), and tears it down. By hand:
 
 ```
 docker compose -f conformance/docker-compose.yml up -d
+export SUBPOENA_TEMPO_URL=http://$(docker compose -f conformance/docker-compose.yml port tempo 3200)
+export SUBPOENA_OTLP_URL=http://$(docker compose -f conformance/docker-compose.yml port tempo 4318)
 SUBPOENA_CONFORMANCE_REQUIRE=1 go test ./conformance -run TestTempo -v -count=1
 docker compose -f conformance/docker-compose.yml down -v
 ```
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SUBPOENA_TEMPO_URL` | `http://localhost:13200` | Tempo query API (`/ready`, `/api/search`); setting it opts in to the comparison |
-| `SUBPOENA_OTLP_URL` | `http://localhost:14318` | OTLP/HTTP receiver (`/v1/traces`) |
+| `SUBPOENA_TEMPO_URL` | `http://localhost:3200` | Tempo query API (`/ready`, `/api/search`); setting it opts in to the comparison |
+| `SUBPOENA_OTLP_URL` | `http://localhost:4318` | OTLP/HTTP receiver (`/v1/traces`) |
 | `SUBPOENA_CONFORMANCE_REQUIRE` | unset | `1`: fail instead of skip when Tempo is unreachable |
 
 Point the URLs at any Tempo (the OATS stack's, for example). Stray traces from
@@ -90,11 +92,21 @@ extend the rows that should match. The tests fail until the table is complete.
 
 ## Status
 
-The fixture and subset half runs and is green in `make check`. The Tempo half
-has **not been run against a real Tempo** (no Docker in the sandbox where this
-was written); it is exercised only against the fake. Two expectations are the
-likeliest to expose a real difference and are worth looking at first on the
-first real run: `!=` across a type mismatch (`int_attr_ne_string_literal`) and
-the missing-attribute case under `!=` (`authorize_not_denied`). If Tempo
-disagrees, either the docs and evaluator change or the query leaves the subset;
-the table is never edited to make the comparison pass.
+Both halves run. `make conformance` against the pinned `grafana/tempo:2.8.2`
+reports 12 queries over 8 fixtures, 0 divergences (first run 2026-10-25, on a
+real machine with Docker).
+
+That first run found one divergence, and the evaluator changed, not the
+table: Tempo gives `&&` and `||` equal precedence and groups them left to
+right, so `{ A || B && C }` meant `(A || B) && C` to Tempo and `A || (B && C)`
+to the subset. The same divergence, and only that one, showed against Tempo
+3.1.0. The subset now rejects mixing the two operators without parentheses,
+and `queries/or_and_precedence.traceql` spells out the grouping that
+`expected.yaml` always described.
+
+The two cases expected to differ agree with Tempo: `!=` across a type mismatch
+(`int_attr_ne_string_literal`) and `!=` on a missing attribute
+(`authorize_not_denied`) are false in both. Neither agreement is vacuous: Tempo
+matches the same fixtures on the positive forms. If Tempo disagrees in future,
+either the docs and evaluator change or the query leaves the subset; the table
+is never edited to make the comparison pass.

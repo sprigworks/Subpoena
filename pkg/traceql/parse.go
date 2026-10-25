@@ -195,36 +195,55 @@ func (p *parser) spanset() (*spanset, error) {
 	return &spanset{expr: e}, nil
 }
 
+// or parses an || chain. Mixing && and || at one parenthesis level is
+// rejected: Tempo gives them equal precedence and groups left to right
+// (`a || b && c` is `(a || b) && c`), which most readers misread, so the subset
+// requires the grouping to be written out.
 func (p *parser) or() (expr, error) {
-	l, err := p.and()
+	l, andAt, err := p.and()
 	if err != nil {
 		return nil, err
 	}
 	for p.peek().kind == tOr {
-		p.next()
-		r, err := p.and()
+		orTok := p.next()
+		r, rAndAt, err := p.and()
 		if err != nil {
 			return nil, err
+		}
+		if andAt == nil {
+			andAt = rAndAt
+		}
+		if andAt != nil {
+			at := orTok
+			if andAt.pos > at.pos {
+				at = *andAt
+			}
+			return nil, p.errAt(at, "'&&' and '||' mixed without parentheses (Tempo groups them left to right with equal precedence); add parentheses")
 		}
 		l = orExpr{l, r}
 	}
 	return l, nil
 }
 
-func (p *parser) and() (expr, error) {
+// and parses an && chain and returns the first && token, if any.
+func (p *parser) and() (expr, *token, error) {
 	l, err := p.primary()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var first *token
 	for p.peek().kind == tAnd {
-		p.next()
+		t := p.next()
+		if first == nil {
+			first = &t
+		}
 		r, err := p.primary()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		l = andExpr{l, r}
 	}
-	return l, nil
+	return l, first, nil
 }
 
 func (p *parser) primary() (expr, error) {

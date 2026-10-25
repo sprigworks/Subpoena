@@ -140,8 +140,10 @@ What to carry over, and what changes:
   it cannot be promoted in step 7. One-off queries built from registry constants
   with `fmt.Sprintf`, as the gateway tests do, are fine.
 - **Stay in the subset** (`docs/traceql-subset.md`): `>>`, `>`, `&&`, `||`,
-  `=`, `!=` on `name` and `span.` attributes. Pipelines, regexes, durations and
-  `resource.` fields are rejected at parse time. An invariant that needs more
+  `=`, `!=` on `name` and `span.` attributes. Parenthesize when mixing `&&`
+  and `||`: Tempo groups them left to right, so the subset rejects
+  `a || b && c`. Pipelines, regexes, durations and `resource.` fields are
+  rejected at parse time. An invariant that needs more
   can live at tiers 2 and 3 only; say so in a comment next to it.
 
 Write new tests from the registry and docs before reading the implementation

@@ -31,16 +31,21 @@ package and a real Tempo, and the verdicts must agree.
 
 ```
 query      = spanset { ( ">>" | ">" ) spanset }
-spanset    = "{" [ or ] "}"            ; "{}" selects every span
-or         = and { "||" and }
-and        = primary { "&&" primary }
-primary    = "(" or ")" | "true" | "false" | comparison
+spanset    = "{" [ bool ] "}"          ; "{}" selects every span
+bool       = primary ( { "&&" primary } | { "||" primary } )   ; one operator per level
+primary    = "(" bool ")" | "true" | "false" | comparison
 comparison = field ( "=" | "!=" ) literal
 field      = "name" | "span." attr     ; attr may contain dots: span.authorization.allowed
 literal    = string | integer | "true" | "false"
 ```
 
-`&&` binds tighter than `||`. Strings use Go-style double-quoted escapes.
+`&&` and `||` cannot be mixed at one parenthesis level: `a || b && c` is a
+parse error; write `a || (b && c)` or `(a || b) && c`. Tempo gives the two
+equal precedence and groups them left to right, so it reads `a || b && c` as
+`(a || b) && c`, the opposite of the usual convention (found by the first
+real-Tempo conformance run, against Tempo 2.8.2 and 3.1.0). Requiring the
+parentheses keeps a string's meaning the same in both places and obvious to
+a reader. Strings use Go-style double-quoted escapes.
 Integers are base-10 and may be negative.
 
 ## Semantics

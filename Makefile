@@ -60,10 +60,14 @@ test-cgroup:
 # an unreachable Tempo a failure instead of a skip, so this target cannot go
 # green by skipping. (`go test ./conformance` without Tempo still runs the
 # fixture checks and skips only the Tempo comparison.)
+# The compose file publishes ephemeral host ports; read them back here.
+CONFORMANCE_COMPOSE := docker compose -f conformance/docker-compose.yml
 conformance:
-	docker compose -f conformance/docker-compose.yml up -d
+	$(CONFORMANCE_COMPOSE) up -d
+	SUBPOENA_TEMPO_URL=http://$$($(CONFORMANCE_COMPOSE) port tempo 3200) \
+	SUBPOENA_OTLP_URL=http://$$($(CONFORMANCE_COMPOSE) port tempo 4318) \
 	SUBPOENA_CONFORMANCE_REQUIRE=1 go test ./conformance -run TestTempo -count=1 -v; rc=$$?; \
-	docker compose -f conformance/docker-compose.yml down -v; exit $$rc
+	$(CONFORMANCE_COMPOSE) down -v; exit $$rc
 
 # Everything that runs without Docker or eBPF.
 check: build vet test lint gate

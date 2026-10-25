@@ -57,7 +57,7 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | Tetragon witness, `witnesses/tetragon` | Written, **not executed** (needs eBPF and root); the policy is an unvalidated draft |
 | Tier 3: `examples/gateway/alerts` | Written, **not validated** against Grafana |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
-| Conformance, subset vs real Tempo (`make conformance`) | Written, **not executed** (needs Docker); the client is tested against an in-process fake |
+| Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses |
 
 Other things to know:
 

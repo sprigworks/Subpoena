@@ -117,6 +117,20 @@ func TestInvariantQueryParses(t *testing.T) {
 	}
 }
 
+func TestExplicitBooleanGroupingParses(t *testing.T) {
+	for _, q := range []string{
+		`{ name = "a" || (name = "b" && span.x = 1) }`,
+		`{ (name = "a" && span.x = 1) || name = "b" }`,
+		`{ (name = "a" || name = "b") && span.x = 1 }`,
+		`{ name = "a" && span.x = 1 && name = "b" }`,
+		`{ name = "a" || name = "b" || name = "c" }`,
+	} {
+		if _, err := Parse(q); err != nil {
+			t.Errorf("%s: %v", q, err)
+		}
+	}
+}
+
 func TestRejectsOutsideSubset(t *testing.T) {
 	bad := map[string]string{
 		`{ name =~ "a.*" }`:                 "regex",
@@ -142,6 +156,12 @@ func TestRejectsOutsideSubset(t *testing.T) {
 		`{ name = "a" } >>> { name = "b" }`: "expected '{'",
 		`{ name != "a" && }`:                "expected a condition",
 		"{ name = \"a\\q\" }":               "invalid string",
+		// Tempo groups && and || left to right at equal precedence; the
+		// subset makes the grouping explicit instead of guessing.
+		`{ name = "a" || name = "b" && span.x = 1 }`:                 "mixed without parentheses",
+		`{ name = "a" && span.x = 1 || name = "b" }`:                 "mixed without parentheses",
+		`{ (name = "a" || name = "b") && span.x = 1 || name = "c" }`: "mixed without parentheses",
+		`{ name = "a" || name = "b" || name = "c" && (span.x = 1) }`: "mixed without parentheses",
 	}
 	for q, want := range bad {
 		_, err := Parse(q)

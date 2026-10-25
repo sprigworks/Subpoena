@@ -257,7 +257,7 @@ func TestClientFromEnvDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("SUBPOENA_TEMPO_URL", "")
 	t.Setenv("SUBPOENA_OTLP_URL", "")
 	c := ClientFromEnv()
-	if c.TempoURL != "http://localhost:13200" || c.OTLPURL != "http://localhost:14318" {
+	if c.TempoURL != "http://localhost:3200" || c.OTLPURL != "http://localhost:4318" {
 		t.Fatalf("defaults wrong: %+v", c)
 	}
 	t.Setenv("SUBPOENA_TEMPO_URL", "http://tempo:3200/")

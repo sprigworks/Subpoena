@@ -8,9 +8,8 @@
 # process and is only ever spoken to over HTTP. Nothing from Tempo is linked
 # into this repository.
 #
-# NOT EXECUTED in the sandbox this was written in (no Docker). The image tag
-# and tempo.yaml follow Tempo 2.8 documentation; treat the first real run as
-# the validation.
+# First run 2026-10-25 with this image and tempo.yaml: 0 divergences after the
+# &&/|| precedence fix (see README.md, Status).
 services:
   tempo:
     # Pinned so a Tempo upgrade is a reviewed change to this file, not a surprise.
@@ -19,7 +18,8 @@ services:
     volumes:
       - ./tempo.yaml:/etc/tempo.yaml:ro
     ports:
-      # Host ports offset from Tempo's defaults so this can run beside a local
-      # LGTM stack that already publishes 3200 and 4318.
-      - "13200:3200"   # query API: /ready, /api/search (SUBPOENA_TEMPO_URL)
-      - "14318:4318"   # OTLP/HTTP receiver: /v1/traces (SUBPOENA_OTLP_URL)
+      # Ephemeral loopback host ports, so this never collides with a local LGTM
+      # stack or anything else; `make conformance` reads them back with
+      # `docker compose port` and sets the URLs.
+      - "127.0.0.1::3200"   # query API: /ready, /api/search (SUBPOENA_TEMPO_URL)
+      - "127.0.0.1::4318"   # OTLP/HTTP receiver: /v1/traces (SUBPOENA_OTLP_URL)

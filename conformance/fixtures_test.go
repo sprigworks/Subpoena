@@ -270,13 +270,12 @@ func TestComposeAndTempoConfigMatchClientDefaults(t *testing.T) {
 		t.Errorf("image must be a pinned grafana/tempo tag, got %q", tempo.Image)
 	}
 	ports := strings.Join(tempo.Ports, " ")
-	for _, want := range []string{"13200:3200", "14318:4318"} {
+	// Ephemeral loopback host ports: make conformance reads them back with
+	// `docker compose port tempo <port>`, so only the container ports are fixed.
+	for _, want := range []string{"127.0.0.1::3200", "127.0.0.1::4318"} {
 		if !strings.Contains(ports, want) {
 			t.Errorf("compose does not publish %s (%v)", want, tempo.Ports)
 		}
-	}
-	if !strings.HasSuffix(DefaultTempoURL, ":13200") || !strings.HasSuffix(DefaultOTLPURL, ":14318") {
-		t.Error("client defaults drifted from compose ports")
 	}
 	var cfg map[string]any
 	b, err = os.ReadFile("tempo.yaml")
