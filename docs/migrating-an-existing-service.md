@@ -274,8 +274,9 @@ An invariant is a string, so promotion is copy and paste:
   fixture corpus through a real Tempo and through `pkg/traceql` and requires the
   same matches. Add a row to `conformance/expected.yaml` for each new invariant.
 
-Tiers 2 and 3 here are written but have not been run; expect to fix details on
-the first real run.
+Tier 2 has been run (`examples/gateway/oats/README.md` lists what was verified
+and the tooling traps found). Tier 3 is written but has not been validated
+against Grafana.
 
 ## What to delete
 

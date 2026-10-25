@@ -1,9 +1,8 @@
-# Tier 2, FALLBACK correlation: the witness is told apart by a distinguishing
+# Tier 2, ARGUMENT correlation: the witness is told apart by a distinguishing
 # command-line argument (a unique sleep duration per request), not by cgroup.
-# Use this case when the Tetragon events do not carry the session cgroup name
-# (see oats-case.yaml, the preferred case, and README.md). The invariant is the
-# same either way.
-# NOT EXECUTED in the scaffold environment (needs Docker and a BPF-capable host).
+# This is the case that runs: Tetragon's process_exec events do not carry the
+# session cgroup name (see oats-case.yaml and README.md). The invariant is the
+# same either way. Passed 2026-10-25 (`make oats`).
 name: denied session never execs (witness correlated by argument)
 tags: [subpoena, invariant, witness]
 
@@ -42,10 +41,12 @@ expected:
     - traceql: '{ name = "agent.session.authorize" && span.authorization.allowed = false } >> { name = "agent.session.exec" }'
       absent: true
   logs:
-    # Control: the witness saw the allowed session's process.
-    - logql: '{service_name="tetragon"} |= "process_exec" |= "0.138"'
-      count: '>= 1'
+    # Tetragon sees every exec on the host, so match the parsed fields exactly;
+    # a substring filter such as |= "0.137" also matches unrelated processes.
+    # Control: the witness saw the allowed session's process, exactly once.
+    - logql: '{service_name="tetragon"} | json | process_exec_process_binary="/usr/bin/sleep" and process_exec_process_arguments="0.138"'
+      count: '== 1'
     # The witness saw no process for the denied session. Testimony (spans) says
     # no exec; this is the proof.
-    - logql: '{service_name="tetragon"} |= "process_exec" |= "0.137"'
+    - logql: '{service_name="tetragon"} | json | process_exec_process_binary="/usr/bin/sleep" and process_exec_process_arguments="0.137"'
       absent: true

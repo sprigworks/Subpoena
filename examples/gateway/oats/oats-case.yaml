@@ -1,11 +1,21 @@
-# Tier 2, PREFERRED correlation: the witness is tied to the session by cgroup.
-# The gateway creates one cgroup per session, <root>/<trace id>, and starts the
-# exec inside it (examples/gateway, pkg/cgroup); Tetragon's process_exec events
-# carry that cgroup path, so a process is attributable to a trace without
-# trusting the gateway's spans. If the events do not carry the cgroup name on
-# your Tetragon version, use oats-case-argument.yaml instead (same invariant,
-# correlation by a unique command-line argument).
-# NOT EXECUTED in the scaffold environment (needs Docker and a BPF-capable host).
+# Tier 2, CGROUP correlation: NOT IN THE RUN (oats-config.yaml). Blocked.
+#
+# The intent: the gateway creates one cgroup per session, <root>/<trace id>,
+# and starts the exec inside it (examples/gateway, pkg/cgroup), so a witness
+# can attribute a process to a trace without trusting the gateway's spans.
+#
+# Verified 2026-10-25 against Tetragon v1.7.1 outside Kubernetes: process_exec
+# events carry no cgroup path or name. The only cgroup-derived field is
+# `process.docker`, which Tetragon fills with the first 31 characters of the
+# process's leaf cgroup name only when that name looks like a container ID
+# (64 hex characters, among other runtime patterns). A 32-hex trace ID does
+# not qualify; a 64-hex name does (tested). Until the session cgroup name
+# reaches the event, the log assertion below cannot be written honestly; see
+# witnesses/README.md.
+#
+# On the first run its earlier form, |= "/subpoena/" with count '== 1',
+# PASSED by accident: Tetragon sees every exec on the host, and some unrelated
+# command line contained that substring. Use oats-case-argument.yaml.
 name: denied session never execs (witness correlated by cgroup)
 tags: [subpoena, invariant, witness, cgroup]
 
@@ -55,7 +65,7 @@ expected:
     # The count of 1 is both the control (the pipeline is live and the cgroup
     # name reaches the event, or it would be 0) and the denial (a denied session
     # that had exec'd would make it 2).
-    # OPEN ITEM: whether Tetragon's event contains the cgroup path as
-    # "/subpoena/<trace id>" is unverified; see witnesses/README.md.
+    # BLOCKED: no Tetragon field carries the session cgroup name (see the
+    # header). This substring also matches unrelated host processes.
     - logql: '{service_name="tetragon"} |= "process_exec" |= "/subpoena/"'
       count: '== 1'

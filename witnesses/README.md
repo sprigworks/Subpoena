@@ -98,26 +98,40 @@ It is a unit-test stand-in, and it is honest about its gaps:
 ## Production design (partly built)
 
 1. One cgroup per agent session, named with the session's trace ID
-   (`.../subpoena/<trace-id>`). **Built** in the gateway (above); validated here
-   on a real cgroup v2 mount, not yet on a node with Tetragon.
+   (`.../subpoena/<trace-id>`). **Built** in the gateway (above); validated on a
+   real cgroup v2 mount and in the OATS stack next to Tetragon.
 2. Cilium Tetragon runs on the node and emits `process_exec` events from the
-   kernel. They are exported as JSON, shipped to Loki (Alloy or Promtail), and
-   labelled with the cgroup name, giving a log line per exec with the trace ID.
-   **Not built or run.**
+   kernel, exported as JSON and shipped to Loki. **Runs** in the OATS stack
+   (Tetragon v1.7.1, Linux 6.17). The events are **not** labelled with the
+   session cgroup name: see the open item below.
 3. The witness query is LogQL, and the same string runs in OATS (tier 2) and in
    an alert rule (tier 3): zero exec lines for a trace that was denied. The
-   OATS case `oats-case.yaml` asserts exactly one exec inside any session
-   cgroup, argument-free; `oats-case-argument.yaml` is the fallback.
+   OATS case that runs, `oats-case-argument.yaml`, correlates by argument;
+   `oats-case.yaml` (by cgroup) is blocked on item 2.
 4. Lineage stays as a secondary signal, for cases where cgroup creation fails.
    A process outside the session cgroup but inside the gateway's lineage is
    itself a finding.
 
-Open item to validate on a real node: how the cgroup name reaches the Tetragon
-event. Candidates are a Tetragon field if the version exposes one, or an
-Alloy pipeline stage that resolves cgroup id to name. `tetragon/` is a draft
-that has never been loaded into a kernel; check it with `tetra getevents`
-before relying on it. If the name does not reach the event, use the argument
-case and treat cgroup correlation as unproven at tier 2.
+Open item, narrowed on a real node (2026-10-25, Tetragon v1.7.1, outside
+Kubernetes): **the cgroup name does not reach the event.** A `process_exec`
+event carries binary, arguments, cwd, pid, uid, `exec_id`, `parent_exec_id`
+and `in_init_tree`; no cgroup path, name or ID. The one cgroup-derived field is
+`process.docker`, which Tetragon fills from the process's leaf cgroup name only
+when the name passes its container-ID heuristic (64 characters of hex, among
+other runtime patterns), truncated to 31 characters. Tested: a leaf named with
+a 32-hex trace ID yields no `docker` field; a 64-hex leaf yields its first 31
+characters. An Alloy stage cannot resolve a cgroup ID to a name either, since
+the event has no ID.
+
+Ways forward, none taken yet: name the session cgroup with 64 hex characters
+so `process.docker` carries 31 of them (depends on a Tetragon heuristic and
+truncates the trace ID to 124 bits); run Tetragon in Kubernetes mode; or
+contribute a cgroup-name field upstream. Until then cgroup correlation is
+unproven at tier 2, and the argument case is the one that runs.
+
+`tetragon/process-exec.yaml` loads on Tetragon v1.7.1 (not on v1.4.0, whose
+kprobe program the 6.17 kernel rejected). It adds nothing the exec events need
+today; it is kept for the later switch to enforcement.
 
 ## Layout
 

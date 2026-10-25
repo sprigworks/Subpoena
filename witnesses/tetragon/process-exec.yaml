@@ -1,5 +1,7 @@
-# DRAFT: written without access to Tetragon or a kernel with eBPF, so it has
-# never been loaded. Validate with `tetra getevents -o compact` on a real node.
+# Loaded by Tetragon v1.7.1 on Linux 6.17 in the OATS stack (2026-10-25):
+# "Loaded generic kprobe sensor ... kprobe_multi (1 functions)". v1.4.0 failed
+# to load it on that kernel. Its kprobe events are not exported there (the
+# stack exports PROCESS_EXEC only); it has not been used for enforcement.
 #
 # Tetragon emits process_exec events for every exec by default (base sensor).
 # This policy adds an explicit hook on the binary-load LSM path so exec events

@@ -40,6 +40,8 @@ Details in [docs/architecture.md](docs/architecture.md).
 make test      # tier 1: harness, traceql, witness, lint, gate and gateway tests
 make check     # test + vet + subpoena-lint + subpoena-gate over examples/gateway
 make conformance  # subset vs a real Tempo in Docker (optional)
+make oats         # tier 2: OATS + Tetragon (rootful Docker, cgroup v2, BTF)
+make test-cgroup  # real-cgroup tests without root, in a delegated systemd scope
 ```
 
 Needs Go 1.24 or newer. In a sandbox that cannot reach the Go module proxy or
@@ -53,8 +55,8 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | `pkg/harness`, `pkg/traceql`, `pkg/witness` (`ProcWitness`), `pkg/cgroup` | Runs, in `make test`. Cgroup tests use a real cgroup v2 when the machine allows it and skip that part otherwise |
 | `examples/gateway` tier-1 tests | Runs, in `make test` |
 | `subpoena-lint`, `subpoena-gate` | Runs; the gate kills the gateway mutant |
-| Tier 2: `examples/gateway/oats`, docker compose | Written, **not executed** (needs Docker) |
-| Tetragon witness, `witnesses/tetragon` | Written, **not executed** (needs eBPF and root); the policy is an unvalidated draft |
+| Tier 2: `examples/gateway/oats` (`make oats`) | Runs (needs rootful Docker, cgroup v2, BTF): the argument-correlated case passes and fails against the enforcement mutant. The cgroup-correlated case is blocked: Tetragon events do not carry the session cgroup name |
+| Tetragon witness, `witnesses/tetragon` | Runs in the OATS stack (Tetragon v1.7.1); exec events reach Loki. The policy loads; not used for enforcement |
 | Tier 3: `examples/gateway/alerts` | Written, **not validated** against Grafana |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
 | Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses |

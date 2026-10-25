@@ -41,7 +41,12 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   (go.opentelemetry.io, golang.org) use `make SANDBOX=1 <target>`, which
   activates `go.work.sandbox` (GitHub-mirror replaces) and sets
   `GOPROXY=direct GOSUMDB=off`. Keep `go.mod` free of those replaces.
-- No Docker, no eBPF, no root here. Tier 2 (`examples/gateway/oats`) and the
-  Tetragon witness are written but cannot be executed; do not claim they pass.
+- Tier 2 (`make oats`) and `make conformance` need Docker; tier 2 needs
+  rootful Docker, cgroup v2 and kernel BTF. Where those are missing (cloud
+  sandboxes), say the target was not run; never claim it passes. Run OATS only
+  through `make oats`: run directly from an agent session, gcx's agent mode
+  makes `absent` and `count` assertions meaningless (oats/README.md).
+- The cgroup-correlated OATS case is blocked, not passing: Tetragon's events do
+  not carry the session cgroup name (`witnesses/README.md`).
 - Weaver is a Rust binary, not installed by default. See the Makefile header.
 - Never commit to main. Work on a branch; do not open PRs unless asked.

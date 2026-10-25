@@ -89,4 +89,6 @@ to reviewers and to tooling.
 ## Not decided here
 
 Cross-service registry migration policy, the Python and TypeScript harnesses,
-and cgroup names reaching Tetragon events on a real node are deferred.
+and cgroup names reaching Tetragon events are deferred. The last was checked
+on a real node: Tetragon v1.7.1 does not put the session cgroup name in its
+exec events (`witnesses/README.md`), so tier 2 correlates by argument.

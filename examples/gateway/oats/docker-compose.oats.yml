@@ -1,6 +1,5 @@
-# NOT EXECUTED in the scaffold environment (no Docker, no eBPF). Written against
-# the documented behaviour of OATS, grafana/otel-lgtm and Tetragon; expect to
-# fix details on first real run.
+# Run 2026-10-25 with OATS v0.10.0 (gcx 1.0.0), grafana/otel-lgtm 0.38 and
+# Tetragon v1.7.1 on Linux 6.17, rootful Docker, cgroup v2 (`make oats`).
 #
 # OATS adds the Grafana LGTM stack (Grafana, Tempo, Loki, collector) as the
 # `lgtm` service. This file supplies the application under test and the witness.
@@ -17,25 +16,33 @@ services:
       # falls back (logged once at debug level) and its exec spans say so.
       SUBPOENA_CGROUP_ROOT: /sys/fs/cgroup/subpoena
       SUBPOENA_CORRELATION_FALLBACK: argument
-    # A demo rig, not a pattern: the host cgroup namespace and write access to
-    # cgroupfs so the gateway can create session cgroups Tetragon can see.
-    # Without these the gateway still works and correlation falls back to the
-    # command-line argument (oats-case-argument.yaml).
-    cgroup: host
+    # A demo rig, not a pattern: write access to cgroupfs so the gateway can
+    # create session cgroups. Verified: without `privileged` /sys/fs/cgroup is
+    # read-only and correlation falls back to the argument. `cgroup: host` is
+    # not needed: in the default private cgroup namespace the session cgroups
+    # nest under the container's own cgroup and go away with it.
     privileged: true
     ports:
       - "127.0.0.1::8080"
 
   # The independent witness: a kernel-side process-exec observer that the
   # gateway does not control. Needs a privileged container on a Linux host with
-  # BTF; it will not run on Docker Desktop for Mac or Windows.
+  # BTF; it will not run on Docker Desktop for Mac or Windows, or under rootless
+  # Docker or Podman. v1.4.0 could not load the TracingPolicy's kprobe on Linux
+  # 6.17 ("load program: invalid argument"); v1.7.1 loads it.
   tetragon:
-    image: quay.io/cilium/tetragon:v1.4.0
+    image: quay.io/cilium/tetragon:v1.7.1
     pid: host
     privileged: true
     command:
       - /usr/bin/tetragon
       - --export-filename=/var/run/tetragon/events.json
+      # The shipper's collector image runs as a non-root user; the default 600
+      # left it unable to read the export.
+      - --export-file-perm=644
+      # Tetragon sees every exec on the host. Export exec events only; the
+      # witness queries filter further by binary and arguments.
+      - '--export-allowlist={"event_set":["PROCESS_EXEC"]}'
       - --tracing-policy-dir=/etc/tetragon/tetragon.tp.d
     volumes:
       - /sys/kernel:/sys/kernel:ro

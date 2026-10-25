@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift gate test-cgroup conformance check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift gate test-cgroup conformance oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -68,6 +68,24 @@ conformance:
 	SUBPOENA_OTLP_URL=http://$$($(CONFORMANCE_COMPOSE) port tempo 4318) \
 	SUBPOENA_CONFORMANCE_REQUIRE=1 go test ./conformance -run TestTempo -count=1 -v; rc=$$?; \
 	$(CONFORMANCE_COMPOSE) down -v; exit $$rc
+
+# Tier 2: the OATS cases in examples/gateway/oats. Needs rootful Docker on a
+# Linux host with cgroup v2 and kernel BTF (Tetragon runs privileged), and
+# `go install github.com/grafana/oats@latest`. A `go install` build of OATS
+# has no pinned gcx, hence GCX_VERSION (OATS's own mise.toml pins 1.0.0).
+# --container-runtime docker: auto picks Podman when installed, and rootless
+# Podman cannot run Tetragon. The env -u list turns off gcx's agent mode,
+# auto-detected from those variables: it switches gcx to JSON output, which
+# OATS v0.10.0 counts as one row, so every `absent` fails and every
+# `count: '>= 1'` passes regardless of the data. --no-cache: OATS skips a case
+# whose case files are unchanged even when the application changed, and
+# reports the skip as a pass.
+OATS ?= oats
+GCX_VERSION ?= 1.0.0
+oats:
+	cd examples/gateway/oats && env -u CLAUDECODE -u CLAUDE_CODE -u CURSOR_AGENT \
+	-u GITHUB_COPILOT -u AMAZON_Q -u GCX_AGENT_MODE \
+	$(OATS) --container-runtime docker --gcx-version $(GCX_VERSION) --no-cache --timeout 2m
 
 # Everything that runs without Docker or eBPF.
 check: build vet test lint gate
