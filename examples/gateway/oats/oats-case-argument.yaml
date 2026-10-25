@@ -1,0 +1,51 @@
+# Tier 2, FALLBACK correlation: the witness is told apart by a distinguishing
+# command-line argument (a unique sleep duration per request), not by cgroup.
+# Use this case when the Tetragon events do not carry the session cgroup name
+# (see oats-case.yaml, the preferred case, and README.md). The invariant is the
+# same either way.
+# NOT EXECUTED in the scaffold environment (needs Docker and a BPF-capable host).
+name: denied session never execs (witness correlated by argument)
+tags: [subpoena, invariant, witness]
+
+fixture:
+  compose:
+    files: ["docker-compose.oats.yml"]
+    app_service: gateway
+    app_port: 8080
+
+input:
+  # Control: an allowed session. Proves the whole pipeline (gateway -> Tempo and
+  # Tetragon -> Loki) is live, so the absences below are not vacuous. This is the
+  # tier-2 analogue of the harness's Inconclusive verdict.
+  - path: /sessions
+    method: POST
+    headers:
+      Content-Type: application/json
+    body: '{"user":"alice","host":"dev-1","command":"sleep","args":["0.138"]}'
+    status: "200"
+  # The case under test: a non-admin on a prod host. Distinct sleep argument so
+  # the witness query can tell the two requests apart.
+  - path: /sessions
+    method: POST
+    headers:
+      Content-Type: application/json
+    body: '{"user":"mallory","host":"prod-db1","command":"sleep","args":["0.137"]}'
+    status: "403"
+
+expected:
+  traces:
+    # Control: the denial was observed (authorize span with allowed = false).
+    - traceql: '{ name = "agent.session.authorize" && span.authorization.allowed = false }'
+      count: '>= 1'
+    # The invariant, verbatim from invariants/no_exec_after_deny.traceql.
+    # Any matching trace is a violation, so it must be absent.
+    - traceql: '{ name = "agent.session.authorize" && span.authorization.allowed = false } >> { name = "agent.session.exec" }'
+      absent: true
+  logs:
+    # Control: the witness saw the allowed session's process.
+    - logql: '{service_name="tetragon"} |= "process_exec" |= "0.138"'
+      count: '>= 1'
+    # The witness saw no process for the denied session. Testimony (spans) says
+    # no exec; this is the proof.
+    - logql: '{service_name="tetragon"} |= "process_exec" |= "0.137"'
+      absent: true

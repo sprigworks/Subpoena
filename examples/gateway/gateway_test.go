@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,6 +17,27 @@ import (
 	"github.com/sprigworks/subpoena/pkg/harness"
 	"github.com/sprigworks/subpoena/pkg/witness"
 )
+
+// TestMain points the default session-cgroup root at a stand-in directory, so no
+// test in this package touches the machine's real cgroup hierarchy unless it
+// asks to (see cgroup_test.go).
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "subpoena-gateway-cgroup-")
+	if err != nil {
+		panic(err)
+	}
+	root := filepath.Join(dir, "subpoena")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cgroup.controllers"), nil, 0o644); err != nil {
+		panic(err)
+	}
+	os.Setenv("SUBPOENA_CGROUP_ROOT", root)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // sleepArg: the spawned process must outlive the witness polling interval.
 const sleepArg = "0.15"

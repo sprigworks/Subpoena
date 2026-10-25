@@ -15,6 +15,7 @@ import (
 
 	"github.com/sprigworks/subpoena/examples/gateway"
 	"github.com/sprigworks/subpoena/examples/internal/otlpjson"
+	"github.com/sprigworks/subpoena/generated/go/semconv"
 )
 
 func main() {
@@ -25,7 +26,18 @@ func main() {
 		otlpjson.New(endpoint, env("OTEL_SERVICE_NAME", "gateway")),
 		sdktrace.WithBatchTimeout(500*time.Millisecond),
 	))
-	srv := &http.Server{Addr: addr, Handler: gateway.New(tp.Tracer("gateway")).Handler()}
+	// Session cgroups are configured by SUBPOENA_CGROUP_ROOT (read by gateway.New).
+	// SUBPOENA_CORRELATION_FALLBACK says what exec spans record when no cgroup
+	// could be used: lineage (default) or argument.
+	var opts []gateway.Option
+	switch fb := env("SUBPOENA_CORRELATION_FALLBACK", semconv.ValSubpoenaWitnessCorrelationLineage); fb {
+	case semconv.ValSubpoenaWitnessCorrelationLineage, semconv.ValSubpoenaWitnessCorrelationArgument:
+		opts = append(opts, gateway.WithFallbackCorrelation(fb))
+	default:
+		log.Fatalf("SUBPOENA_CORRELATION_FALLBACK=%q: want %q or %q", fb,
+			semconv.ValSubpoenaWitnessCorrelationLineage, semconv.ValSubpoenaWitnessCorrelationArgument)
+	}
+	srv := &http.Server{Addr: addr, Handler: gateway.New(tp.Tracer("gateway"), opts...).Handler()}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

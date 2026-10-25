@@ -50,7 +50,7 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | Piece | Status |
 | --- | --- |
 | Registry (`registry/`), Weaver check and Go generation | Runs. Weaver 0.28 checked the registry and generated `generated/go/semconv` |
-| `pkg/harness`, `pkg/traceql`, `pkg/witness` (`ProcWitness`) | Runs, in `make test` |
+| `pkg/harness`, `pkg/traceql`, `pkg/witness` (`ProcWitness`), `pkg/cgroup` | Runs, in `make test`. Cgroup tests use a real cgroup v2 when the machine allows it and skip that part otherwise |
 | `examples/gateway` tier-1 tests | Runs, in `make test` |
 | `subpoena-lint`, `subpoena-gate` | Runs; the gate kills the gateway mutant |
 | Tier 2: `examples/gateway/oats`, docker compose | Written, **not executed** (needs Docker) |
@@ -84,6 +84,7 @@ generated/go/semconv/ generated constants
 pkg/harness/          in-memory exporter, Collect, Trace, Verdict
 pkg/traceql/          TraceQL subset evaluator
 pkg/witness/          Witness interface, ProcWitness
+pkg/cgroup/           one cgroup per session, named with the trace ID
 witnesses/            witness design notes, Tetragon policy
 invariants/           *.traceql invariants (+ embedded loader)
 cmd/subpoena-lint/    static checks (see lint/README.md)

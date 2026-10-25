@@ -32,6 +32,7 @@ func (g *Gateway) Handler() http.Handler {
 			return
 		}
 		ctx, sess := g.Open(r.Context(), User{Name: req.User, Admin: req.Admin})
+		defer sess.Close()
 		w.Header().Set("X-Trace-Id", traceIDFrom(ctx))
 		out, err := g.Run(ctx, sess, req.Host, req.Command, req.Args...)
 		switch {

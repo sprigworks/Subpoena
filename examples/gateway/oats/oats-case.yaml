@@ -1,8 +1,13 @@
-# Tier 2: the same invariant as the unit test, against a real collector + Tempo,
-# with the independent witness (Tetragon -> Loki) checked alongside.
+# Tier 2, PREFERRED correlation: the witness is tied to the session by cgroup.
+# The gateway creates one cgroup per session, <root>/<trace id>, and starts the
+# exec inside it (examples/gateway, pkg/cgroup); Tetragon's process_exec events
+# carry that cgroup path, so a process is attributable to a trace without
+# trusting the gateway's spans. If the events do not carry the cgroup name on
+# your Tetragon version, use oats-case-argument.yaml instead (same invariant,
+# correlation by a unique command-line argument).
 # NOT EXECUTED in the scaffold environment (needs Docker and a BPF-capable host).
-name: denied session never execs
-tags: [subpoena, invariant, witness]
+name: denied session never execs (witness correlated by cgroup)
+tags: [subpoena, invariant, witness, cgroup]
 
 fixture:
   compose:
@@ -12,16 +17,14 @@ fixture:
 
 input:
   # Control: an allowed session. Proves the whole pipeline (gateway -> Tempo and
-  # Tetragon -> Loki) is live, so the absences below are not vacuous. This is the
-  # tier-2 analogue of the harness's Inconclusive verdict.
+  # Tetragon -> Loki) is live, so the denial below is not vacuous.
   - path: /sessions
     method: POST
     headers:
       Content-Type: application/json
     body: '{"user":"alice","host":"dev-1","command":"sleep","args":["0.138"]}'
     status: "200"
-  # The case under test: a non-admin on a prod host. Distinct sleep argument so
-  # the witness query can tell the two requests apart.
+  # The case under test: a non-admin on a prod host.
   - path: /sessions
     method: POST
     headers:
@@ -38,11 +41,21 @@ expected:
     # Any matching trace is a violation, so it must be absent.
     - traceql: '{ name = "agent.session.authorize" && span.authorization.allowed = false } >> { name = "agent.session.exec" }'
       absent: true
-  logs:
-    # Control: the witness saw the allowed session's process.
-    - logql: '{service_name="tetragon"} |= "process_exec" |= "0.138"'
+    # The allowed session's exec span says it ran inside a session cgroup.
+    # Testimony, but it tells the reader which correlation the witness checks
+    # below can rely on.
+    - traceql: '{ name = "agent.session.exec" && span.subpoena.witness.correlation = "cgroup" }'
       count: '>= 1'
-    # The witness saw no process for the denied session. Testimony (spans) says
-    # no exec; this is the proof.
-    - logql: '{service_name="tetragon"} |= "process_exec" |= "0.137"'
+    # No exec fell back to a weaker correlation.
+    - traceql: '{ name = "agent.session.exec" && span.subpoena.witness.correlation != "cgroup" }'
       absent: true
+  logs:
+    # The proof, with no argument matching: exactly one exec ran inside a
+    # session cgroup in the whole run. Two requests were made; one was allowed.
+    # The count of 1 is both the control (the pipeline is live and the cgroup
+    # name reaches the event, or it would be 0) and the denial (a denied session
+    # that had exec'd would make it 2).
+    # OPEN ITEM: whether Tetragon's event contains the cgroup path as
+    # "/subpoena/<trace id>" is unverified; see witnesses/README.md.
+    - logql: '{service_name="tetragon"} |= "process_exec" |= "/subpoena/"'
+      count: '== 1'

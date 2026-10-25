@@ -3,4 +3,5 @@
 meta:
   version: 3
 cases:
-  - oats-case.yaml
+  - oats-case.yaml           # witness correlated by cgroup (preferred)
+  - oats-case-argument.yaml  # witness correlated by argument (fallback)

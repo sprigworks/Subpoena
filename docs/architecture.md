@@ -46,11 +46,13 @@ suite that trusts spans alone can be green over broken enforcement.
 
 So enforcement is proven by a witness: something outside the application's
 control that observes the side effect directly. Here, process exec events.
-Tier 1 uses `ProcWitness`, which polls `/proc` for descendants of the test
-process and, where a cgroup is named with the trace ID, reads
-`/proc/<pid>/cgroup` to correlate. Production uses one cgroup per session named
-with the trace ID plus Tetragon `process_exec` events shipped to Loki; lineage is
-a secondary signal. See `witnesses/README.md` for the gaps in each.
+Tier 1 uses `ProcWitness`, which polls `/proc` and correlates by cgroup first:
+the gateway puts each session's processes in a cgroup named with the trace ID
+(`pkg/cgroup`), and the witness reads `/proc/<pid>/cgroup` to tie a process to a
+trace, falling back to parent-process lineage when there is no session cgroup.
+The exec span records which correlation applies (`subpoena.witness.correlation`).
+Production adds Tetragon `process_exec` events shipped to Loki. See
+`witnesses/README.md` for the gaps in each.
 
 The toy gateway makes this concrete. `Authorize` is marked
 `//subpoena:enforcement_point`, and the tests do not stop at the span: they ask
@@ -87,5 +89,5 @@ to reviewers and to tooling.
 ## Not decided here
 
 Cross-service registry migration policy, the Python and TypeScript harnesses,
-production cgroup-per-session wiring on a real node, and a first run of the real-Tempo
+cgroup names reaching Tetragon events on a real node, and a first run of the real-Tempo
 conformance comparison are deferred.

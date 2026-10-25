@@ -12,6 +12,17 @@ services:
     environment:
       OTEL_SERVICE_NAME: gateway
       OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      # One cgroup per session, <root>/<trace id>. Needs a writable cgroup v2
+      # hierarchy, hence the privileges below. If creation fails the gateway
+      # falls back (logged once at debug level) and its exec spans say so.
+      SUBPOENA_CGROUP_ROOT: /sys/fs/cgroup/subpoena
+      SUBPOENA_CORRELATION_FALLBACK: argument
+    # A demo rig, not a pattern: the host cgroup namespace and write access to
+    # cgroupfs so the gateway can create session cgroups Tetragon can see.
+    # Without these the gateway still works and correlation falls back to the
+    # command-line argument (oats-case-argument.yaml).
+    cgroup: host
+    privileged: true
     ports:
       - "127.0.0.1::8080"
 

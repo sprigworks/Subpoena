@@ -14,11 +14,66 @@ The Go interface is `pkg/witness.Witness`:
 Spawned(traceID string) []ProcessEvent
 ```
 
+## Correlation: cgroup first, lineage second
+
+Which process belongs to which trace is the hard part. Three modes exist, and
+the gateway records which one a given exec supports on the exec span, as
+`subpoena.witness.correlation` (registry, tier `test`):
+
+| Value | Meaning | Strength |
+| --- | --- | --- |
+| `cgroup` | The exec was started inside a cgroup named with the session's trace ID | Strong. Survives double forks and reparenting; readable by a kernel-side witness |
+| `lineage` | No session cgroup; a witness follows parent-process lineage | Weak. Lost if an intermediate parent exits; cannot tell concurrent traces apart |
+| `argument` | No cgroup and no usable lineage; a distinguishing command-line argument is the key | Weakest. Only for a rig where the caller controls the arguments (the OATS fallback case) |
+
+Like every span attribute this is testimony: it says what the gateway believes.
+The witness decides for itself by reading the process's cgroup, and does not
+need the attribute.
+
+### The gateway (`examples/gateway`, `pkg/cgroup`)
+
+At session open, the gateway creates `<root>/<trace id>`, with `<root>` from
+`SUBPOENA_CGROUP_ROOT` (default `/sys/fs/cgroup/subpoena`), and starts every
+exec inside it. On a real cgroup v2 the child is created directly in the group
+(`CLONE_INTO_CGROUP`, Linux 5.7+, through `SysProcAttr.CgroupFD`), so it is
+never outside the group, not even for an instant. Where that is unavailable the
+child is started normally and its PID is written to `cgroup.procs`; a process it
+forks in the window between start and write would escape. `Session.Close`
+removes the (by then empty) cgroup; the HTTP handler calls it.
+
+Any failure falls back to the previous behaviour and is logged once, at debug
+level: no permission, no cgroup v2, a root that is not cgroupfs, a PID that
+cannot be written. `Create` refuses a root without a `cgroup.controllers` file
+rather than make a plain directory: on cgroup v1 and hybrid hosts (including
+many CI sandboxes) `/sys/fs/cgroup` is a tmpfs where `mkdir` succeeds and
+isolates nothing. The fallback mode is `lineage`, or `argument` with
+`SUBPOENA_CORRELATION_FALLBACK=argument` (the OATS stack sets it).
+
+A hybrid host has its cgroup2 mount at `/sys/fs/cgroup/unified`; point
+`SUBPOENA_CGROUP_ROOT` there (for example `/sys/fs/cgroup/unified/subpoena`).
+The witness compares only the last element of the root with the path in
+`/proc/<pid>/cgroup` (`.../subpoena/<trace id>`), because that path is relative
+to the mount or cgroup namespace and cannot be derived from the filesystem path.
+
+**Stand-in directory for tests.** If `SUBPOENA_CGROUP_ROOT` is a plain directory
+that contains a `cgroup.controllers` file, `Create` treats it as a deliberate
+stand-in, makes the `cgroup.procs` file cgroupfs would have made, and PIDs are
+written into it. That exercises the whole write path with no privileges, and is
+what most of the unit tests do. Under a stand-in the processes are not really
+isolated, so a witness reading `/proc` sees them by lineage. Tests that need a
+real cgroup (`TestRealCgroup`, `TestStartIntoIsAtomic`,
+`TestRealCgroupSessionIsWitnessedByCgroup`) use one when the machine allows it
+(root or a delegated subtree; `SUBPOENA_CGROUP_REAL_ROOT` names a parent to try)
+and skip otherwise.
+
 ## Tier 1: `ProcWitness` (runs in `go test`)
 
-Polls `/proc`, reports processes that appeared after `Start()` and descend from
-the gateway process by ppid lineage, and reads `/proc/<pid>/cgroup` to tie a
-process to a trace when a cgroup path contains the trace ID.
+Polls `/proc` and reports processes that appeared after `Start()`. Cgroup
+correlation is preferred: a process whose `/proc/<pid>/cgroup` path contains a
+session cgroup (`<root base>/<trace id>`, root from `ProcWitness.CgroupRoot` or
+`SUBPOENA_CGROUP_ROOT`) is attributed to that trace (`ByCgroup`), and is
+noticed even when it is not a descendant of the watched process. A process in no
+session cgroup falls back to ppid lineage from the watched process (`ByLineage`).
 
 It is a unit-test stand-in, and it is honest about its gaps:
 
@@ -29,25 +84,30 @@ It is a unit-test stand-in, and it is honest about its gaps:
   checking pidfd support) that briefly carries the parent's command line.
   `Start()` absorbs it with a warm-up exec; found the hard way as an
   intermittent phantom second process.
-- Lineage is lost if an intermediate parent exits first.
+- Lineage is lost if an intermediate parent exits first. A cgroup is not.
 - Lineage alone cannot say which trace a process belongs to. `Spawned` therefore
   returns lineage-only events for every trace and excludes only events whose
   cgroup is named with a different trace ID. That over-reports, which is the
   safe direction for an absence claim, and it is exact when one trace is in
-  flight, as in a unit test.
+  flight, as in a unit test. A process in a session cgroup is returned for that
+  trace only.
+- A process that is a descendant but outside every session cgroup, while the
+  gateway uses cgroups, is returned by lineage and is itself worth a look: it
+  escaped the session.
 
-## Production design (not built here)
+## Production design (partly built)
 
 1. One cgroup per agent session, named with the session's trace ID
-   (`.../subpoena/<trace-id>`). The gateway creates it at session open and
-   starts every child the session spawns inside it. The cgroup is the
-   correlation key because it survives double-forks and reparenting, which
-   lineage does not.
+   (`.../subpoena/<trace-id>`). **Built** in the gateway (above); validated here
+   on a real cgroup v2 mount, not yet on a node with Tetragon.
 2. Cilium Tetragon runs on the node and emits `process_exec` events from the
    kernel. They are exported as JSON, shipped to Loki (Alloy or Promtail), and
    labelled with the cgroup name, giving a log line per exec with the trace ID.
+   **Not built or run.**
 3. The witness query is LogQL, and the same string runs in OATS (tier 2) and in
-   an alert rule (tier 3): zero exec lines for a trace that was denied.
+   an alert rule (tier 3): zero exec lines for a trace that was denied. The
+   OATS case `oats-case.yaml` asserts exactly one exec inside any session
+   cgroup, argument-free; `oats-case-argument.yaml` is the fallback.
 4. Lineage stays as a secondary signal, for cases where cgroup creation fails.
    A process outside the session cgroup but inside the gateway's lineage is
    itself a finding.
@@ -56,9 +116,11 @@ Open item to validate on a real node: how the cgroup name reaches the Tetragon
 event. Candidates are a Tetragon field if the version exposes one, or an
 Alloy pipeline stage that resolves cgroup id to name. `tetragon/` is a draft
 that has never been loaded into a kernel; check it with `tetra getevents`
-before relying on it.
+before relying on it. If the name does not reach the event, use the argument
+case and treat cgroup correlation as unproven at tier 2.
 
 ## Layout
 
 - `tetragon/process-exec.yaml`: TracingPolicy for exec events.
 - `../pkg/witness/`: interface and `ProcWitness`.
+- `../pkg/cgroup/`: per-session cgroup creation and placement, shared by the gateway and the witness.

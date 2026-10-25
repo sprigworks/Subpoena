@@ -4,8 +4,11 @@ package invariants
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/sprigworks/subpoena/internal/invgen"
 	"github.com/sprigworks/subpoena/pkg/traceql"
@@ -67,7 +70,8 @@ func TestFirstInvariantText(t *testing.T) {
 // its text verbatim. A new invariant that is promoted adds a row here.
 var promotions = map[string][]string{
 	NoExecAfterDeny: {
-		"../examples/gateway/oats/oats-case.yaml",
+		"../examples/gateway/oats/oats-case.yaml",          // witness correlated by cgroup
+		"../examples/gateway/oats/oats-case-argument.yaml", // witness correlated by argument (fallback)
 		"../examples/gateway/alerts/no_exec_after_deny.yaml",
 	},
 }
@@ -87,6 +91,39 @@ func TestPromotionIsCopyPaste(t *testing.T) {
 			}
 			if !strings.Contains(string(b), inv) {
 				t.Errorf("%s does not contain invariant %s verbatim:\n%s", path, name, inv)
+			}
+		}
+	}
+}
+
+// TestOATSTraceQLParsesInTheSubset: every TraceQL query in the OATS cases is
+// also valid in the tier-1 subset, so what tier 2 asserts can be tried in tier 1.
+func TestOATSTraceQLParsesInTheSubset(t *testing.T) {
+	cases, err := filepath.Glob("../examples/gateway/oats/oats-case*.yaml")
+	if err != nil || len(cases) < 2 {
+		t.Fatalf("want both OATS cases, got %v (%v)", cases, err)
+	}
+	for _, path := range cases {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var c struct {
+			Expected struct {
+				Traces []struct {
+					TraceQL string `yaml:"traceql"`
+				} `yaml:"traces"`
+			} `yaml:"expected"`
+		}
+		if err := yaml.Unmarshal(b, &c); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if len(c.Expected.Traces) == 0 {
+			t.Errorf("%s has no traceql expectations", path)
+		}
+		for _, tr := range c.Expected.Traces {
+			if _, err := traceql.Parse(tr.TraceQL); err != nil {
+				t.Errorf("%s: %q: %v", filepath.Base(path), tr.TraceQL, err)
 			}
 		}
 	}
