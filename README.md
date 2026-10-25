@@ -91,7 +91,7 @@ cmd/subpoena-lint/    static checks (see lint/README.md)
 cmd/subpoena-gate/    fault gate
 examples/gateway/     toy agent gateway, tests, OATS stack, alert rule
 conformance/          fixtures + expected results, subset-vs-Tempo conformance test
-docs/                 architecture, TraceQL subset
+docs/                 architecture, TraceQL subset, migrating an existing service
 ```
 
 Licensed under Apache-2.0.
