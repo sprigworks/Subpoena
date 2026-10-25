@@ -1,21 +1,13 @@
-# Tier 2, CGROUP correlation: NOT IN THE RUN (oats-config.yaml). Blocked.
+# Tier 2, CGROUP correlation (the preferred case). The gateway creates one
+# cgroup per session, <root>/<trace id>, and starts the exec inside it
+# (examples/gateway, pkg/cgroup). The witness (subpoena-witness,
+# pkg/witness/execbpf) reads each exec's cgroup in the kernel and attributes
+# it to the trace, so a process is tied to a session without trusting the
+# gateway and without matching on arguments.
 #
-# The intent: the gateway creates one cgroup per session, <root>/<trace id>,
-# and starts the exec inside it (examples/gateway, pkg/cgroup), so a witness
-# can attribute a process to a trace without trusting the gateway's spans.
-#
-# Verified 2026-10-25 against Tetragon v1.7.1 outside Kubernetes: process_exec
-# events carry no cgroup path or name. The only cgroup-derived field is
-# `process.docker`, which Tetragon fills with the first 31 characters of the
-# process's leaf cgroup name only when that name looks like a container ID
-# (64 hex characters, among other runtime patterns). A 32-hex trace ID does
-# not qualify; a 64-hex name does (tested). Until the session cgroup name
-# reaches the event, the log assertion below cannot be written honestly; see
-# witnesses/README.md.
-#
-# On the first run its earlier form, |= "/subpoena/" with count '== 1',
-# PASSED by accident: Tetragon sees every exec on the host, and some unrelated
-# command line contained that substring. Use oats-case-argument.yaml.
+# History: with Tetragon as the witness this case was blocked, since Tetragon
+# outside Kubernetes does not report the session cgroup name, and its first
+# form passed by accident on a substring match. See witnesses/README.md.
 name: denied session never execs (witness correlated by cgroup)
 tags: [subpoena, invariant, witness, cgroup]
 
@@ -61,11 +53,12 @@ expected:
       absent: true
   logs:
     # The proof, with no argument matching: exactly one exec ran inside a
-    # session cgroup in the whole run. Two requests were made; one was allowed.
-    # The count of 1 is both the control (the pipeline is live and the cgroup
-    # name reaches the event, or it would be 0) and the denial (a denied session
-    # that had exec'd would make it 2).
-    # BLOCKED: no Tetragon field carries the session cgroup name (see the
-    # header). This substring also matches unrelated host processes.
-    - logql: '{service_name="tetragon"} |= "process_exec" |= "/subpoena/"'
+    # session cgroup in the whole run, on the whole host. Two requests were
+    # made; one was allowed. The count of 1 is both the control (the pipeline
+    # is live and the witness attributes by cgroup, or it would be 0) and the
+    # denial (a denied session that had exec'd would make it 2).
+    - logql: '{service_name="subpoena-witness"} | json | attribution="cgroup"'
+      count: '== 1'
+    # And that one is the allowed session's command, in its session cgroup.
+    - logql: '{service_name="subpoena-witness"} | json | attribution="cgroup" and command="sleep 0.138"'
       count: '== 1'

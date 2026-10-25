@@ -1,0 +1,9 @@
+# The argument case's fixture: the shared stack (docker-compose.oats.yml)
+# with the gateway unprivileged, so /sys/fs/cgroup is read-only, session
+# cgroups cannot be created, and the gateway falls back to argument
+# correlation (SUBPOENA_CORRELATION_FALLBACK=argument). A separate fixture also
+# gives the case its own stack, so its counts do not see the cgroup case's
+# requests.
+services:
+  gateway:
+    privileged: false
