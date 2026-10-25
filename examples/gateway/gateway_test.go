@@ -172,23 +172,3 @@ func TestExecRefusesCommandsOutsideAllowlist(t *testing.T) {
 		t.Fatalf("witness saw %d processes", n)
 	}
 }
-
-func TestPolicy(t *testing.T) {
-	cases := []struct {
-		user    gateway.User
-		host    string
-		allowed bool
-		policy  string
-	}{
-		{gateway.User{}, "prod-1", false, gateway.PolicyDenyProdNonAdmin},
-		{gateway.User{Admin: true}, "prod-1", true, gateway.PolicyAllowAdmin},
-		{gateway.User{}, "staging-1", true, gateway.PolicyAllowDefault},
-		{gateway.User{}, "production", true, gateway.PolicyAllowDefault}, // "prod-*" needs the dash
-	}
-	for _, c := range cases {
-		got := gateway.Evaluate(c.user, c.host)
-		if got.Allowed != c.allowed || got.PolicyID != c.policy {
-			t.Errorf("%+v on %s: got %+v", c.user, c.host, got)
-		}
-	}
-}

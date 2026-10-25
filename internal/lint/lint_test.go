@@ -126,6 +126,40 @@ func TestNoTraceAssertion(t *testing.T) {
 	}
 }
 
+func TestPureLogicMarkerExemptsNoTraceAssertion(t *testing.T) {
+	const tests = "import \"testing\"\nfunc TestPolicy(t *testing.T) { _ = evaluate(1) }\n"
+	pure := "//subpoena:spec_derived\n//subpoena:pure_logic\n\npackage p\n" + tests
+	if fs := lintTree(t, map[string]string{"policy_test.go": pure}); len(fs) != 0 {
+		t.Fatalf("pure_logic file flagged: %v", fs)
+	}
+	// Like provenance, the marker counts only above the package clause.
+	below := "//subpoena:spec_derived\npackage p\n//subpoena:pure_logic\n" + tests
+	only(t, lintTree(t, map[string]string{"policy_test.go": below}), RuleNoTraceAssertion, 1)
+}
+
+func TestPureLogicMarkerWithTelemetryImportIsFlagged(t *testing.T) {
+	for _, imp := range []string{
+		"go.opentelemetry.io/otel/trace",
+		"github.com/sprigworks/subpoena/pkg/harness",
+		"github.com/sprigworks/subpoena/pkg/witness",
+		"github.com/sprigworks/subpoena/generated/go/semconv",
+		"example.com/svc/invariants", // a service's own copy, by path suffix
+	} {
+		src := "//subpoena:impl_derived\n//subpoena:pure_logic\npackage p\nimport (\n\t\"testing\"\n\t_ \"" + imp + "\"\n)\n" +
+			"func TestX(t *testing.T) { h.Collect(ctx) }\n" // Collect does not excuse the contradiction
+		fs := lintTree(t, map[string]string{"x_test.go": src})
+		only(t, fs, RuleNoTraceAssertion, 1)
+		if !strings.Contains(fs[0].Msg, imp) {
+			t.Errorf("%s: finding does not name the import: %s", imp, fs[0].Msg)
+		}
+	}
+	// A non-telemetry import is fine.
+	ok := "//subpoena:impl_derived\n//subpoena:pure_logic\npackage p\nimport (\n\t\"testing\"\n\t\"strings\"\n)\nfunc TestX(t *testing.T) { _ = strings.ToUpper(\"x\") }\n"
+	if fs := lintTree(t, map[string]string{"x_test.go": ok}); len(fs) != 0 {
+		t.Fatalf("unexpected: %v", fs)
+	}
+}
+
 // ---- unwitnessed-enforcement ----
 
 const enforced = `package p

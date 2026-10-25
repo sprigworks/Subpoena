@@ -53,6 +53,19 @@ const enumValuePrefix = "Val"
 
 var provenanceRE = regexp.MustCompile(`^//\s*subpoena:(spec_derived|impl_derived)\b`)
 
+// pureLogicRE marks a test file that holds only pure-logic tests, which have
+// no telemetry to collect; it exempts the file from no-trace-assertion.
+var pureLogicRE = regexp.MustCompile(`^//\s*subpoena:pure_logic\b`)
+
+// telemetryImportPrefixes and telemetryImportSuffixes identify imports a
+// pure_logic file may not have: the OpenTelemetry API and SDK, and Subpoena's
+// harness, witness, generated names and invariants (matched by suffix, so a
+// service that copied them under its own module path is covered too).
+var (
+	telemetryImportPrefixes = []string{"go.opentelemetry.io/"}
+	telemetryImportSuffixes = []string{"/pkg/harness", "/pkg/witness", "/generated/go/semconv", "/invariants"}
+)
+
 // Finding is one lint result.
 type Finding struct {
 	Rule string
@@ -275,17 +288,62 @@ func badTelemetryArg(arg ast.Expr, reg *Registry) string {
 // ---- Rule 2: no-trace-assertion --------------------------------------------
 
 // checkNoTraceAssertion flags test files that define tests but never call
-// Collect(). Files with no Test/Benchmark/Fuzz/Example functions are exempt.
+// Collect(). Files with no Test/Benchmark/Fuzz/Example functions are exempt,
+// and so are files marked //subpoena:pure_logic above the package clause,
+// unless they import telemetry packages, which contradicts the marker.
 func checkNoTraceAssertion(t *tree) []Finding {
 	var out []Finding
 	for _, f := range t.files {
-		if !f.isTest || !definesTests(f.ast) || callsMethod(f.ast, map[string]bool{"Collect": true}) {
+		if !f.isTest {
+			continue
+		}
+		if hasHeaderMarker(f.ast, pureLogicRE) {
+			if imp := telemetryImport(f.ast); imp != "" {
+				out = append(out, t.finding(RuleNoTraceAssertion, f.ast.Package,
+					"%s is marked //subpoena:pure_logic but imports %s; move telemetry tests to another file or drop the marker", filepath.Base(f.path), imp))
+			}
+			continue
+		}
+		if !definesTests(f.ast) || callsMethod(f.ast, map[string]bool{"Collect": true}) {
 			continue
 		}
 		out = append(out, t.finding(RuleNoTraceAssertion, f.ast.Package,
 			"%s defines tests but never calls the harness Collect(); tests must assert on collected telemetry", filepath.Base(f.path)))
 	}
 	return out
+}
+
+// telemetryImport returns the first import of f that is telemetry, or "".
+func telemetryImport(f *ast.File) string {
+	for _, imp := range f.Imports {
+		p := strings.Trim(imp.Path.Value, `"`)
+		for _, pre := range telemetryImportPrefixes {
+			if strings.HasPrefix(p, pre) {
+				return p
+			}
+		}
+		for _, suf := range telemetryImportSuffixes {
+			if strings.HasSuffix(p, suf) {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
+// hasHeaderMarker reports whether a comment above the package clause matches re.
+func hasHeaderMarker(f *ast.File, re *regexp.Regexp) bool {
+	for _, g := range f.Comments {
+		if g.Pos() >= f.Package {
+			break
+		}
+		for _, c := range g.List {
+			if re.MatchString(c.Text) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func definesTests(f *ast.File) bool {
@@ -410,18 +468,7 @@ func checkMissingProvenance(t *tree) []Finding {
 		if !f.isTest {
 			continue
 		}
-		ok := false
-		for _, g := range f.ast.Comments {
-			if g.Pos() >= f.ast.Package {
-				break
-			}
-			for _, c := range g.List {
-				if provenanceRE.MatchString(c.Text) {
-					ok = true
-				}
-			}
-		}
-		if !ok {
+		if !hasHeaderMarker(f.ast, provenanceRE) {
 			out = append(out, t.finding(RuleMissingProvenance, f.ast.Package,
 				"%s lacks a //subpoena:spec_derived or //subpoena:impl_derived marker above the package clause", filepath.Base(f.path)))
 		}
