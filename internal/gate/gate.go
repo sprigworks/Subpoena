@@ -121,6 +121,19 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	if err := copyTree(root, tmp); err != nil {
 		return nil, fmt.Errorf("gate: copy tree: %w", err)
 	}
+	// A GOWORK file inside the module (e.g. go.work.sandbox) was copied along
+	// with the tree; point the copy's builds at the copied file so its `use .`
+	// resolves to the mutated tree, not the original.
+	// A GOWORK file outside the module can never `use` the temp copy, so it is
+	// disabled for the copy's builds.
+	if work := os.Getenv("GOWORK"); work != "" && work != "off" {
+		defer os.Setenv("GOWORK", work)
+		if rel, err := filepath.Rel(root, work); err == nil && !strings.HasPrefix(rel, "..") {
+			os.Setenv("GOWORK", filepath.Join(tmp, rel))
+		} else {
+			os.Setenv("GOWORK", "off")
+		}
+	}
 
 	pkgs := "./" + rep.Target + "/..."
 	if rep.Target == "." {

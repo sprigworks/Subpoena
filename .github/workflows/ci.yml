@@ -11,12 +11,6 @@ permissions:
 jobs:
   tier1:
     runs-on: ubuntu-latest
-    env:
-      # go.mod points the vanity-path modules at GitHub mirrors (see Makefile),
-      # which works with or without the module proxy. Setting these keeps CI
-      # identical to the sandbox the scaffold was built in.
-      GOPROXY: direct
-      GOSUMDB: "off"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

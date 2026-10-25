@@ -41,8 +41,8 @@ make test      # tier 1: harness, traceql, witness, lint, gate and gateway tests
 make check     # test + vet + subpoena-lint + subpoena-gate over examples/gateway
 ```
 
-Needs Go 1.24. The Makefile sets `GOPROXY=direct GOSUMDB=off`; see the notes
-below for why.
+Needs Go 1.24 or newer. In a sandbox that cannot reach the Go module proxy or
+the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 
 ## What runs here, and what does not
 
@@ -59,14 +59,16 @@ below for why.
 
 Other things to know:
 
-- TraceQL is a documented subset (`docs/traceql-subset.md`), not Tempo's engine.
-  Embedding Tempo's `pkg/traceql` was tried and was impractical.
+- TraceQL is a documented subset (`docs/traceql-subset.md`), not Tempo's engine,
+  by design: Tempo is AGPL-3.0, and linking its `pkg/traceql` into this
+  Apache-2.0 library would put the combined work under AGPL. Querying a
+  running Tempo over HTTP carries no such obligation, which is how the planned
+  conformance suite (`conformance/README.md`) keeps the subset honest.
 - Weaver generation is the real path (`make generate`). Weaver is a Rust binary:
   download it from https://github.com/open-telemetry/weaver/releases.
-- The sandbox this was scaffolded in could not reach proxy.golang.org or the
-  vanity hosts for `go.opentelemetry.io` and `golang.org`, so `go.mod` has
-  `replace` directives to GitHub mirrors. They are harmless to consumers and
-  can be dropped where those hosts are reachable.
+- `go.mod` is clean. The GitHub-mirror `replace` directives needed in
+  proxy-less sandboxes live in `go.work.sandbox`, activated only by
+  `make SANDBOX=1`.
 - The OATS stack uses a small stdlib OTLP/JSON exporter
   (`examples/internal/otlpjson`) instead of the standard OTLP exporter, for the
   same reason (protobuf and gRPC live on unreachable hosts).

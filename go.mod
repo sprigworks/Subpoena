@@ -16,15 +16,3 @@ require (
 	go.opentelemetry.io/otel/metric v1.35.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 )
-
-replace go.opentelemetry.io/otel => github.com/open-telemetry/opentelemetry-go v1.35.0
-
-replace go.opentelemetry.io/otel/sdk => github.com/open-telemetry/opentelemetry-go/sdk v1.35.0
-
-replace go.opentelemetry.io/otel/trace => github.com/open-telemetry/opentelemetry-go/trace v1.35.0
-
-replace go.opentelemetry.io/otel/metric => github.com/open-telemetry/opentelemetry-go/metric v1.35.0
-
-replace go.opentelemetry.io/auto/sdk => github.com/open-telemetry/opentelemetry-go-instrumentation/sdk v1.1.0
-
-replace golang.org/x/sys => github.com/golang/sys v0.31.0

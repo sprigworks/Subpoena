@@ -1,10 +1,15 @@
-# Environment note: in the sandbox where this scaffold was built, proxy.golang.org
-# and sum.golang.org are unreachable, so modules are fetched straight from VCS.
-# go.mod carries replace directives pointing at GitHub mirrors of the vanity-path
-# modules (go.opentelemetry.io/*, golang.org/x/sys), which are also unreachable
-# there. The same settings are used in CI (.github/workflows/ci.yml).
-export GOPROXY ?= direct
-export GOSUMDB ?= off
+# Normal builds need nothing special: `make test` uses the module proxy and
+# checksum DB like any Go project.
+#
+# Some sandboxes cannot reach proxy.golang.org, sum.golang.org or the vanity
+# module hosts (go.opentelemetry.io, golang.org). For those, go.work.sandbox
+# redirects the affected modules to their GitHub mirrors. Activate it with:
+#   make SANDBOX=1 test
+ifeq ($(SANDBOX),1)
+export GOWORK := $(CURDIR)/go.work.sandbox
+export GOPROXY := direct
+export GOSUMDB := off
+endif
 
 # Weaver is a Rust binary: https://github.com/open-telemetry/weaver/releases
 # Its git dependency fetch needs the CA bundle in proxied environments:
@@ -46,7 +51,7 @@ generate:
 	gofmt -w generated/go/semconv/semconv.go
 
 registry-check:
-	$(WEAVER) registry check -r $(REGISTRY)
+	$(WEAVER) registry check -r $(REGISTRY) --future
 
 # Fails if generated/ is stale relative to registry/.
 check-generated: generate

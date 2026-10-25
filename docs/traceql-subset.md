@@ -7,26 +7,25 @@ is the same string you paste into OATS (tier 2) and a Grafana alert rule
 
 ## Why a subset and not Tempo's engine
 
-The plan was to embed `github.com/grafana/tempo/pkg/traceql`. That was tried
-first and abandoned (roughly 25 minutes spent). What was found:
+**Licensing decides this, not engineering.** Grafana Tempo is AGPL-3.0.
+Linking `github.com/grafana/tempo/pkg/traceql` into this Apache-2.0 library
+would make the combined work subject to the AGPL, which is incompatible with
+Subpoena's open-core plan. Querying a running Tempo over its HTTP API carries
+no such obligation, so Tempo remains the reference evaluator for the
+conformance suite (`conformance/README.md`), never a linked dependency.
 
-- `go get github.com/grafana/tempo@main` fails: `main` now declares its module
-  as `github.com/grafana/tempo/v3`, and requires Go 1.27.3 or newer. Tempo
-  v2.8.3 and later need Go 1.25.5 or newer. The newest tag buildable with Go
-  1.24 is v2.8.2, and it can only be reached through a pseudo-version
-  (`v1.5.1-0.20250806200423-6b92615861c3`) because the v2 line never adopted a
-  `/v2` module path.
-- `pkg/traceql` imports `pkg/util`, which pulls in Jaeger thrift, the
-  OpenTelemetry collector pdata and contrib translators, Prometheus, gRPC and
-  dskit. Tempo relies on `replace` directives in its own `go.mod` that
-  downstream modules do not inherit, so a consumer has to re-derive them.
-- In the build environment, every vanity-path module host
-  (`golang.org`, `google.golang.org`, `go.opentelemetry.io`, `gopkg.in`) was
-  unreachable, so the transitive closure could not be fetched at all.
+The engineering findings from the embedding attempt are kept for the record,
+since they would apply to any future AGPL-compatible fork:
 
-Conclusion: embedding is impractical today. Revisit when Tempo publishes a
-slim, separately versioned TraceQL module, or when we are willing to depend on
-a Go 1.25+ toolchain and the full dependency weight.
+- Tempo `main` declares `github.com/grafana/tempo/v3` and requires Go 1.27.3+;
+  v2.8.3+ requires Go 1.25.5+; the v2 line never adopted a `/v2` path.
+- `pkg/traceql` imports `pkg/util`, which drags in Jaeger thrift, collector
+  pdata, Prometheus, gRPC and dskit, and relies on `replace` directives in
+  Tempo's own `go.mod` that downstream modules do not inherit.
+
+Conclusion: the subset is the design. The conformance suite is what makes it
+trustworthy: every invariant in `invariants/` is evaluated by both this
+package and a real Tempo, and the verdicts must agree.
 
 ## Grammar
 

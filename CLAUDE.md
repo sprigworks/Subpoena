@@ -36,11 +36,11 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
 
 ## Environment
 
-- This sandbox cannot reach proxy.golang.org, sum.golang.org, or vanity module
-  hosts (golang.org, google.golang.org, go.opentelemetry.io, gopkg.in). Use
-  `GOPROXY=direct GOSUMDB=off` for every go command that fetches modules; the
-  Makefile sets them. `go.mod` replaces the unreachable modules with GitHub
-  mirrors; do not remove those replaces without checking reachability.
+- Normal environments: plain `make test`. Sandboxes that cannot reach
+  proxy.golang.org, sum.golang.org or the vanity module hosts
+  (go.opentelemetry.io, golang.org) use `make SANDBOX=1 <target>`, which
+  activates `go.work.sandbox` (GitHub-mirror replaces) and sets
+  `GOPROXY=direct GOSUMDB=off`. Keep `go.mod` free of those replaces.
 - No Docker, no eBPF, no root here. Tier 2 (`examples/gateway/oats`) and the
   Tetragon witness are written but cannot be executed; do not claim they pass.
 - Weaver is a Rust binary, not installed by default. See the Makefile header.

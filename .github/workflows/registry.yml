@@ -37,9 +37,9 @@ jobs:
           sudo install weaver-x86_64-unknown-linux-gnu/weaver /usr/local/bin/weaver
           weaver --version
       - name: weaver registry check
-        # --future is deliberately off: it rejects the legacy registry_manifest.yaml
-        # file name (Weaver now prefers manifest.yaml). Rename, then enable it.
-        run: weaver registry check -r registry --diagnostic-format gh_workflow_command
+        # --future enables the checks that become default in the next Weaver
+        # major (manifest.yaml naming among them); fail early on them now.
+        run: weaver registry check -r registry --future --diagnostic-format gh_workflow_command
       - name: weaver registry diff against main
         run: |
           if [ ! -d baseline/registry ]; then
