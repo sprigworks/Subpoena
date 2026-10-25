@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift gate test-cgroup conformance oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift gate test-cgroup test-ebpf generate-bpf conformance oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -55,6 +55,23 @@ test-cgroup:
 	systemd-run --user --scope -q -p Delegate=yes -- sh -c 'cg=/sys/fs/cgroup$$(cut -d: -f3 /proc/self/cgroup); \
 	SUBPOENA_CGROUP_ROOT=$$cg/subpoena SUBPOENA_CGROUP_REAL_ROOT=$$cg/subpoena-gw \
 	go test -count=1 -v -run "Real|StartInto" ./pkg/cgroup ./examples/gateway'
+
+# The kernel half of pkg/witness/execbpf: load the eBPF program and watch real
+# execs in real session cgroups. Needs root, so it runs in a privileged
+# container (Docker, Linux host with BTF); SUBPOENA_EBPF_REQUIRE makes a skip a
+# failure. Modules are downloaded on the host and mounted read-only.
+GO_IMAGE ?= golang:1.24
+test-ebpf:
+	go mod download
+	docker run --rm --privileged -v "$(CURDIR)":/src -w /src \
+	-v "$$(go env GOMODCACHE)":/go/pkg/mod:ro -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local \
+	-e SUBPOENA_EBPF_REQUIRE=1 $(GO_IMAGE) \
+	go test -count=1 -v ./pkg/witness/execbpf
+
+# Regenerate the eBPF object and Go bindings from pkg/witness/execbpf/bpf/exec.c
+# (needs clang). The output is committed so ordinary builds need no clang.
+generate-bpf:
+	go generate ./pkg/witness/execbpf
 
 # Subset-vs-Tempo conformance. Needs Docker. SUBPOENA_CONFORMANCE_REQUIRE makes
 # an unreachable Tempo a failure instead of a skip, so this target cannot go
