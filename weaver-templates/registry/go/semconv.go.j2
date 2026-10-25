@@ -22,6 +22,19 @@ const (
 {%- endfor %}
 )
 
+// Enum members: the allowed values of enum-typed attributes. Their values are
+// not telemetry names; reference them instead of writing the string.
+const (
+{%- for attr in ctx.attributes %}
+{%- if attr.type is mapping %}
+{%- for m in attr.type.members %}
+	// Val{{ attr.name | pascal_case }}{{ m.id | pascal_case }}: {{ m.brief | trim | replace("\n", " ") }}
+	Val{{ attr.name | pascal_case }}{{ m.id | pascal_case }} = "{{ m.value }}"
+{%- endfor %}
+{%- endif %}
+{%- endfor %}
+)
+
 // Tier says where an attribute may be exported.
 type Tier string
 

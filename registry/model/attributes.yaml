@@ -37,3 +37,34 @@ groups:
         examples: ["deny-prod-nonadmin"]
         annotations:
           tier: all
+
+  - id: registry.witness
+    type: attribute_group
+    display_name: Witness correlation attributes
+    brief: Attributes describing how an independent witness can tie a process to a session.
+    stability: stable
+    attributes:
+      - id: subpoena.witness.correlation
+        type:
+          members:
+            - id: cgroup
+              value: cgroup
+              brief: The exec was started inside a cgroup named with the session's trace ID; a witness correlates by that cgroup.
+              stability: stable
+            - id: lineage
+              value: lineage
+              brief: No session cgroup could be created; a witness can only correlate by parent-process lineage.
+              stability: stable
+            - id: argument
+              value: argument
+              brief: Neither a cgroup nor lineage is available; correlation relies on a distinguishing command-line argument.
+              stability: stable
+        stability: stable
+        brief: How an independent witness can correlate the spawned process with this session.
+        note: >
+          Recorded by the gateway when it starts a process. cgroup is the
+          strong, production correlation; lineage and argument are fallbacks
+          and are weaker evidence for absence claims.
+        examples: ["cgroup", "lineage"]
+        annotations:
+          tier: test

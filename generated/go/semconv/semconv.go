@@ -25,6 +25,19 @@ const (
 	AttrProcessCommandLine = "process.command_line"
 	// AttrSessionId: Identifier of the agent session.
 	AttrSessionId = "session.id"
+	// AttrSubpoenaWitnessCorrelation: How an independent witness can correlate the spawned process with this session.
+	AttrSubpoenaWitnessCorrelation = "subpoena.witness.correlation"
+)
+
+// Enum members: the allowed values of enum-typed attributes. Their values are
+// not telemetry names; reference them instead of writing the string.
+const (
+	// ValSubpoenaWitnessCorrelationCgroup: The exec was started inside a cgroup named with the session's trace ID; a witness correlates by that cgroup.
+	ValSubpoenaWitnessCorrelationCgroup = "cgroup"
+	// ValSubpoenaWitnessCorrelationLineage: No session cgroup could be created; a witness can only correlate by parent-process lineage.
+	ValSubpoenaWitnessCorrelationLineage = "lineage"
+	// ValSubpoenaWitnessCorrelationArgument: Neither a cgroup nor lineage is available; correlation relies on a distinguishing command-line argument.
+	ValSubpoenaWitnessCorrelationArgument = "argument"
 )
 
 // Tier says where an attribute may be exported.
@@ -39,8 +52,9 @@ const (
 
 // AttributeTiers maps every registry attribute used by a registry span to its tier.
 var AttributeTiers = map[string]Tier{
-	AttrAuthorizationAllowed:  TierAll,
-	AttrAuthorizationPolicyId: TierAll,
-	AttrProcessCommandLine:    TierTest,
-	AttrSessionId:             TierTest,
+	AttrAuthorizationAllowed:       TierAll,
+	AttrAuthorizationPolicyId:      TierAll,
+	AttrProcessCommandLine:         TierTest,
+	AttrSessionId:                  TierTest,
+	AttrSubpoenaWitnessCorrelation: TierTest,
 }
