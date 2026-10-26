@@ -153,6 +153,9 @@ func TestStandInGetsAProcsFileAndRealCgroupfsIsNeverFaked(t *testing.T) {
 	if g.Real() {
 		t.Fatal("a temp directory is not a real cgroup")
 	}
+	if id, err := g.ID(); err == nil {
+		t.Fatalf("a stand-in has no cgroup ID, got %d", id)
+	}
 }
 
 func TestStartReportsPlacementFailureWithoutLosingTheProcess(t *testing.T) {
@@ -218,9 +221,10 @@ func TestSessionTrace(t *testing.T) {
 }
 
 // realGroup returns a group on a real cgroup v2 hierarchy when this machine
-// lets us write one (root, or a delegated subtree), and skips otherwise. Set
-// SUBPOENA_CGROUP_ROOT to use a specific parent directory; otherwise the usual
-// mount points are tried. It cleans up everything it creates.
+// lets us write one (root, or a delegated subtree), and skips otherwise
+// (fails instead when SUBPOENA_CGROUP_REQUIRE=1, as make test-cgroup and CI
+// set). Set SUBPOENA_CGROUP_ROOT to use a specific parent directory; otherwise
+// the usual mount points are tried. It cleans up everything it creates.
 func realGroup(t *testing.T) (g *Group, root string) {
 	t.Helper()
 	uniq := fmt.Sprintf("subpoena-test-%d", os.Getpid())
@@ -242,7 +246,11 @@ func realGroup(t *testing.T) (g *Group, root string) {
 		errs = append(errs, err.Error())
 	}
 	if g == nil {
-		t.Skipf("no writable cgroup v2 hierarchy: %s", strings.Join(errs, "; "))
+		msg := "no writable cgroup v2 hierarchy: " + strings.Join(errs, "; ")
+		if os.Getenv("SUBPOENA_CGROUP_REQUIRE") == "1" {
+			t.Fatal(msg)
+		}
+		t.Skip(msg)
 	}
 	t.Cleanup(func() {
 		_ = g.Remove()
@@ -299,6 +307,21 @@ func TestRealCgroup(t *testing.T) {
 	procs, err := g.Procs()
 	if err != nil || len(procs) != 1 || procs[0] != pid {
 		t.Fatalf("cgroup.procs = %v (%v), want [%d]", procs, err, pid)
+	}
+
+	// The cgroup ID from the file handle is the kernfs inode number, a second,
+	// independent derivation. (execbpf's tests check it against the kernel's
+	// bpf_get_current_cgroup_id.)
+	id, err := g.ID()
+	if err != nil || id == 0 {
+		t.Fatalf("ID() = %d, %v", id, err)
+	}
+	var st syscall.Stat_t
+	if err := syscall.Stat(g.Dir(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if id != st.Ino {
+		t.Fatalf("ID() = %d, inode = %d", id, st.Ino)
 	}
 
 	// A process added after the fact (the fallback path) moves too.

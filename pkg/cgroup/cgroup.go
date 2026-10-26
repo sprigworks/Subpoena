@@ -3,8 +3,8 @@
 //
 // The cgroup is the correlation key between a trace and the processes it
 // caused. Unlike parent-process lineage it survives double forks and
-// reparenting, and a kernel-side witness (Tetragon) can read it. See
-// witnesses/README.md.
+// reparenting, and a kernel-side witness can read it, by name or by the
+// kernel's cgroup ID (Group.ID). See witnesses/README.md.
 //
 // Creating a cgroup needs a writable cgroup v2 hierarchy (root, or a subtree
 // delegated by systemd). Everything here fails soft: callers fall back to
@@ -124,6 +124,17 @@ func (g *Group) TraceID() string { return g.traceID }
 // Path is the tail by which /proc/<pid>/cgroup identifies the group:
 // "<root base>/<trace id>".
 func (g *Group) Path() string { return g.base + "/" + g.traceID }
+
+// ID is the kernel's 64-bit ID for the group: what bpf_get_current_cgroup_id
+// returns for a process inside it, and what eBPF-based witnesses report. It is
+// read with name_to_handle_at, as bpftrace's cgroupid() does. A stand-in
+// directory has no cgroup ID.
+func (g *Group) ID() (uint64, error) {
+	if !g.real {
+		return 0, fmt.Errorf("cgroup: %s is a stand-in directory, not a cgroup", g.dir)
+	}
+	return cgroupID(g.dir)
+}
 
 // Real reports whether the directory is on a cgroup2 filesystem (as opposed to
 // a stand-in directory). Real groups place children atomically with

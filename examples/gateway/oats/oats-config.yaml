@@ -3,6 +3,5 @@
 meta:
   version: 3
 cases:
-  - oats-case-argument.yaml  # witness correlated by argument
-  # oats-case.yaml (cgroup correlation) is blocked: Tetragon's events do not
-  # carry the session cgroup name. See its header.
+  - oats-case.yaml           # witness correlated by session cgroup (preferred)
+  - oats-case-argument.yaml  # witness correlated by argument (fallback; own fixture)

@@ -27,6 +27,7 @@ type ProcessEvent struct {
 	Exe         string // resolved executable path, if readable
 	Command     string // command line, space-joined
 	Cgroup      string // cgroup path, if readable
+	CgroupID    uint64 // kernel cgroup ID, if the witness reports one (0 otherwise)
 	TraceID     string // set when Attribution is ByCgroup
 	Attribution Attribution
 	SeenAt      time.Time

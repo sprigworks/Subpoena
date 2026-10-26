@@ -95,46 +95,90 @@ It is a unit-test stand-in, and it is honest about its gaps:
   gateway uses cgroups, is returned by lineage and is itself worth a look: it
   escaped the session.
 
-## Production design (partly built)
+## Tier 2 and production: `execbpf` (kernel-side)
+
+`pkg/witness/execbpf` is Subpoena's own kernel-side witness, and
+`cmd/subpoena-witness` runs it as a daemon writing one JSON line per exec.
+An eBPF program on the `sched_process_exec` tracepoint (`tp_btf`, BTF and
+Linux 5.8+) records, in the kernel at the moment of exec:
+
+- the cgroup ID (`bpf_get_current_cgroup_id`, equal to `pkg/cgroup`'s
+  `Group.ID()`) and the cgroup path, up to 8 elements;
+- the process and parent IDs in the witness's own PID namespace, and in the
+  initial one;
+- the executable path and up to 511 bytes of argv.
+
+A process in a session cgroup is attributed to that trace (`ByCgroup`). With
+`Config.RootPID`, a `sched_process_fork` hook also follows lineage
+(`ByLineage`), with ProcWitness's semantics. Compared with ProcWitness,
+nothing is too short-lived to be seen, and the cgroup is read before the
+process can move or exit. It observes; it does not block.
+
+Needs root (or CAP_BPF plus CAP_PERFMON), cgroup v2 and BTF.
+`make test-ebpf` runs its kernel tests in a privileged container: execs in a
+real session cgroup are attributed with the right cgroup ID, a process that
+exits at once is seen, lineage follows a fork that never execs, and a burst
+of execs before `Stop` is not lost. In the OATS stack it is the witness for
+both cases (`examples/gateway/oats/README.md`).
+
+### How other witnesses identify a process's cgroup
+
+The kernel's own identity for a cgroup is its path, or its 64-bit cgroup ID
+(the cgroupfs inode number). `pkg/cgroup` exposes both (`Group.Path`,
+`Group.ID`), so a witness that reports either can join a process to a session.
+
+| Witness | Reports | Session correlation |
+| --- | --- | --- |
+| `execbpf` (here) | cgroup ID and path | Yes; verified |
+| `ProcWitness` (here) | cgroup path, from `/proc` | Yes; verified (polls, can miss short processes) |
+| Falco | cgroup path (`thread.cgroups`) | Should work by path; not tested |
+| Tracee | cgroup ID per event | Should work by ID; not tested |
+| bpftrace | cgroup ID (`cgroup`), path (`cgroup_path`) | Yes, by either; not tested |
+| Tetragon, outside Kubernetes | no cgroup; `process.docker` only when the leaf name looks like a container ID | No (see below) |
+| auditd | no cgroup in exec records (the container-ID patches did not merge) | No |
+
+A 64-hex name is not a cgroup standard: it is the shape of a Docker/OCI
+container ID, which these tools look for in cgroup paths. Session cgroups are
+not containers, and Subpoena does not disguise them as containers.
+
+### Tetragon
+
+Tetragon was the tier-2 witness first, and runs fine (v1.7.1 on Linux 6.17;
+v1.4.0's kprobe program was rejected by that kernel). Outside Kubernetes its
+`process_exec` events carry binary, arguments, cwd, pid, uid, `exec_id`,
+`parent_exec_id` and `in_init_tree`, but no cgroup path, name or ID. Its one
+cgroup-derived field, `process.docker`, is filled only when the leaf cgroup
+name passes its container-ID heuristic, truncated to 31 characters. Tested: a
+32-hex trace-ID leaf yields nothing; a 64-hex leaf yields 31 characters.
+
+Tetragon stays in the design for what it does and execbpf does not:
+enforcement, killing a denied session's process in the kernel.
+`tetragon/process-exec.yaml` loads on v1.7.1 and is kept for that; it is not
+part of the tier-2 stack and has not been used to enforce anything.
+
+## Production design
 
 1. One cgroup per agent session, named with the session's trace ID
-   (`.../subpoena/<trace-id>`). **Built** in the gateway (above); validated on a
-   real cgroup v2 mount and in the OATS stack next to Tetragon.
-2. Cilium Tetragon runs on the node and emits `process_exec` events from the
-   kernel, exported as JSON and shipped to Loki. **Runs** in the OATS stack
-   (Tetragon v1.7.1, Linux 6.17). The events are **not** labelled with the
-   session cgroup name: see the open item below.
-3. The witness query is LogQL, and the same string runs in OATS (tier 2) and in
-   an alert rule (tier 3): zero exec lines for a trace that was denied. The
-   OATS case that runs, `oats-case-argument.yaml`, correlates by argument;
-   `oats-case.yaml` (by cgroup) is blocked on item 2.
-4. Lineage stays as a secondary signal, for cases where cgroup creation fails.
-   A process outside the session cgroup but inside the gateway's lineage is
+   (`.../subpoena/<trace-id>`). **Built** in the gateway; validated on a real
+   cgroup v2 mount and in the OATS stack.
+2. A kernel-side witness on the node reports every exec with its cgroup.
+   **Built** (`execbpf`, `subpoena-witness`); runs in the OATS stack, its
+   events shipped to Loki.
+3. The witness query is LogQL, and the same string runs in OATS (tier 2) and
+   in an alert rule (tier 3). The OATS cgroup case asserts exactly one exec in
+   any session cgroup across an allowed and a denied request.
+4. Lineage stays as a secondary signal, for when cgroup creation fails. A
+   process outside the session cgroup but inside the gateway's lineage is
    itself a finding.
-
-Open item, narrowed on a real node (2026-10-25, Tetragon v1.7.1, outside
-Kubernetes): **the cgroup name does not reach the event.** A `process_exec`
-event carries binary, arguments, cwd, pid, uid, `exec_id`, `parent_exec_id`
-and `in_init_tree`; no cgroup path, name or ID. The one cgroup-derived field is
-`process.docker`, which Tetragon fills from the process's leaf cgroup name only
-when the name passes its container-ID heuristic (64 characters of hex, among
-other runtime patterns), truncated to 31 characters. Tested: a leaf named with
-a 32-hex trace ID yields no `docker` field; a 64-hex leaf yields its first 31
-characters. An Alloy stage cannot resolve a cgroup ID to a name either, since
-the event has no ID.
-
-Ways forward, none taken yet: name the session cgroup with 64 hex characters
-so `process.docker` carries 31 of them (depends on a Tetragon heuristic and
-truncates the trace ID to 124 bits); run Tetragon in Kubernetes mode; or
-contribute a cgroup-name field upstream. Until then cgroup correlation is
-unproven at tier 2, and the argument case is the one that runs.
-
-`tetragon/process-exec.yaml` loads on Tetragon v1.7.1 (not on v1.4.0, whose
-kprobe program the 6.17 kernel rejected). It adds nothing the exec events need
-today; it is kept for the later switch to enforcement.
+5. Enforcement (not built): a kernel-side kill of a denied session's process,
+   Tetragon's job or an LSM's.
 
 ## Layout
 
-- `tetragon/process-exec.yaml`: TracingPolicy for exec events.
 - `../pkg/witness/`: interface and `ProcWitness`.
-- `../pkg/cgroup/`: per-session cgroup creation and placement, shared by the gateway and the witness.
+- `../pkg/witness/execbpf/`: the kernel-side witness; `bpf/exec.c` is the eBPF
+  program (dual MIT/GPL-2.0, as the kernel requires for its helpers).
+- `../cmd/subpoena-witness/`: runs it as a daemon, JSON lines out.
+- `../pkg/cgroup/`: per-session cgroup creation, placement and IDs, shared by
+  the gateway and the witnesses.
+- `tetragon/process-exec.yaml`: TracingPolicy kept for enforcement.

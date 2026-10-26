@@ -1,14 +1,14 @@
-# Tail Tetragon's JSON export and send each event to Loki (via the LGTM
-# collector's OTLP/HTTP endpoint) as a log line labelled service_name=tetragon.
+# Tail subpoena-witness's JSON lines and send each to Loki (via the LGTM
+# collector's OTLP/HTTP endpoint), labelled service_name=subpoena-witness.
 receivers:
   filelog:
-    include: [/var/run/tetragon/events.json]
+    include: [/var/run/subpoena-witness/events.json]
     start_at: beginning
 processors:
   resource:
     attributes:
       - key: service.name
-        value: tetragon
+        value: subpoena-witness
         action: upsert
   batch:
     timeout: 200ms

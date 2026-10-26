@@ -1,20 +1,22 @@
 # Tier 2, ARGUMENT correlation: the witness is told apart by a distinguishing
 # command-line argument (a unique sleep duration per request), not by cgroup.
-# This is the case that runs: Tetragon's process_exec events do not carry the
-# session cgroup name (see oats-case.yaml and README.md). The invariant is the
-# same either way. Passed 2026-10-25 (`make oats`).
+# The fallback for where the gateway cannot create session cgroups: here the
+# gateway runs unprivileged (docker-compose.unprivileged.yml), so it really
+# falls back, and its exec spans say so. The preferred case is oats-case.yaml. The invariant is the same either way.
 name: denied session never execs (witness correlated by argument)
 tags: [subpoena, invariant, witness]
 
 fixture:
   compose:
-    files: ["docker-compose.oats.yml"]
+    # A different file list is a different fixture to OATS: this case gets its
+    # own stack, so its counts never see the cgroup case's requests.
+    files: ["docker-compose.oats.yml", "docker-compose.unprivileged.yml"]
     app_service: gateway
     app_port: 8080
 
 input:
   # Control: an allowed session. Proves the whole pipeline (gateway -> Tempo and
-  # Tetragon -> Loki) is live, so the absences below are not vacuous. This is the
+  # subpoena-witness -> Loki) is live, so the absences below are not vacuous. This is the
   # tier-2 analogue of the harness's Inconclusive verdict.
   - path: /sessions
     method: POST
@@ -40,13 +42,18 @@ expected:
     # Any matching trace is a violation, so it must be absent.
     - traceql: '{ name = "agent.session.authorize" && span.authorization.allowed = false } >> { name = "agent.session.exec" }'
       absent: true
+    # The gateway could not create a session cgroup and says it fell back.
+    # Testimony, but it shows this case runs the fallback path.
+    - traceql: '{ name = "agent.session.exec" && span.subpoena.witness.correlation = "argument" }'
+      count: '>= 1'
   logs:
-    # Tetragon sees every exec on the host, so match the parsed fields exactly;
-    # a substring filter such as |= "0.137" also matches unrelated processes.
+    # The witness writes every exec on the host (-all), so match the parsed
+    # command exactly; a substring filter such as |= "0.137" also matches
+    # unrelated processes.
     # Control: the witness saw the allowed session's process, exactly once.
-    - logql: '{service_name="tetragon"} | json | process_exec_process_binary="/usr/bin/sleep" and process_exec_process_arguments="0.138"'
+    - logql: '{service_name="subpoena-witness"} | json | command="sleep 0.138"'
       count: '== 1'
-    # The witness saw no process for the denied session. Testimony (spans) says
-    # no exec; this is the proof.
-    - logql: '{service_name="tetragon"} | json | process_exec_process_binary="/usr/bin/sleep" and process_exec_process_arguments="0.137"'
+    # The witness saw no process for the denied session, anywhere on the host.
+    # Testimony (spans) says no exec; this is the proof.
+    - logql: '{service_name="subpoena-witness"} | json | command="sleep 0.137"'
       absent: true

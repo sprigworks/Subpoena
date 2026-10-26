@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift gate test-cgroup conformance oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift gate test-cgroup test-ebpf generate-bpf conformance oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -50,11 +50,29 @@ gate:
 
 # The real-cgroup tests (pkg/cgroup, examples/gateway) without root: run them in
 # a systemd user scope with cgroup delegation, rooted inside that scope. They
-# skip under plain `make test` when /sys/fs/cgroup is not writable.
+# skip under plain `make test` when /sys/fs/cgroup is not writable;
+# SUBPOENA_CGROUP_REQUIRE makes that skip a failure here.
 test-cgroup:
 	systemd-run --user --scope -q -p Delegate=yes -- sh -c 'cg=/sys/fs/cgroup$$(cut -d: -f3 /proc/self/cgroup); \
-	SUBPOENA_CGROUP_ROOT=$$cg/subpoena SUBPOENA_CGROUP_REAL_ROOT=$$cg/subpoena-gw \
+	SUBPOENA_CGROUP_REQUIRE=1 SUBPOENA_CGROUP_ROOT=$$cg/subpoena SUBPOENA_CGROUP_REAL_ROOT=$$cg/subpoena-gw \
 	go test -count=1 -v -run "Real|StartInto" ./pkg/cgroup ./examples/gateway'
+
+# The kernel half of pkg/witness/execbpf: load the eBPF program and watch real
+# execs in real session cgroups. Needs root, so it runs in a privileged
+# container (Docker, Linux host with BTF); SUBPOENA_EBPF_REQUIRE makes a skip a
+# failure. Modules are downloaded on the host and mounted read-only.
+GO_IMAGE ?= golang:1.24
+test-ebpf:
+	go mod download
+	docker run --rm --privileged -v "$(CURDIR)":/src -w /src \
+	-v "$$(go env GOMODCACHE)":/go/pkg/mod:ro -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local \
+	-e SUBPOENA_EBPF_REQUIRE=1 $(GO_IMAGE) \
+	go test -count=1 -v ./pkg/witness/execbpf
+
+# Regenerate the eBPF object and Go bindings from pkg/witness/execbpf/bpf/exec.c
+# (needs clang). The output is committed so ordinary builds need no clang.
+generate-bpf:
+	go generate ./pkg/witness/execbpf
 
 # Subset-vs-Tempo conformance. Needs Docker. SUBPOENA_CONFORMANCE_REQUIRE makes
 # an unreachable Tempo a failure instead of a skip, so this target cannot go
@@ -70,22 +88,24 @@ conformance:
 	$(CONFORMANCE_COMPOSE) down -v; exit $$rc
 
 # Tier 2: the OATS cases in examples/gateway/oats. Needs rootful Docker on a
-# Linux host with cgroup v2 and kernel BTF (Tetragon runs privileged), and
+# Linux host with cgroup v2 and kernel BTF (the witness loads eBPF, privileged), and
 # `go install github.com/grafana/oats@latest`. A `go install` build of OATS
 # has no pinned gcx, hence GCX_VERSION (OATS's own mise.toml pins 1.0.0).
 # --container-runtime docker: auto picks Podman when installed, and rootless
-# Podman cannot run Tetragon. The env -u list turns off gcx's agent mode,
+# Podman cannot run the privileged witness. The env -u list turns off gcx's agent mode,
 # auto-detected from those variables: it switches gcx to JSON output, which
 # OATS v0.10.0 counts as one row, so every `absent` fails and every
 # `count: '>= 1'` passes regardless of the data. --no-cache: OATS skips a case
 # whose case files are unchanged even when the application changed, and
-# reports the skip as a pass.
+# reports the skip as a pass. OATS takes its stacks down but leaves named
+# volumes, so the witness-events volumes are removed afterwards.
 OATS ?= oats
 GCX_VERSION ?= 1.0.0
 oats:
 	cd examples/gateway/oats && env -u CLAUDECODE -u CLAUDE_CODE -u CURSOR_AGENT \
 	-u GITHUB_COPILOT -u AMAZON_Q -u GCX_AGENT_MODE \
-	$(OATS) --container-runtime docker --gcx-version $(GCX_VERSION) --no-cache --timeout 2m
+	$(OATS) --container-runtime docker --gcx-version $(GCX_VERSION) --no-cache --timeout 2m; rc=$$?; \
+	docker volume ls -q --filter name=_witness-events | grep '^oats-' | xargs -r docker volume rm >/dev/null; exit $$rc
 
 # Everything that runs without Docker or eBPF.
 check: build vet test lint gate

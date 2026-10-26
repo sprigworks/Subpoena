@@ -1,5 +1,5 @@
-# Run 2026-10-25 with OATS v0.10.0 (gcx 1.0.0), grafana/otel-lgtm 0.38 and
-# Tetragon v1.7.1 on Linux 6.17, rootful Docker, cgroup v2 (`make oats`).
+# Run with `make oats` (OATS v0.10.0, gcx 1.0.0, grafana/otel-lgtm) on Linux
+# 6.17, rootful Docker, cgroup v2, BTF.
 #
 # OATS adds the Grafana LGTM stack (Grafana, Tempo, Loki, collector) as the
 # `lgtm` service. This file supplies the application under test and the witness.
@@ -24,40 +24,47 @@ services:
     privileged: true
     ports:
       - "127.0.0.1::8080"
+    # No request is served before the witness is attached.
+    depends_on:
+      witness:
+        condition: service_healthy
 
-  # The independent witness: a kernel-side process-exec observer that the
-  # gateway does not control. Needs a privileged container on a Linux host with
-  # BTF; it will not run on Docker Desktop for Mac or Windows, or under rootless
-  # Docker or Podman. v1.4.0 could not load the TracingPolicy's kprobe on Linux
-  # 6.17 ("load program: invalid argument"); v1.7.1 loads it.
-  tetragon:
-    image: quay.io/cilium/tetragon:v1.7.1
+  # The independent witness: Subpoena's kernel-side exec observer
+  # (pkg/witness/execbpf), which the gateway does not control. It reports each
+  # exec with the process's session cgroup, read in the kernel. Needs a
+  # privileged container on a Linux host with cgroup v2 and BTF; not Docker
+  # Desktop, not rootless Docker or Podman. pid: host so the PIDs it reports are
+  # the host's and every process is visible to it. -all writes every exec on
+  # the host, which the argument case needs; the cgroup case filters on
+  # attribution. (Tetragon was the witness here until it turned out not to
+  # report the session cgroup outside Kubernetes; see witnesses/README.md.)
+  witness:
+    build:
+      context: ../../..
+      dockerfile: cmd/subpoena-witness/Dockerfile
     pid: host
     privileged: true
     command:
-      - /usr/bin/tetragon
-      - --export-filename=/var/run/tetragon/events.json
-      # The shipper's collector image runs as a non-root user; the default 600
-      # left it unable to read the export.
-      - --export-file-perm=644
-      # Tetragon sees every exec on the host. Export exec events only; the
-      # witness queries filter further by binary and arguments.
-      - '--export-allowlist={"event_set":["PROCESS_EXEC"]}'
-      - --tracing-policy-dir=/etc/tetragon/tetragon.tp.d
+      - -all
+      - -cgroup-root=/sys/fs/cgroup/subpoena
+      - -out=/var/run/subpoena-witness/events.json
+      - -ready=/var/run/subpoena-witness/ready
     volumes:
-      - /sys/kernel:/sys/kernel:ro
-      - tetragon-events:/var/run/tetragon
-      - ../../../witnesses/tetragon:/etc/tetragon/tetragon.tp.d:ro
+      - witness-events:/var/run/subpoena-witness
+    healthcheck:
+      test: ["CMD", "/subpoena-witness", "-check-ready=/var/run/subpoena-witness/ready"]
+      interval: 1s
+      retries: 30
 
-  # Ships Tetragon's JSON export to Loki through the LGTM collector.
+  # Ships the witness's JSON lines to Loki through the LGTM collector.
   witness-shipper:
     image: otel/opentelemetry-collector-contrib:0.116.1
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./witness-shipper.yaml:/etc/otelcol/config.yaml:ro
-      - tetragon-events:/var/run/tetragon:ro
+      - witness-events:/var/run/subpoena-witness:ro
     depends_on:
-      - tetragon
+      - witness
 
 volumes:
-  tetragon-events:
+  witness-events:

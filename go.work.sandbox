@@ -17,7 +17,7 @@ replace go.opentelemetry.io/otel/sdk => github.com/open-telemetry/opentelemetry-
 replace go.opentelemetry.io/otel/trace => github.com/open-telemetry/opentelemetry-go/trace v1.35.0
 replace go.opentelemetry.io/otel/metric => github.com/open-telemetry/opentelemetry-go/metric v1.35.0
 replace go.opentelemetry.io/auto/sdk => github.com/open-telemetry/opentelemetry-go-instrumentation/sdk v1.1.0
-replace golang.org/x/sys => github.com/golang/sys v0.31.0
+replace golang.org/x/sys => github.com/golang/sys v0.37.0
 // gopkg.in is a blocked vanity host. A v3 tag cannot be a replace target on a
 // non-/v3 GitHub path, so pin the commit of tag v3.0.1 as a pseudo-version.
 replace gopkg.in/yaml.v3 => github.com/go-yaml/yaml v0.0.0-20220527083530-f6f7691b1fde

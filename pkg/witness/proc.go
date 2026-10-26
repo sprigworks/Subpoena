@@ -24,8 +24,8 @@ import (
 // Limitations, deliberately visible:
 //   - Polling can miss a process that starts and exits between two polls.
 //     Tests that rely on seeing a process should run one that lives a few
-//     polling intervals. The production witness (Tetragon) is kernel-side and
-//     does not have this gap.
+//     polling intervals. The kernel-side witness (pkg/witness/execbpf) does
+//     not have this gap.
 //   - A Go program's first os/exec call forks a throwaway pidfd probe; Start
 //     absorbs it with a warm-up. A process that never ran Start before its first
 //     exec could still see that probe as an extra event.
