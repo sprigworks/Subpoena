@@ -32,7 +32,7 @@ Linux 6.17, Docker 28.2 (rootful), cgroup v2, OATS v0.10.0 with gcx 1.0.0,
 grafana/otel-lgtm 0.38.
 
 - `make oats` passes 2/2.
-- Against the fault gate's mutant (the enforcement statement in `Authorize`
+- Against cross-examination's mutant (the enforcement statement in `Authorize`
   removed, and the 403 check relaxed so the witness decides): the cgroup case
   counts 2 execs in session cgroups instead of 1, the argument case sees the
   denied command, and the invariant fires in both. With the 403 check in place

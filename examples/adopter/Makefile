@@ -2,7 +2,7 @@
 # this module (go.mod `tool` directives), run with `go tool`.
 WEAVER ?= weaver
 
-.PHONY: test lint gate check generate check-generated invariants
+.PHONY: test lint cross check generate check-generated invariants
 
 test:
 	go test ./...
@@ -10,10 +10,10 @@ test:
 lint:
 	go tool subpoena-lint -dead-telemetry .
 
-gate:
-	go tool subpoena-gate .
+cross:
+	go tool subpoena-cross .
 
-check: test lint gate
+check: test lint cross
 
 # Regenerate generated/go/semconv from registry/ (Weaver, as in Subpoena itself).
 generate:

@@ -1,4 +1,4 @@
-// Package gate implements the fault gate. For each enforcement point it builds
+// Package cross implements cross-examination. For each enforcement point it builds
 // a mutant with the enforcement statement removed and requires that the test
 // suite goes red. A suite that stays green cannot tell enforced from
 // unenforced behaviour, whatever its spans say.
@@ -6,7 +6,7 @@
 // v0 locates the statement to remove with a second marker: a comment
 // //subpoena:enforcement on the statement's first line, inside a function
 // marked //subpoena:enforcement_point.
-package gate
+package cross
 
 import (
 	"bytes"
@@ -63,7 +63,7 @@ type Result struct {
 	Output  string   // tail of go output, for Survived/Invalid
 }
 
-// Report is the outcome of a whole gate run.
+// Report is the outcome of a whole cross-examination.
 type Report struct {
 	ModuleRoot string
 	Target     string // target directory relative to the module root
@@ -82,12 +82,12 @@ func (r *Report) Failed() bool {
 
 // Options configure a run.
 type Options struct {
-	Target  string        // directory to gate, inside a Go module
+	Target  string        // directory to cross-examine, inside a Go module
 	Timeout time.Duration // per go command; 5 minutes if zero
 	Log     io.Writer     // progress; io.Discard if nil
 }
 
-// Run executes the gate.
+// Run cross-examines the suite.
 func Run(ctx context.Context, o Options) (*Report, error) {
 	if o.Log == nil {
 		o.Log = io.Discard
@@ -111,16 +111,16 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		return nil, err
 	}
 	if len(mutants) == 0 {
-		return nil, fmt.Errorf("gate: no enforcement points with a //%s statement under %s; the gate would be vacuous", MarkerEnforcement, o.Target)
+		return nil, fmt.Errorf("cross: no enforcement points with a //%s statement under %s; cross-examination would be vacuous", MarkerEnforcement, o.Target)
 	}
 
-	tmp, err := os.MkdirTemp("", "subpoena-gate-")
+	tmp, err := os.MkdirTemp("", "subpoena-cross-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(tmp)
 	if err := copyTree(root, tmp); err != nil {
-		return nil, fmt.Errorf("gate: copy tree: %w", err)
+		return nil, fmt.Errorf("cross: copy tree: %w", err)
 	}
 	if err := absoluteReplaces(ctx, root, tmp); err != nil {
 		return nil, err
@@ -145,7 +145,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	}
 	fmt.Fprintf(o.Log, "baseline: go test %s\n", pkgs)
 	if out, err := goCmd(ctx, o.Timeout, tmp, "test", "-count=1", pkgs); err != nil {
-		return nil, fmt.Errorf("gate: baseline suite is not green, cannot judge mutants:\n%s", tail(out, 40))
+		return nil, fmt.Errorf("cross: baseline suite is not green, cannot judge mutants:\n%s", tail(out, 40))
 	}
 
 	for _, m := range mutants {
@@ -154,7 +154,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		if err != nil {
 			return nil, err
 		}
-		mutated := append(append(append([]byte{}, orig[:m.start]...), []byte("/* removed by subpoena-gate */")...), orig[m.end:]...)
+		mutated := append(append(append([]byte{}, orig[:m.start]...), []byte("/* removed by subpoena-cross */")...), orig[m.end:]...)
 		if err := os.WriteFile(path, mutated, 0o644); err != nil {
 			return nil, err
 		}
@@ -278,7 +278,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 			return true
 		})
 		if len(lines) > 0 {
-			return nil, fmt.Errorf("gate: %s: //%s in %s is not on a simple statement line", rel, MarkerEnforcement, fd.Name.Name)
+			return nil, fmt.Errorf("cross: %s: //%s in %s is not on a simple statement line", rel, MarkerEnforcement, fd.Name.Name)
 		}
 	}
 	return out, nil
@@ -304,7 +304,7 @@ func commentText(g *ast.CommentGroup) string {
 func absoluteReplaces(ctx context.Context, root, tmp string) error {
 	out, err := goCmd(ctx, time.Minute, root, "mod", "edit", "-json")
 	if err != nil {
-		return fmt.Errorf("gate: read go.mod: %s", tail(out, 10))
+		return fmt.Errorf("cross: read go.mod: %s", tail(out, 10))
 	}
 	var mod struct {
 		Replace []struct {
@@ -312,7 +312,7 @@ func absoluteReplaces(ctx context.Context, root, tmp string) error {
 		}
 	}
 	if err := json.Unmarshal([]byte(out), &mod); err != nil {
-		return fmt.Errorf("gate: read go.mod: %w", err)
+		return fmt.Errorf("cross: read go.mod: %w", err)
 	}
 	for _, r := range mod.Replace {
 		if r.New.Version != "" || !(strings.HasPrefix(r.New.Path, "./") || strings.HasPrefix(r.New.Path, "../")) {
@@ -324,7 +324,7 @@ func absoluteReplaces(ctx context.Context, root, tmp string) error {
 		}
 		abs := filepath.Join(root, filepath.FromSlash(r.New.Path))
 		if out, err := goCmd(ctx, time.Minute, tmp, "mod", "edit", "-replace="+old+"="+abs); err != nil {
-			return fmt.Errorf("gate: rewrite replace %s: %s", old, tail(out, 10))
+			return fmt.Errorf("cross: rewrite replace %s: %s", old, tail(out, 10))
 		}
 	}
 	return nil
@@ -369,7 +369,7 @@ func moduleRoot(dir string) (string, error) {
 			return d, nil
 		}
 		if filepath.Dir(d) == d {
-			return "", fmt.Errorf("gate: no go.mod above %s", dir)
+			return "", fmt.Errorf("cross: no go.mod above %s", dir)
 		}
 	}
 }

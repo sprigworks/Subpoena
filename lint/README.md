@@ -72,7 +72,7 @@ go run ./cmd/subpoena-lint registry-drift --base origin/main   # make lint-drift
 ```
 
 The registry is the contract, and a test must not move together with it
-(CLAUDE.md: never change a registry entry to make a test pass). The rule
+(AGENTS.md: never change a registry entry to make a test pass). The rule
 reports a `_test.go` file, changed since the base, that references a generated
 constant (`semconv.X`) for a span or attribute that is new or changed in the
 `registry/` diff. It is a flag for a deliberate human look, not a verdict:
@@ -99,7 +99,7 @@ call counts only in a file importing a package ending in `/pkg/harness`, and a
 `Spawned` call only in a file importing `/pkg/witness` or a package below it
 (such as `execbpf`), but within such a file any method of that name still
 satisfies them. Rule 3 is tree-wide, not per-function. These are acceptable for a skeleton and listed here so nobody
-mistakes them for guarantees. The fault gate (`cmd/subpoena-gate`) is the
+mistakes them for guarantees. Cross-examination (`cmd/subpoena-cross`) is the
 backstop that checks behaviour rather than shape.
 
 ## Not implemented

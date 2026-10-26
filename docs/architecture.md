@@ -64,14 +64,14 @@ The toy gateway makes this concrete. `Authorize` is marked
 `//subpoena:enforcement_point`, and the tests do not stop at the span: they ask
 the witness how many processes were spawned for the trace.
 
-## The fault gate
+## Cross-examination
 
-Tests that look thorough can still be blind to the thing that matters. The gate
+Tests that look thorough can still be blind to the thing that matters. Cross-examination
 checks, per enforcement point, that the suite notices when enforcement is gone.
 It copies the module to a temp directory, removes the statement marked
 `//subpoena:enforcement` inside each `//subpoena:enforcement_point` function,
 and runs the tests. A red suite kills the mutant. A green suite means the tests
-cannot tell enforced from unenforced behaviour, and the gate reports
+cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
 mutant that does not compile is "invalid", never "killed".
 

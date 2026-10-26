@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift gate conform test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift cross conform test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -45,9 +45,9 @@ lint:
 lint-drift:
 	go run ./cmd/subpoena-lint registry-drift $(if $(BASE),--base $(BASE)) .
 
-# Fault gate: remove each enforcement statement; the suite must go red.
-gate:
-	go run ./cmd/subpoena-gate ./examples/gateway
+# Cross-examination: remove each enforcement statement; the suite must go red.
+cross:
+	go run ./cmd/subpoena-cross ./examples/gateway
 
 # Check a TraceQL evaluator in any language against the conformance corpus
 # (docs/ports.md): make conform EVAL="python -m subpoena.traceql". Without
@@ -130,7 +130,7 @@ oats:
 	docker volume ls -q --filter name=_witness-events | grep '^oats-' | xargs -r docker volume rm >/dev/null; exit $$rc
 
 # Everything that runs without Docker or eBPF.
-check: build vet test lint gate
+check: build vet test lint cross
 
 # Regenerate Go constants from the registry (intended path: Weaver).
 generate:

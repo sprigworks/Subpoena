@@ -18,7 +18,7 @@ progress, and it says so.
 | TraceQL evaluation | optional (Q1–Q3) | `subpoena-traceql`, until it has its own evaluator |
 | Witness | a reader for its tests (W1–W3) | `subpoena-witness`, `pkg/cgroup` conventions |
 | Lint | eventually (L1) | the rule set and its meaning (`lint/README.md`) |
-| Fault gate | eventually (G1) | the marker and the mutation it applies |
+| Cross-examination | eventually (G1) | the marker and the mutation it applies |
 | Tiers 2 and 3 | nothing | OATS stack, alert rules |
 
 ## H: the tier-1 harness
@@ -126,13 +126,13 @@ ones keep their name and meaning.
 Check: the Go reader `witness.ReadLog` is the reference;
 `pkg/witness/log_test.go` holds the cases a port's reader must also pass.
 
-## L and G: lint and gate
+## L and G: lint and cross-examination
 
 - **L1.** A port's lint applies the same rules as `lint/README.md`, adapted
   to the language: no telemetry string literals, `collect()` before
   telemetry assertions, a witness call in every enforcement-point test, and
   provenance markers.
-- **G1.** A port's gate removes each statement marked as enforcement and
+- **G1.** A port's cross-examination removes each statement marked as enforcement and
   requires the suite to fail. A mutant that does not compile or import counts
   as invalid, not killed.
 

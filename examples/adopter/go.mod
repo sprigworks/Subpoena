@@ -24,7 +24,7 @@ require (
 replace github.com/sprigworks/subpoena => ../..
 
 tool (
-	github.com/sprigworks/subpoena/cmd/subpoena-gate
+	github.com/sprigworks/subpoena/cmd/subpoena-cross
 	github.com/sprigworks/subpoena/cmd/subpoena-invgen
 	github.com/sprigworks/subpoena/cmd/subpoena-lint
 )

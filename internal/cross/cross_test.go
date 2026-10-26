@@ -1,6 +1,6 @@
 //subpoena:impl_derived
 
-package gate
+package cross
 
 import (
 	"context"
@@ -103,7 +103,7 @@ func TestStrongSuiteKillsMutant(t *testing.T) {
 	// The original tree must be untouched.
 	b, _ := os.ReadFile(filepath.Join(dir, "auth.go"))
 	if string(b) != authOK {
-		t.Fatal("gate modified the original tree")
+		t.Fatal("cross-examination modified the original tree")
 	}
 }
 
@@ -123,7 +123,7 @@ func TestWeakSuiteLetsMutantSurvive(t *testing.T) {
 
 func TestNonCompilingMutantIsInvalidNotKilled(t *testing.T) {
 	// The removed statement declares a variable used later, so the mutant
-	// cannot build whatever the gate does.
+	// cannot build whatever cross-examination does.
 	src := strings.Replace(authOK, `	if !admin {
 		return ErrDenied //subpoena:enforcement
 	}`, `	err := ErrDenied //subpoena:enforcement
@@ -196,7 +196,7 @@ func TestNoMarkerIsAnError(t *testing.T) {
 	src := strings.Replace(authOK, " //subpoena:enforcement", "", 1)
 	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": strongTest})
 	if _, err := run(t, dir); err == nil || !strings.Contains(err.Error(), "vacuous") {
-		t.Fatalf("want vacuous-gate error, got %v", err)
+		t.Fatalf("want vacuous cross-examination error, got %v", err)
 	}
 }
 
