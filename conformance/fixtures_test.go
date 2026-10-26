@@ -45,20 +45,16 @@ func loadAll(t *testing.T) ([]*Fixture, []Query) {
 
 type expectedFile struct {
 	// query name -> fixture name -> matching trace IDs
-	Queries map[string]map[string][]string `yaml:"queries"`
+	Queries map[string]map[string][]string
 }
 
 func loadExpected(t *testing.T) expectedFile {
 	t.Helper()
-	b, err := os.ReadFile("expected.yaml")
+	q, err := LoadExpected("expected.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var e expectedFile
-	if err := yaml.Unmarshal(b, &e); err != nil {
-		t.Fatal(err)
-	}
-	return e
+	return expectedFile{Queries: q}
 }
 
 // The scenarios the suite promises to cover; each must be a fixture.

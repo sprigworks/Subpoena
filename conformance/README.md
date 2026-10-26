@@ -72,11 +72,26 @@ disagreement are themselves tested against an in-process fake Tempo
 fixtures/*.json       OTLP/JSON export requests (8), one scenario each
 queries/*.traceql     construct queries; the invariants/*.traceql files are queried too
 expected.yaml         expected matches per (query, fixture)
+rejected.traceql      queries outside the subset; every evaluator must reject them
 docker-compose.yml    Tempo only
 tempo.yaml            minimal Tempo config (OTLP/HTTP in, fast search availability)
 otlp.go               OTLP/JSON model, fixture loader, conversion to traceql.Trace
 tempo.go              HTTP client and the comparison run
+runner.go             runs any evaluator command over the corpus (subpoena-conform)
 ```
+
+## Other languages
+
+The corpus is not only for `pkg/traceql`. `subpoena-conform` runs any
+evaluator that speaks the protocol in [docs/ports.md](../docs/ports.md) over
+every query and fixture, and over `rejected.traceql`:
+
+```
+make conform EVAL="python -m subpoena.traceql"
+```
+
+Without `EVAL` it checks `subpoena-traceql`, the Go evaluator as a command,
+and `go test ./conformance` does the same, so the protocol stays honest.
 
 Fixtures: `deny_then_exec_violation`, `deny_without_exec`, `allow_then_exec`,
 `nested_descendant_vs_direct_child`, `attribute_type_mismatch`,

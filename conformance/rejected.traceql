@@ -1,0 +1,35 @@
+# Queries outside the subset (docs/traceql-subset.md). Every evaluator must
+# reject each one at parse time; Tempo accepts many of them, which is the
+# point: a subset evaluator that guessed at their meaning could disagree with
+# Tempo. One query per line; lines starting with # are comments.
+#
+# Pipelines and metrics.
+{ true } | count() > 1
+{ name = "agent.session.exec" } | by(span.session.id)
+{ name = "agent.session.authorize" } | count_over_time()
+# Regex.
+{ name =~ "agent.*" }
+# Ordering comparisons, floats, durations.
+{ span.n > 3 }
+{ span.n <= 3 }
+{ span.n = 1.5 }
+{ duration > 1s }
+# Intrinsics and scopes the subset does not read.
+{ status = error }
+{ kind = server }
+{ resource.service.name = "gateway" }
+{ .session.id = "s1" }
+# Structural operators the subset does not have.
+{ name = "a" } ~ { name = "b" }
+{ name = "a" } << { name = "b" }
+# Spanset combinators.
+{ name = "a" } && { name = "b" }
+{ name = "a" } || { name = "b" }
+# && and || mixed without parentheses (Tempo groups them left to right).
+{ name = "a" || name = "b" && span.n = 1 }
+{ name = "a" && span.n = 1 || name = "b" }
+# Plain syntax errors.
+{ name = "a"
+{ name = "a" } >>
+{ name == "a" }
+{ name = 3 }
