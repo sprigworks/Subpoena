@@ -89,7 +89,7 @@ func TestSDKDroppedAttributesMakeCaptureIncomplete(t *testing.T) {
 	if !errors.As(err, &ie) || !reflect.DeepEqual(ie.Truncated, []string{"authorize"}) {
 		t.Fatalf("want IncompleteError naming authorize, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "1 span(s) lost attributes, events or links: authorize") {
+	if !strings.Contains(err.Error(), "spans lost attributes, events or links: authorize") {
 		t.Fatal(err)
 	}
 	if tr.Complete() {

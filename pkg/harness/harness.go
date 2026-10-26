@@ -66,7 +66,7 @@ func (h *Harness) Tracer(name string) trace.Tracer { return h.tp.Tracer(name) }
 type IncompleteError struct {
 	Dropped    int
 	Unfinished []string // names of spans started but never ended
-	Truncated  []string // names of spans that lost attributes, events or links
+	Truncated  []string // distinct names of spans that lost attributes, events or links
 }
 
 func (e *IncompleteError) Error() string {
@@ -78,7 +78,7 @@ func (e *IncompleteError) Error() string {
 		parts = append(parts, fmt.Sprintf("%d span(s) never ended: %s", len(e.Unfinished), strings.Join(e.Unfinished, ", ")))
 	}
 	if len(e.Truncated) > 0 {
-		parts = append(parts, fmt.Sprintf("%d span(s) lost attributes, events or links: %s", len(e.Truncated), strings.Join(e.Truncated, ", ")))
+		parts = append(parts, "spans lost attributes, events or links: "+strings.Join(e.Truncated, ", "))
 	}
 	return "harness: capture incomplete: " + strings.Join(parts, "; ")
 }

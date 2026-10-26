@@ -40,16 +40,16 @@ nothing started was left unfinished, and that the SDK dropped no attribute,
 event or link of a recorded span. The harness sets its span limits to
 unlimited, ignoring the `OTEL_*_LIMIT` environment variables: an attribute
 dropped or truncated by a limit changes what a query matches, and the SDK does
-not count truncation as a drop.
+not count truncation as a drop. If the capture is incomplete it returns an
+error and a snapshot marked incomplete. Absence on that snapshot yields
+Inconclusive, not Pass. A positive match is still definitive: a span you saw is
+there even if others are missing. Inconclusive fails by default.
 
 Tiers 2 and 3 have no such guarantee. A production SDK, or a collector between
 it and Tempo, can drop or truncate attributes under its own limits. The
 invariant then runs on incomplete testimony, and nothing in the trace says so.
 Check the deployed limits, and keep the attributes an invariant reads short and
-set early on the span. If the capture is incomplete it returns an
-error and a snapshot marked incomplete. Absence on that snapshot yields
-Inconclusive, not Pass. A positive match is still definitive: a span you saw is
-there even if others are missing. Inconclusive fails by default.
+set early on the span.
 
 ## Testimony versus proof
 
