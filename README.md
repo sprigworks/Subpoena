@@ -9,8 +9,10 @@ it, so enforcement is only proven by an independent witness, a process-exec
 observer the application does not control, and a fault gate checks that the
 suite can tell the difference.
 
-**Status: pre-alpha.** Go only so far (Python and TypeScript later; the
-registry is language-neutral). APIs will change.
+**Status: pre-alpha.** Go only so far. Python and TypeScript are next: the
+registry, invariants, witness output and tiers 2–3 are language-neutral, and
+[docs/ports.md](docs/ports.md) is the contract a harness in another language
+must meet, with a check for each part. APIs will change.
 
 ## The three tiers
 
@@ -63,6 +65,7 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | `pkg/production`: test-tier attributes kept out of production | Runs, in `make test`; the generated Collector config was validated and run on otelcol-contrib 0.116.1 |
 | Tier 3: `examples/gateway/alerts` (`make alerts`) | Runs (needs Docker): provisioned into Grafana 13.2 with Tempo 3.1 and driven through the scheduler. Quiet on silence and on clean traffic, fires on a violation. The first run found the unvalidated rule could never fire; see the rule file's header |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
+| Port checks: `subpoena-traceql`, `subpoena-conform` (`make conform`), the witness file format and reader (`witness.ReadLog`) | Runs, in `make test`: the Go evaluator, through the same protocol a port uses, agrees on all 118 cases (12 queries over 8 fixtures, 22 rejected queries) |
 | Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses |
 
 Other things to know:
@@ -87,6 +90,7 @@ Other things to know:
 - `docs/decisions.md` — positioning and the resolved open questions, with amendments.
 - `docs/architecture.md` — what was actually built, in text.
 - `docs/traceql-subset.md`, `docs/migrating-an-existing-service.md` — the subset grammar and the migration playbook.
+- `docs/ports.md` — the contract for a Python or TypeScript harness, and how each part is checked.
 - `docs/background/tdd-vs-telemetry.md` — the analysis that started the project: whether OTel assertions can replace test suites (they can't; this is what they can do).
 
 ## Layout
@@ -107,6 +111,8 @@ cmd/subpoena-lint/    static checks (see lint/README.md)
 cmd/subpoena-gate/    fault gate
 cmd/subpoena-witness/ runs the kernel-side witness, JSON lines out
 cmd/subpoena-invgen/  writes invariants/names.go (also for other modules)
+cmd/subpoena-traceql/ the Go evaluator as a command (the port protocol)
+cmd/subpoena-conform/ checks any language's evaluator against the corpus
 examples/gateway/     toy agent gateway, tests, OATS stack, alert rule
 examples/adopter/     separate module adopting Subpoena from outside (CI keeps it working)
 conformance/          fixtures + expected results, subset-vs-Tempo conformance test

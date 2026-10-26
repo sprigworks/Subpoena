@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift gate test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift gate conform test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -48,6 +48,13 @@ lint-drift:
 # Fault gate: remove each enforcement statement; the suite must go red.
 gate:
 	go run ./cmd/subpoena-gate ./examples/gateway
+
+# Check a TraceQL evaluator in any language against the conformance corpus
+# (docs/ports.md): make conform EVAL="python -m subpoena.traceql". Without
+# EVAL it checks the Go reference, subpoena-traceql.
+conform:
+	@bin=$$(mktemp -d)/subpoena-traceql && go build -o $$bin ./cmd/subpoena-traceql && \
+	go run ./cmd/subpoena-conform -- $${EVAL:-$$bin}
 
 # The real-cgroup tests (pkg/cgroup, examples/gateway) without root: run them in
 # a systemd user scope with cgroup delegation, rooted inside that scope. They

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sprigworks/subpoena/docs/witness-event.schema.json",
+  "title": "subpoena-witness event",
+  "description": "One line of subpoena-witness output: one exec, as the kernel saw it. See docs/ports.md (W). Readers ignore fields they do not know; existing fields keep their name and meaning.",
+  "type": "object",
+  "required": ["time", "pid", "ppid", "host_pid", "comm", "exe", "command", "args", "cgroup_id", "cgroup"],
+  "additionalProperties": true,
+  "properties": {
+    "time": { "type": "string", "format": "date-time", "description": "When the exec was seen (RFC 3339, UTC)." },
+    "pid": { "type": "integer", "description": "PID in the process's own PID namespace." },
+    "ppid": { "type": "integer", "description": "Parent PID in the process's own PID namespace." },
+    "host_pid": { "type": "integer", "description": "PID in the initial PID namespace." },
+    "comm": { "type": "string", "description": "Kernel task name, at most 15 bytes." },
+    "exe": { "type": "string", "description": "The path passed to execve; may be relative." },
+    "command": { "type": "string", "description": "args joined with single spaces." },
+    "args": { "type": "array", "items": { "type": "string" }, "description": "argv." },
+    "cgroup_id": { "type": "integer", "minimum": 0, "description": "Kernel cgroup ID." },
+    "cgroup": { "type": "string", "description": "cgroup path without the hierarchy root, root-most first, at most 8 elements, such as subpoena/<trace id>." },
+    "trace_id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "The session's trace ID, read from its cgroup name. Present only for execs inside a session cgroup." },
+    "attribution": { "type": "string", "enum": ["cgroup"], "description": "How the exec was tied to trace_id. Present exactly when trace_id is." }
+  }
+}
