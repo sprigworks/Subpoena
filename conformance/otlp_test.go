@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/sprigworks/subpoena/pkg/traceql"
 )
 
 func decode(t *testing.T, s string) *Fixture {
@@ -45,15 +47,25 @@ func TestAttributeKinds(t *testing.T) {
 	}
 }
 
-func TestUnsupportedAttributeValuesFailLoudly(t *testing.T) {
-	for name, kv := range map[string]string{
-		"array":  `{"key":"a","value":{"arrayValue":{"values":[]}}}`,
-		"empty":  `{"key":"a","value":{}}`,
+// Arrays and maps are kept as traceql.Unsupported, so only a query that reads
+// them is refused (docs/traceql-subset.md). A value with no type at all is
+// malformed, and fails the conversion.
+func TestArrayAndMapValuesConvertToUnsupported(t *testing.T) {
+	for kind, kv := range map[string]string{
+		"array":  `{"key":"a","value":{"arrayValue":{"values":[{"stringValue":"x"}]}}}`,
 		"kvlist": `{"key":"a","value":{"kvlistValue":{"values":[]}}}`,
 	} {
-		if _, err := decode(t, export(span("ab", "01", "", kv))).Traces(); err == nil {
-			t.Errorf("%s: want an error", name)
+		trs, err := decode(t, export(span("ab", "01", "", kv))).Traces()
+		if err != nil {
+			t.Errorf("%s: %v", kind, err)
+			continue
 		}
+		if got := trs[0].Spans[0].Attrs["a"]; got != (traceql.Unsupported{Kind: kind}) {
+			t.Errorf("%s: converted to %#v", kind, got)
+		}
+	}
+	if _, err := decode(t, export(span("ab", "01", "", `{"key":"a","value":{}}`))).Traces(); err == nil {
+		t.Error("a value with no type: want an error")
 	}
 }
 

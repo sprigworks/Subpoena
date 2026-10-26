@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -256,9 +257,21 @@ func Run(ctx context.Context, c *Client, fixtures []*Fixture, queries []Query, n
 			out = append(out, Divergence{Query: q, Err: "pkg/traceql cannot parse it: " + perr.Error()})
 			continue
 		}
-		sub := map[string]bool{}
-		for _, m := range p.Eval(all) {
-			sub[m.TraceID] = true
+		// Traces the subset refuses for this query (it reads an array or map
+		// value in them) have no subset answer to compare; Tempo's answers on
+		// those are recorded in docs/traceql-subset.md instead.
+		sub, refused := map[string]bool{}, map[string]bool{}
+		for _, t := range all {
+			ok, err := p.MatchesTrace(t)
+			var ue *traceql.UnsupportedValueError
+			switch {
+			case errors.As(err, &ue):
+				refused[t.ID] = true
+			case err != nil:
+				return nil, err
+			case ok:
+				sub[t.ID] = true
+			}
 		}
 		got, serr := c.Search(ctx, q.Text, from, to)
 		if serr != nil {
@@ -267,7 +280,7 @@ func Run(ctx context.Context, c *Client, fixtures []*Fixture, queries []Query, n
 		}
 		tempo := map[string]bool{}
 		for _, id := range got {
-			if _, ours := owner[id]; ours {
+			if _, ours := owner[id]; ours && !refused[id] {
 				tempo[id] = true
 			}
 		}

@@ -21,8 +21,7 @@ import (
 type Corpus struct {
 	Queries  []Query
 	Fixtures []*Fixture
-	// Expected maps query name -> fixture name -> matching trace IDs.
-	Expected map[string]map[string][]string
+	Expected Expected
 	Rejected []string
 
 	fixturePaths map[string]string
@@ -52,19 +51,36 @@ func LoadCorpus(root string) (*Corpus, error) {
 	return c, nil
 }
 
+// Expected is expected.yaml.
+type Expected struct {
+	// Queries maps query name -> fixture name -> matching trace IDs.
+	Queries map[string]map[string][]string `yaml:"queries"`
+	// Unsupported maps query name -> the fixtures it must be refused over,
+	// because it reads an array or map value in them.
+	Unsupported map[string][]string `yaml:"unsupported"`
+}
+
+// Refused reports whether query must be refused over fixture.
+func (e Expected) Refused(query, fixture string) bool {
+	for _, f := range e.Unsupported[query] {
+		if f == fixture {
+			return true
+		}
+	}
+	return false
+}
+
 // LoadExpected reads expected.yaml.
-func LoadExpected(path string) (map[string]map[string][]string, error) {
+func LoadExpected(path string) (Expected, error) {
+	var e Expected
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
-	}
-	var e struct {
-		Queries map[string]map[string][]string `yaml:"queries"`
+		return e, err
 	}
 	if err := yaml.Unmarshal(b, &e); err != nil {
-		return nil, fmt.Errorf("conformance: %s: %w", path, err)
+		return e, fmt.Errorf("conformance: %s: %w", path, err)
 	}
-	return e.Queries, nil
+	return e, nil
 }
 
 // LoadRejected reads rejected.traceql: one query per line, # comments.
@@ -131,13 +147,18 @@ func RunEvaluator(ctx context.Context, c *Corpus, argv []string) (*Report, error
 		}
 		for _, f := range c.Fixtures {
 			r.Runs++
-			want := append([]string{}, c.Expected[q.Name][f.Name]...)
+			want := append([]string{}, c.Expected.Queries[q.Name][f.Name]...)
 			sort.Strings(want)
 			m := Mismatch{Query: q.Name, Text: q.Text, Fixture: f.Name, Want: want}
 			out, code, stderr, err := evaluate(ctx, argv, qf, c.fixturePaths[f.Name])
+			refuse := c.Expected.Refused(q.Name, f.Name)
 			switch {
 			case err != nil:
 				return nil, err
+			case refuse && code == 3:
+				continue
+			case refuse:
+				m.Problem = fmt.Sprintf("reads an array value here, must exit 3; exit %d: %s", code, stderr)
 			case code != 0:
 				m.Problem = fmt.Sprintf("exit %d: %s", code, stderr)
 			default:

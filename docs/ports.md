@@ -45,8 +45,9 @@ progress, and it says so.
 - **H6. The snapshot's model is the evaluator's.** Spans convert to `{trace
   id, span id, parent span id, name, attributes}`. IDs are lower-case hex
   (32 and 16 digits). Attribute values are string, bool, int64 or float64.
-  Array and map values are outside the subset (the corpus has none); do not
-  put an invariant on one.
+  Array and map values are kept as "unsupported", and a query that reads an
+  attribute holding one is an error, never a verdict
+  ([traceql-subset.md](traceql-subset.md#why-arrays-are-refused)).
 
 Check: `conformance/harness.yaml` holds these rules as cases: spans to
 create (start order, parents, which never end, recorder capacity), what
@@ -63,7 +64,8 @@ is `conformance/harness_test.go`.
   every fixture, the port returns exactly the trace IDs in
   `conformance/expected.yaml`.
 - **Q3. Same rejections.** Every query in `conformance/rejected.traceql`
-  fails to parse.
+  fails to parse, and every (query, fixture) pair under `unsupported:` in
+  `expected.yaml` is refused for reading an array or map value.
 
 A port does not need its own evaluator to start. `subpoena-traceql` is the Go
 evaluator as a command, and a harness can shell out to it:
@@ -74,8 +76,9 @@ subpoena-traceql QUERY_FILE TRACES_FILE
 
 `TRACES_FILE` is OTLP/JSON (an `ExportTraceServiceRequest`, the format of
 `conformance/fixtures/`). The command prints the matching trace IDs, one per
-line, sorted, and exits 0. It exits 2 if the query does not parse (the reason
-goes to stderr), and 1 on any other error.
+line, sorted, and exits 0. It exits 2 if the query does not parse, 3 if it
+reads an attribute that holds an array or map in the traces (the reason goes
+to stderr in both cases), and 1 on any other error.
 
 Check: `subpoena-conform` runs any command that speaks that protocol over the
 whole corpus, and compares its output with `expected.yaml` and

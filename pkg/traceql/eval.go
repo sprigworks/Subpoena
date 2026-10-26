@@ -1,8 +1,28 @@
 package traceql
 
+import "fmt"
+
+// UnsupportedValueError reports that a query reads an attribute that holds an
+// Unsupported value in the input: the first such span, in input order.
+type UnsupportedValueError struct {
+	TraceID, SpanID, Attr, Kind string
+}
+
+func (e *UnsupportedValueError) Error() string {
+	return fmt.Sprintf("traceql: span.%s holds a %s value (trace %s, span %s); array and map values are outside the subset", e.Attr, e.Kind, e.TraceID, e.SpanID)
+}
+
 // Eval evaluates the query against each trace and returns the traces that
-// produced a non-empty result. Order follows the input order.
-func (q *Query) Eval(traces []Trace) []Match {
+// produced a non-empty result. Order follows the input order. If any span in
+// the input holds an Unsupported value under an attribute the query reads, it
+// returns an *UnsupportedValueError and no matches, whether or not evaluation
+// would have reached that span.
+func (q *Query) Eval(traces []Trace) ([]Match, error) {
+	for _, tr := range traces {
+		if err := q.refuse(tr); err != nil {
+			return nil, err
+		}
+	}
 	var out []Match
 	for _, tr := range traces {
 		if sel := q.evalTrace(tr); len(sel) > 0 {
@@ -13,11 +33,29 @@ func (q *Query) Eval(traces []Trace) []Match {
 			out = append(out, m)
 		}
 	}
-	return out
+	return out, nil
 }
 
-// MatchesTrace reports whether the query selects at least one span in tr.
-func (q *Query) MatchesTrace(tr Trace) bool { return len(q.evalTrace(tr)) > 0 }
+// MatchesTrace reports whether the query selects at least one span in tr. The
+// error is as for Eval.
+func (q *Query) MatchesTrace(tr Trace) (bool, error) {
+	if err := q.refuse(tr); err != nil {
+		return false, err
+	}
+	return len(q.evalTrace(tr)) > 0, nil
+}
+
+func (q *Query) refuse(tr Trace) error {
+	attrs := q.Attributes()
+	for _, s := range tr.Spans {
+		for _, a := range attrs {
+			if u, ok := s.Attrs[a].(Unsupported); ok {
+				return &UnsupportedValueError{TraceID: tr.ID, SpanID: s.ID, Attr: a, Kind: u.Kind}
+			}
+		}
+	}
+	return nil
+}
 
 // evalTrace returns the indexes of spans selected by the final spanset.
 //

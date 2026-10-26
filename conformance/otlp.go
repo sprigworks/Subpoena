@@ -68,7 +68,7 @@ type AnyValue struct {
 	IntValue    *Int64   `json:"intValue,omitempty"`
 	DoubleValue *float64 `json:"doubleValue,omitempty"`
 
-	// Unsupported catches arrayValue and kvlistValue so conversion can fail loudly.
+	// arrayValue and kvlistValue convert to traceql.Unsupported.
 	ArrayValue  json.RawMessage `json:"arrayValue,omitempty"`
 	KvlistValue json.RawMessage `json:"kvlistValue,omitempty"`
 }
@@ -188,8 +188,12 @@ func (v AnyValue) scalar() (any, error) {
 	if v.DoubleValue != nil {
 		n, out = n+1, *v.DoubleValue
 	}
-	if len(v.ArrayValue) > 0 || len(v.KvlistValue) > 0 {
-		return nil, fmt.Errorf("array and kvlist values are outside the TraceQL subset")
+	// Outside the subset: kept, so that only queries reading them are refused.
+	if len(v.ArrayValue) > 0 {
+		n, out = n+1, traceql.Unsupported{Kind: "array"}
+	}
+	if len(v.KvlistValue) > 0 {
+		n, out = n+1, traceql.Unsupported{Kind: "kvlist"}
 	}
 	if n != 1 {
 		return nil, fmt.Errorf("expected exactly one scalar value, found %d", n)

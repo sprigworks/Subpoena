@@ -2,8 +2,9 @@
 //subpoena:pure_logic
 
 // The evaluator protocol from docs/ports.md (Q): QUERY_FILE TRACES_FILE in,
-// sorted matching trace IDs out; exit 2 for a query outside the subset, 1 for
-// anything else. Plain files in and text out; no telemetry.
+// sorted matching trace IDs out; exit 2 for a query outside the subset, 3 for
+// a query reading an array or map value, 1 for anything else. Plain files in
+// and text out; no telemetry.
 package main
 
 import (
@@ -53,6 +54,24 @@ func TestQueryOutsideTheSubsetExits2(t *testing.T) {
 	}
 	if out.Len() != 0 || errOut.Len() == 0 {
 		t.Fatalf("want the reason on stderr only: out %q err %q", out.String(), errOut.String())
+	}
+}
+
+func TestQueryReadingAnArrayExits3(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{query(t, `{ span.process.command_args = "sleep" }`), fixtures + "array_attributes.json"}, &out, &errOut); code != 3 {
+		t.Fatalf("exit %d, want 3: %s", code, errOut.String())
+	}
+	if out.Len() != 0 || !bytes.Contains(errOut.Bytes(), []byte("process.command_args")) {
+		t.Fatalf("want the attribute named on stderr only: out %q err %q", out.String(), errOut.String())
+	}
+	// The same fixture, a query that does not read the array: evaluated.
+	out.Reset()
+	if code := run([]string{query(t, `{ name = "agent.session.exec" }`), fixtures + "array_attributes.json"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if out.String() != "c0de0000000000000000000900000001\n" {
+		t.Fatalf("got %q", out.String())
 	}
 }
 

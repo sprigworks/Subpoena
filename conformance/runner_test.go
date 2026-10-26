@@ -119,7 +119,11 @@ func TestOutputIsComparedAsASet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Mismatches) < len(c.Queries)*len(c.Fixtures) {
-		t.Fatalf("an extra ID in every answer should fail every pair, got %d mismatches", len(r.Mismatches))
+	refused := 0
+	for _, fs := range c.Expected.Unsupported {
+		refused += len(fs)
+	}
+	if want := len(c.Queries)*len(c.Fixtures) - refused; len(r.Mismatches) != want {
+		t.Fatalf("an extra ID in every answer should fail every evaluated pair (%d), got %d mismatches", want, len(r.Mismatches))
 	}
 }
