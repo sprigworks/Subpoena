@@ -70,6 +70,16 @@ func kv(k string, v any) (attribute.KeyValue, error) {
 		return attribute.Bool(k, v), nil
 	case int:
 		return attribute.Int(k, v), nil
+	case []any:
+		ss := make([]string, len(v))
+		for i, e := range v {
+			s, ok := e.(string)
+			if !ok {
+				return attribute.KeyValue{}, fmt.Errorf("attribute %s: only string lists are supported, got %v", k, v)
+			}
+			ss[i] = s
+		}
+		return attribute.StringSlice(k, ss), nil
 	}
 	return attribute.KeyValue{}, fmt.Errorf("attribute %s: unsupported value %v (%T)", k, v, v)
 }

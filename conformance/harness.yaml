@@ -9,7 +9,8 @@
 #     with `ended: false`, which never end;
 #   - `capacity` (default: the harness default) is how many finished spans the
 #     recorder keeps; further spans count as dropped.
-# Attribute values are YAML scalars: string, bool, integer.
+# Attribute values are YAML scalars (string, bool, integer) or a list of
+# strings (a string-array attribute).
 #
 # Then it collects once and checks:
 #   collect: complete, dropped (count), unfinished (span names, sorted), traces
@@ -85,3 +86,14 @@ cases:
     collect: { complete: true, dropped: 0, unfinished: [], traces: 1 }
     assertions:
       - { exists: '{ span.service.name != "" }', verdict: Fail, require: fails }
+
+  # H6: an array value is refused, not stringified or guessed at.
+  - name: array_attribute
+    spans:
+      - { id: a, name: exec, attrs: { args: [rm, -rf], n: 3 } }
+    collect: { complete: true, dropped: 0, unfinished: [], traces: 1 }
+    assertions:
+      - { exists: '{ span.args = "rm" }', error: true }
+      - { absent: '{ span.args = "[rm -rf]" }', error: true }
+      - { absent: '{ span.args != "x" }', error: true }
+      - { exists: '{ span.n = 3 }', verdict: Pass, require: passes }

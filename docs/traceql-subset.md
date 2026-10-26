@@ -56,6 +56,11 @@ Integers are base-10 and may be negative.
   (`span.x != "a"` does not match a span without `x`).
 - A type mismatch (for example `span.n = "2"` when `n` is an integer) is false
   for `=` and `!=` alike.
+- Array and map attribute values are outside the subset, and are refused, not
+  guessed at: if any span in the input holds an array or map under an
+  attribute the query reads, evaluation is an error, never a match or a
+  non-match. Attributes the query does not read may hold anything. See "Why
+  arrays are refused" below.
 - `A >> B` selects spans matching `B` that have an ancestor matching `A`.
   `A > B` selects spans matching `B` whose direct parent matches `A`. A span
   is never its own descendant. Relations never cross traces. Orphans (parent
@@ -64,6 +69,29 @@ Integers are base-10 and may be negative.
   spans selected by `(A >> B)` act as the left side of `> C`.
 - A trace matches when the final spanset is non-empty. Eval returns the
   matching traces with the selected spans.
+
+## Why arrays are refused
+
+Measured against Tempo 2.8.2 on 2026-10-26 (one span per trace; `arr` an
+array of strings unless noted):
+
+| Query | `["x","y"]` | `["x"]` | `[]` | `"x"` (scalar) | `["y","z"]` |
+| --- | --- | --- | --- | --- | --- |
+| `{ span.arr = "x" }` | match | match | – | match | – |
+| `{ span.arr != "x" }` | match | – | – | – | match |
+| `{ span.arr = "[x]" }` | – | – | – | – | – |
+| `{ span.arr = "x" && span.arr = "y" }` | **–** | – | – | – | – |
+| `{ span.arr = "x" && span.arr != "y" }` | match | match | – | match | – |
+| `{ span.arr != "x" && span.arr != "y" }` | match | – | – | – | match |
+
+One condition on its own means "some element matches" (so `!=` means "some
+element differs"). Combinations do not follow from that: `arr = "x" && arr =
+"y"` does not match `["x","y"]` although each half does, while `arr != "x" &&
+arr != "y"` does. No simple rule reproduces both, and an evaluator that
+guessed would disagree with Tempo on some queries. For an absence invariant,
+disagreeing means a test can pass while production alerts. So the subset
+refuses. Integer and boolean arrays behaved the same way
+(`{ span.ints != 1 }` matches `[1,2]`).
 
 ## Not supported (rejected at parse time)
 

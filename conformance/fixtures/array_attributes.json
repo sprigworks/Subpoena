@@ -1,0 +1,18 @@
+{
+  "_comment": "A denied authorize with an exec below it, where two spans also carry array attributes (session.tags, process.command_args). Queries that do not read those attributes evaluate as usual; a query that reads one is refused (docs/traceql-subset.md, Why arrays are refused).",
+  "resourceSpans": [
+    {
+      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "conformance-fixture-array_attributes"}}]},
+      "scopeSpans": [
+        {
+          "scope": {"name": "subpoena.conformance"},
+          "spans": [
+          {"traceId":"c0de0000000000000000000900000001","spanId":"0901000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000009001000000","endTimeUnixNano":"1700000009001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-a1"}},{"key":"session.tags","value":{"arrayValue":{"values":[{"stringValue":"ci"},{"stringValue":"nightly"}]}}}]},
+          {"traceId":"c0de0000000000000000000900000001","spanId":"0901000000000002","parentSpanId":"0901000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000009002000000","endTimeUnixNano":"1700000009002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-a1"}},{"key":"authorization.allowed","value":{"boolValue":false}}]},
+          {"traceId":"c0de0000000000000000000900000001","spanId":"0901000000000003","parentSpanId":"0901000000000002","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000009003000000","endTimeUnixNano":"1700000009003500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-a1"}},{"key":"process.command_line","value":{"stringValue":"sleep 0.19"}},{"key":"process.command_args","value":{"arrayValue":{"values":[{"stringValue":"sleep"},{"stringValue":"0.19"}]}}}]}
+          ]
+        }
+      ]
+    }
+  ]
+}

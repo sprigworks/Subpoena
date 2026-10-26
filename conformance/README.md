@@ -69,9 +69,9 @@ disagreement are themselves tested against an in-process fake Tempo
 ## Layout
 
 ```
-fixtures/*.json       OTLP/JSON export requests (8), one scenario each
+fixtures/*.json       OTLP/JSON export requests (9), one scenario each
 queries/*.traceql     construct queries; the invariants/*.traceql files are queried too
-expected.yaml         expected matches per (query, fixture)
+expected.yaml         expected matches per (query, fixture), and the pairs to refuse
 rejected.traceql      queries outside the subset; every evaluator must reject them
 docker-compose.yml    Tempo only
 tempo.yaml            minimal Tempo config (OTLP/HTTP in, fast search availability)
@@ -97,7 +97,8 @@ and `go test ./conformance` does the same, so the protocol stays honest.
 Fixtures: `deny_then_exec_violation`, `deny_without_exec`, `allow_then_exec`,
 `nested_descendant_vs_direct_child`, `attribute_type_mismatch`,
 `multiple_traces_one_push` (three traces, interleaved spans),
-`missing_attribute_and_orphan`, `repeated_names_deep_chain`.
+`missing_attribute_and_orphan`, `repeated_names_deep_chain`,
+`array_attributes` (array values on two spans).
 
 ## Adding to the corpus
 
@@ -109,8 +110,15 @@ extend the rows that should match. The tests fail until the table is complete.
 ## Status
 
 Both halves run. `make conformance` against the pinned `grafana/tempo:2.8.2`
-reports 12 queries over 8 fixtures, 0 divergences (first run 2026-10-25, on a
-real machine with Docker).
+reports 13 queries over 9 fixtures, 0 divergences (first run 2026-10-25, on a
+real machine with Docker; the array fixture and query were added 2026-10-26).
+
+Array and map attribute values are refused, not compared: a query that reads
+one is an error in the subset, and the Tempo test leaves those traces out of
+the comparison. Tempo's answers on arrays were measured instead and are in
+[traceql-subset.md](../docs/traceql-subset.md#why-arrays-are-refused); they
+do not follow a rule the subset could copy. `array_attributes` keeps the rest
+honest: every query that does not read its arrays agrees with Tempo on it.
 
 That first run found one divergence, and the evaluator changed, not the
 table: Tempo gives `&&` and `||` equal precedence and groups them left to

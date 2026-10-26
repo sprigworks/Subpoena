@@ -6,11 +6,13 @@
 //	subpoena-traceql QUERY_FILE TRACES_FILE
 //
 // It prints the matching trace IDs, one per line, sorted, and exits 0. It exits
-// 2 if the query is outside the subset (the reason on stderr), and 1 on any
-// other error.
+// 2 if the query is outside the subset, 3 if it reads an attribute holding an
+// array or map value (the reason on stderr in both cases), and 1 on any other
+// error.
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -48,8 +50,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "subpoena-traceql:", err)
 		return 2
 	}
+	ms, err := q.Eval(traces)
+	var unsupported *traceql.UnsupportedValueError
+	if errors.As(err, &unsupported) {
+		fmt.Fprintln(stderr, "subpoena-traceql:", err)
+		return 3
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "subpoena-traceql:", err)
+		return 1
+	}
 	var ids []string
-	for _, m := range q.Eval(traces) {
+	for _, m := range ms {
 		ids = append(ids, m.TraceID)
 	}
 	sort.Strings(ids)

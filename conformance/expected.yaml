@@ -15,12 +15,14 @@ queries:
     nested_descendant_vs_direct_child: ["c0de0000000000000000000400000001"]
     multiple_traces_one_push: ["c0de0000000000000000000600000001"]
     repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+    array_attributes: ["c0de0000000000000000000900000001"]
 
   queries/direct_child_after_deny:
     # deny > exec. 04: an intermediate span separates them. 08: the violating
     # exec hangs off an open span, not directly off the denied authorize.
     deny_then_exec_violation: ["c0de0000000000000000000100000001"]
     multiple_traces_one_push: ["c0de0000000000000000000600000001"]
+    array_attributes: ["c0de0000000000000000000900000001"]
 
   queries/any_exec:
     deny_then_exec_violation: ["c0de0000000000000000000100000001"]
@@ -30,6 +32,7 @@ queries:
     multiple_traces_one_push: ["c0de0000000000000000000600000001", "c0de0000000000000000000600000002"]
     missing_attribute_and_orphan: ["c0de0000000000000000000700000001", "c0de0000000000000000000700000002"]
     repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+    array_attributes: ["c0de0000000000000000000900000001"]
 
   queries/denied_authorize:
     # allowed = false, boolean only. Not 03 and 06/2 (true), 05 (string), 07/1 (missing).
@@ -39,6 +42,7 @@ queries:
     multiple_traces_one_push: ["c0de0000000000000000000600000001", "c0de0000000000000000000600000003"]
     missing_attribute_and_orphan: ["c0de0000000000000000000700000002"]
     repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+    array_attributes: ["c0de0000000000000000000900000001"]
 
   queries/authorize_not_denied:
     # allowed != false matches only a boolean true: a missing attribute (07/1)
@@ -57,6 +61,7 @@ queries:
     multiple_traces_one_push: ["c0de0000000000000000000600000001", "c0de0000000000000000000600000002"]
     missing_attribute_and_orphan: ["c0de0000000000000000000700000001", "c0de0000000000000000000700000002"]
     repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+    array_attributes: ["c0de0000000000000000000900000001"]
 
   queries/int_attr_int_literal:
     attribute_type_mismatch: ["c0de0000000000000000000500000001"]
@@ -82,6 +87,7 @@ queries:
     multiple_traces_one_push: ["c0de0000000000000000000600000001", "c0de0000000000000000000600000002"]
     missing_attribute_and_orphan: ["c0de0000000000000000000700000001"]
     repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+    array_attributes: ["c0de0000000000000000000900000001"]
 
   queries/exec_command_line:
     # 03 runs echo, 06/2 runs true, 07/2 has no command line.
@@ -91,3 +97,13 @@ queries:
     multiple_traces_one_push: ["c0de0000000000000000000600000001"]
     missing_attribute_and_orphan: ["c0de0000000000000000000700000001"]
     repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+
+  queries/array_attribute:
+    # process.command_args is missing everywhere but 09, so no match. Over 09
+    # it holds an array: refused, see unsupported below.
+
+# (query, fixture) pairs the evaluator must refuse: the query reads an
+# attribute that holds an array or map in that fixture. Not compared with
+# Tempo, whose answers are recorded in docs/traceql-subset.md instead.
+unsupported:
+  queries/array_attribute: [array_attributes]

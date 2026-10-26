@@ -65,8 +65,8 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | `pkg/production`: test-tier attributes kept out of production | Runs, in `make test`; the generated Collector config was validated and run on otelcol-contrib 0.116.1 |
 | Tier 3: `examples/gateway/alerts` (`make alerts`) | Runs (needs Docker): provisioned into Grafana 13.2 with Tempo 3.1 and driven through the scheduler. Quiet on silence and on clean traffic, fires on a violation. The first run found the unvalidated rule could never fire; see the rule file's header |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
-| Port checks: `subpoena-traceql`, `subpoena-conform` (`make conform`), the witness file format and reader (`witness.ReadLog`) | Runs, in `make test`: the Go evaluator, through the same protocol a port uses, agrees on all 118 cases (12 queries over 8 fixtures, 22 rejected queries) |
-| Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses |
+| Port checks: `subpoena-traceql`, `subpoena-conform` (`make conform`), the witness file format and reader (`witness.ReadLog`) | Runs, in `make test`: the Go evaluator, through the same protocol a port uses, agrees on all 139 cases (13 queries over 9 fixtures, 22 rejected queries) |
+| Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses. Array values are refused: Tempo's answers on them follow no rule the subset could copy (measured; see `docs/traceql-subset.md`) |
 
 Other things to know:
 

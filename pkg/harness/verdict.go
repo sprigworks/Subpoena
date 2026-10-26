@@ -30,8 +30,8 @@ func (v Verdict) String() string {
 
 // Absent asserts that q matches no trace. A match is a definitive Fail even
 // from an incomplete capture; zero matches is Pass only if the capture is
-// complete, otherwise Inconclusive. The error is non-nil only if q does not
-// parse.
+// complete, otherwise Inconclusive. The error is non-nil only if q cannot be
+// evaluated (see Trace.Query).
 func (t *Trace) Absent(q string) (Verdict, error) {
 	r, err := t.Query(q)
 	if err != nil {
@@ -86,7 +86,7 @@ func RequireExists(tb testing.TB, t *Trace, q string, opts ...Options) {
 func report(tb testing.TB, kind, q string, v Verdict, err error, opts []Options) {
 	tb.Helper()
 	if err != nil {
-		tb.Fatalf("%s %s: invalid query: %v", kind, q, err)
+		tb.Fatalf("%s %s: cannot evaluate: %v", kind, q, err)
 	}
 	switch v {
 	case Pass:
