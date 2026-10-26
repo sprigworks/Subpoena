@@ -6,7 +6,7 @@ TraceQL string, runs in unit tests, in an integration environment and in
 production. The distinctive part: a system's spans are testimony, not proof.
 The code that enforces a policy is also the code that reports having enforced
 it, so enforcement is only proven by an independent witness, a process-exec
-observer the application does not control, and a fault gate checks that the
+observer the application does not control, and cross-examination checks that the
 suite can tell the difference.
 
 **Status: pre-alpha.** Go only so far. Python and TypeScript are next: the
@@ -40,8 +40,8 @@ Details in [docs/architecture.md](docs/architecture.md).
 ## Quickstart
 
 ```
-make test      # tier 1: harness, traceql, witness, lint, gate and gateway tests
-make check     # test + vet + subpoena-lint + subpoena-gate over examples/gateway
+make test      # tier 1: harness, traceql, witness, lint, cross-examination and gateway tests
+make check     # test + vet + subpoena-lint + subpoena-cross over examples/gateway
 make conformance  # subset vs a real Tempo in Docker (optional)
 make oats         # tier 2: OATS + the eBPF witness (rootful Docker, cgroup v2, BTF)
 make test-ebpf    # the eBPF witness against the real kernel, in a privileged container
@@ -58,7 +58,7 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | Registry (`registry/`), Weaver check and Go generation | Runs. Weaver 0.28 checked the registry and generated `generated/go/semconv` |
 | `pkg/harness`, `pkg/traceql`, `pkg/witness` (`ProcWitness`), `pkg/cgroup` | Runs, in `make test`. Cgroup tests use a real cgroup v2 when the machine allows it and skip that part otherwise |
 | `examples/gateway` tier-1 tests | Runs, in `make test` |
-| `subpoena-lint`, `subpoena-gate` | Runs; the gate kills the gateway mutant |
+| `subpoena-lint`, `subpoena-cross` | Runs; cross-examination kills the gateway mutant |
 | Tier 2: `examples/gateway/oats` (`make oats`) | Runs (needs rootful Docker, cgroup v2, BTF): both cases pass, cgroup-correlated and argument-correlated, and both fail against the enforcement mutant |
 | Kernel-side witness, `pkg/witness/execbpf`, `cmd/subpoena-witness` | Runs: unit tests in `make test`, kernel tests in `make test-ebpf` (privileged container); the tier-2 witness |
 | Tetragon policy, `witnesses/tetragon` | Loads on Tetragon v1.7.1; kept for enforcement, not used. Not the witness: outside Kubernetes its events lack the session cgroup |
@@ -108,7 +108,7 @@ pkg/production/       drop test-tier attributes in production (exporter, Collect
 witnesses/            witness design notes, Tetragon policy (enforcement)
 invariants/           *.traceql invariants (+ embedded loader)
 cmd/subpoena-lint/    static checks (see lint/README.md)
-cmd/subpoena-gate/    fault gate
+cmd/subpoena-cross/    cross-examination
 cmd/subpoena-witness/ runs the kernel-side witness, JSON lines out
 cmd/subpoena-invgen/  writes invariants/names.go (also for other modules)
 cmd/subpoena-traceql/ the Go evaluator as a command (the port protocol)

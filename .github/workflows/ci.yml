@@ -27,8 +27,8 @@ jobs:
         run: go test -race ./...
       - name: subpoena-lint over examples/gateway
         run: go run ./cmd/subpoena-lint -dead-telemetry ./examples/gateway
-      - name: fault gate over examples/gateway
-        run: go run ./cmd/subpoena-gate ./examples/gateway
+      - name: cross-examination over examples/gateway
+        run: go run ./cmd/subpoena-cross ./examples/gateway
 
   # examples/adopter is a separate module adopting Subpoena from outside, with
   # only its public packages and commands (as Go tools). It keeps that path
@@ -57,5 +57,5 @@ jobs:
         run: make check-generated
       - name: invariants/names.go is current
         run: go generate ./invariants && git diff --exit-code invariants/
-      - name: test, lint, gate
+      - name: test, lint, cross-examination
         run: make check

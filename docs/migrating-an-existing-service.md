@@ -21,7 +21,7 @@ the outside equivalent.
 ```
 go get github.com/sprigworks/subpoena
 go get -tool github.com/sprigworks/subpoena/cmd/subpoena-lint
-go get -tool github.com/sprigworks/subpoena/cmd/subpoena-gate
+go get -tool github.com/sprigworks/subpoena/cmd/subpoena-cross
 go get -tool github.com/sprigworks/subpoena/cmd/subpoena-invgen
 ```
 
@@ -195,7 +195,7 @@ func (g *Gateway) Authorize(ctx context.Context, s *Session, host string) (conte
 
 `//subpoena:enforcement_point` goes in the function's doc comment;
 `//subpoena:enforcement` goes on the first line of the one statement that does
-the enforcing. The gate (step 6) deletes that statement and requires the suite
+the enforcing. Cross-examination (step 6) deletes that statement and requires the suite
 to fail.
 
 Then ask who can observe the side effect without trusting your code. For the
@@ -253,11 +253,11 @@ done
 
 A file that begins with a `//go:build` line is fine: the marker may precede it.
 
-## 6. Run the lint and the gate
+## 6. Run the lint and cross-examination
 
 ```
 go tool subpoena-lint -dead-telemetry .     # dead-telemetry only when . is the whole service
-go tool subpoena-gate ./path/to/package     # the package(s) holding enforcement points
+go tool subpoena-cross ./path/to/package     # the package(s) holding enforcement points
 make lint-drift BASE=origin/main                 # registry-drift, for review
 ```
 
@@ -273,18 +273,18 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 | `dead-telemetry` | A registry entry nothing emits. Emit it, or remove it from the registry (reviewed). Pass `-dead-telemetry` only when the targets cover the whole service |
 | `registry-drift` | A registry change and a test that uses it are in one change set; a human confirms the test was not bent to fit |
 
-The gate is the check that matters most. It requires a green baseline, removes
+Cross-examination is the check that matters most. It requires a green baseline, removes
 each marked enforcement statement in a temporary copy, and runs the tests. A red
 suite is `enforcement-mutant-killed`. A green suite is
 `enforcement-mutant-survived`: your tests cannot tell enforced from unenforced.
 Strengthen them. Never remove the marker to make it pass.
 
-On a first run the gate will often report a survivor, because the legacy tests
+On a first run cross-examination will often report a survivor, because the legacy tests
 assert on return values and mocks. That is the finding, not a failure of the
 tool. The gateway's `TestDeniedSessionNeverExecs` kills the mutant because the
 witness sees a process that should not exist.
 
-CI runs gofmt, build, vet, `go test -race ./...`, the lint and the gate
+CI runs gofmt, build, vet, `go test -race ./...`, the lint and cross-examination
 (`.github/workflows/ci.yml`), and, on a runner with a real kernel and Docker,
 the real-cgroup tests, the eBPF witness, conformance and tier 2
 (`.github/workflows/kernel.yml`).
@@ -316,7 +316,7 @@ and the tooling traps found). Tier 3 has been run too (`make alerts`).
 
 ## What to delete
 
-Delete these only after the gate shows the replacement kills the same faults:
+Delete these only after cross-examination shows the replacement kills the same faults:
 
 - Mocks used only to assert "was called" (the witness answers that); keep mocks
   for slow or non-deterministic collaborators like clocks and third-party APIs.
@@ -337,5 +337,5 @@ marker cannot hide a telemetry test that forgot `Collect()`.
 
 Done means: registry generated, no telemetry literals, every telemetry test calls
 `Collect()` (pure-logic files marked), invariants loaded by name, every enforcement point marked,
-witnessed and killed by the gate, every test file marked, lint clean, invariants
+witnessed and killed by cross-examination, every test file marked, lint clean, invariants
 promoted with a drift test.

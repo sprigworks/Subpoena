@@ -51,7 +51,7 @@ The registry feeds both the code (typed constants) and the linter (what is allow
 
 **4. Independent witnesses.** Fixtures that observe effects without going through the application: a process-exec watcher (Tetragon or an `execve` hook in the test container), a DB trigger table, a socket proxy, a filesystem watcher. Each witness tags its observations with the active trace ID so they join the span tree. An assertion on a witness is the only thing that proves enforcement rather than a reported decision.
 
-**5. Lint and fault gate.** Static checks: every span name and attribute in the code and tests resolves to the registry; every test file has at least one trace assertion; every function tagged as an enforcement point has at least one witness assertion somewhere in the suite. Dynamic check: a CI job that patches each enforcement point to take the deny path in telemetry but allow the action, re-runs the suite, and requires red.
+**5. Lint and cross-examination.** Static checks: every span name and attribute in the code and tests resolves to the registry; every test file has at least one trace assertion; every function tagged as an enforcement point has at least one witness assertion somewhere in the suite. Dynamic check: a CI job that patches each enforcement point to take the deny path in telemetry but allow the action, re-runs the suite, and requires red.
 
 **Assertion promotion.** A test's TraceQL becomes an integration check in an OATS-style YAML case against a real collector and Tempo, and becomes a production alert rule with the same query. For example `{ name = "agent.session.authorize" && span.authorization.allowed = false } >> { name = "agent.session.exec" }` returning any trace is a CI failure at tiers 1 and 2 and a security incident at tier 3.
 
@@ -70,7 +70,7 @@ Three test types are retired, four are improved, and three are untouched. The ru
 | Contract tests between services | **Improved, partly** | Span-shape assertions pinned to stable registry entries act as a provider contract; consumer-driven contracts (Pact-style) still catch what the provider never emits |
 | Spec-derived unit tests on pure logic | **Untouched** | A span records a decision; it cannot say whether the decision was right. Unit tests derive expectations from the spec |
 | Property-based tests and fuzzing | **Untouched** | Input generation is outside the observation layer entirely |
-| Mutation testing | **Untouched, and now load-bearing** | The only measure of whether trace assertions and witnesses detect injected faults; the fault gate in Section 3 is a targeted mutation run |
+| Mutation testing | **Untouched, and now load-bearing** | The only measure of whether trace assertions and witnesses detect injected faults; cross-examination in Section 3 is a targeted mutation run |
 
 The net is fewer test files and more assertions per execution. For a service with the usual shape, expect the integration and E2E directories to shrink by roughly half, the unit directory to stay the same, and a new `invariants/` directory of TraceQL strings shared by CI and the alerting config.
 
@@ -91,7 +91,7 @@ trace-native/
   harness/                  # trace fixture, collect(), TraceQL-subset evaluator
   witnesses/                # process, filesystem, socket, db — each tags trace_id
   lint/                     # registry conformance, assertion presence, witness coverage
-  faultgate/                # patches enforcement points, re-runs suite, requires red
+  cross/                    # patches enforcement points, re-runs suite, requires red
   invariants/               # TraceQL strings; consumed by tests, OATS, and alert rules
 ```
 
@@ -115,7 +115,7 @@ trace-native/
 | Invariant string in a test not present in `invariants/` | `orphan-invariant` |
 | Registry change in the same PR as a test that depends on it | `registry-drift` |
 
-**What the fault gate does.** For each `@enforcement_point`, generate a mutant that keeps the span attributes identical and removes the enforcement (skips the early return, swallows the raise, comments out the kill). Run the suite against the mutant. Any mutant that survives is reported as `enforcement-mutant-survived` with the function name. This is mutation testing restricted to the one class of fault the whole design exists to catch.
+**What cross-examination does.** For each `@enforcement_point`, generate a mutant that keeps the span attributes identical and removes the enforcement (skips the early return, swallows the raise, comments out the kill). Run the suite against the mutant. Any mutant that survives is reported as `enforcement-mutant-survived` with the function name. This is mutation testing restricted to the one class of fault the whole design exists to catch.
 
 **Why this works on agents specifically.** Agents copy the nearest working example and satisfy the loudest check. The four examples in SKILL.md are the nearest example; the linter is the loudest check. The registry means an agent choosing a span name is doing lookup, not invention, which is the mode where current models are most reliable. The fresh-session rule addresses the [measured 14%→25% detection gap](https://arxiv.org/abs/2607.05139) between implementation-anchored and spec-derived tests.
 
@@ -156,7 +156,7 @@ def authorize(session, span):
     span.set(Attrs.AUTHORIZATION_ALLOWED, decision.allowed)
     span.set(Attrs.AUTHORIZATION_POLICY_ID, decision.policy_id)
     if not decision.allowed:
-        raise Denied(session)      # the enforcement; the fault gate will remove this line
+        raise Denied(session)      # the enforcement; cross-examination will remove this line
     return decision
 ```
 
@@ -206,7 +206,7 @@ The witness at this tier is a Tetragon `process_exec` stream exported to Loki, t
 
 The same string, now a pager. Tier 3 cannot evaluate the witness (there is no test container), so the production rule covers the self-report structure only. The production witness is the Tetragon policy itself, set to enforce: a `process_exec` from a session whose authorize span said `false` is killed at the kernel, and that event is its own alert.
 
-**Fault gate run.** The gate deletes `raise Denied(session)`, re-runs tier 1. The invariant query still returns `[]` (no exec span is emitted on this code path), the attribute check still passes, and `witness.process.spawned()` returns one entry. Red. If a team removes the witness line, the linter reports `unwitnessed-enforcement` before the gate ever runs.
+**Cross-examination run.** It deletes `raise Denied(session)`, re-runs tier 1. The invariant query still returns `[]` (no exec span is emitted on this code path), the attribute check still passes, and `witness.process.spawned()` returns one entry. Red. If a team removes the witness line, the linter reports `unwitnessed-enforcement` before cross-examination ever runs.
 
 ## Open questions and risks
 

@@ -175,7 +175,7 @@ outside Kubernetes, so off Kubernetes it is unproven as a backstop.
    backstop in the open core, decided in `docs/decisions.md` amendment 4, with
    Tetragon as the alternative where Kubernetes is in use. It is a test
    backstop, not an agent guardrail. In tests a backstop intervention counts
-   as a failure, and the fault gate runs with the backstop observing only.
+   as a failure, and cross-examination runs with the backstop observing only.
 
 ## Layout
 
