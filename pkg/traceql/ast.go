@@ -1,5 +1,7 @@
 package traceql
 
+import "sort"
+
 // Span is the evaluator's view of a span. It deliberately has no OpenTelemetry
 // dependency so the evaluator can be tested (and later conformance-tested) on
 // plain data.
@@ -33,6 +35,43 @@ type Query struct {
 
 // String returns the original query text.
 func (q *Query) String() string { return q.src }
+
+// Attributes returns the span attribute keys the query reads (without the
+// "span." scope), sorted and without duplicates. Used to check that an
+// invariant promoted to production reads only attributes production exports.
+func (q *Query) Attributes() []string {
+	seen := map[string]bool{}
+	var walk func(e expr)
+	walk = func(e expr) {
+		switch e := e.(type) {
+		case andExpr:
+			walk(e.l)
+			walk(e.r)
+		case orExpr:
+			walk(e.l)
+			walk(e.r)
+		case cmpExpr:
+			if !e.isName {
+				seen[e.attr] = true
+			}
+		}
+	}
+	sets := []*spanset{q.first}
+	for _, st := range q.rest {
+		sets = append(sets, st.rhs)
+	}
+	for _, ss := range sets {
+		if ss != nil && ss.expr != nil {
+			walk(ss.expr)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 type structOp int
 

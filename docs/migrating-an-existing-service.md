@@ -54,7 +54,12 @@ A span group names the span and refs its attributes (`registry/model/spans.yaml`
 
 Decide each attribute's `tier` now, while you are looking at them. `test`
 attributes are the high-cardinality or diagnostic ones (session IDs, command
-lines); `all` attributes are safe in production. Attributes defined upstream
+lines); `all` attributes are safe in production. In production, wrap the
+exporter with `production.Exporter(exp, semconv.AttributeTiers)` or put the
+Collector processor from `production.CollectorConfig` in front of the backend
+(the gateway's `cmd/gateway` and `examples/gateway/production` show both). An
+invariant you promote to an alert may read only `all` attributes;
+`invariants/` tests that. Attributes defined upstream
 (`process.command_line`) are referenced with `ref:`; the manifest depends on the
 OpenTelemetry semantic conventions for that.
 

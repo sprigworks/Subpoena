@@ -16,16 +16,25 @@ import (
 	"github.com/sprigworks/subpoena/examples/gateway"
 	"github.com/sprigworks/subpoena/examples/internal/otlpjson"
 	"github.com/sprigworks/subpoena/generated/go/semconv"
+	"github.com/sprigworks/subpoena/pkg/production"
 )
 
 func main() {
 	addr := env("GATEWAY_ADDR", ":8080")
 	endpoint := env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(
-		otlpjson.New(endpoint, env("OTEL_SERVICE_NAME", "gateway")),
-		sdktrace.WithBatchTimeout(500*time.Millisecond),
-	))
+	// SUBPOENA_EXPORT_TIER=production drops test-tier attributes (session.id
+	// and the like) before export, as a production deployment must; the
+	// default, test, keeps them for the tier-2 assertions that read them.
+	var exp sdktrace.SpanExporter = otlpjson.New(endpoint, env("OTEL_SERVICE_NAME", "gateway"))
+	switch tier := env("SUBPOENA_EXPORT_TIER", "test"); tier {
+	case "test":
+	case "production":
+		exp = production.Exporter(exp, semconv.AttributeTiers)
+	default:
+		log.Fatalf("SUBPOENA_EXPORT_TIER=%q: want test or production", tier)
+	}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(500*time.Millisecond)))
 	// Session cgroups are configured by SUBPOENA_CGROUP_ROOT (read by gateway.New).
 	// SUBPOENA_CORRELATION_FALLBACK says what exec spans record when no cgroup
 	// could be used: lineage (default) or argument.

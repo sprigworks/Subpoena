@@ -10,7 +10,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sprigworks/subpoena/generated/go/semconv"
 	"github.com/sprigworks/subpoena/internal/invgen"
+	"github.com/sprigworks/subpoena/pkg/production"
 	"github.com/sprigworks/subpoena/pkg/traceql"
 )
 
@@ -91,6 +93,34 @@ func TestPromotionIsCopyPaste(t *testing.T) {
 			}
 			if !strings.Contains(string(b), inv) {
 				t.Errorf("%s does not contain invariant %s verbatim:\n%s", path, name, inv)
+			}
+		}
+	}
+}
+
+// TestProductionInvariantsReadOnlyExportedAttributes: an invariant promoted to
+// a tier-3 alert rule runs on production telemetry, where test-tier
+// attributes are dropped (pkg/production). An invariant reading one would
+// never match there, and the alert would be silently dead.
+func TestProductionInvariantsReadOnlyExportedAttributes(t *testing.T) {
+	for name, paths := range promotions {
+		tier3 := false
+		for _, p := range paths {
+			tier3 = tier3 || strings.Contains(p, "/alerts/")
+		}
+		if !tier3 {
+			continue
+		}
+		q, err := traceql.Parse(MustLoad(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range q.Attributes() {
+			tier, ok := semconv.AttributeTiers[a]
+			if !ok {
+				t.Errorf("%s reads %s, which has no registry tier", name, a)
+			} else if string(tier) == production.TestTier {
+				t.Errorf("%s is a production alert but reads %s, a test-tier attribute production does not export", name, a)
 			}
 		}
 	}

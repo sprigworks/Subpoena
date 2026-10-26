@@ -60,6 +60,7 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | Tier 2: `examples/gateway/oats` (`make oats`) | Runs (needs rootful Docker, cgroup v2, BTF): both cases pass, cgroup-correlated and argument-correlated, and both fail against the enforcement mutant |
 | Kernel-side witness, `pkg/witness/execbpf`, `cmd/subpoena-witness` | Runs: unit tests in `make test`, kernel tests in `make test-ebpf` (privileged container); the tier-2 witness |
 | Tetragon policy, `witnesses/tetragon` | Loads on Tetragon v1.7.1; kept for enforcement, not used. Not the witness: outside Kubernetes its events lack the session cgroup |
+| `pkg/production`: test-tier attributes kept out of production | Runs, in `make test`; the generated Collector config was validated and run on otelcol-contrib 0.116.1 |
 | Tier 3: `examples/gateway/alerts` (`make alerts`) | Runs (needs Docker): provisioned into Grafana 13.2 with Tempo 3.1 and driven through the scheduler. Quiet on silence and on clean traffic, fires on a violation. The first run found the unvalidated rule could never fire; see the rule file's header |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
 | Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses |
@@ -99,6 +100,7 @@ pkg/traceql/          TraceQL subset evaluator
 pkg/witness/          Witness interface, ProcWitness
 pkg/witness/execbpf/  kernel-side witness (eBPF)
 pkg/cgroup/           one cgroup per session, named with the trace ID
+pkg/production/       drop test-tier attributes in production (exporter, Collector config)
 witnesses/            witness design notes, Tetragon policy (enforcement)
 invariants/           *.traceql invariants (+ embedded loader)
 cmd/subpoena-lint/    static checks (see lint/README.md)
