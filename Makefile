@@ -132,10 +132,13 @@ oats:
 # Everything that runs without Docker or eBPF.
 check: build vet test lint cross
 
-# Regenerate Go constants from the registry (intended path: Weaver).
+# Regenerate the constants from the registry with Weaver: Go, Python and
+# TypeScript (one module each, the same names).
 generate:
 	$(WEAVER) registry generate -r $(REGISTRY) --templates weaver-templates go generated/go/semconv
 	gofmt -w generated/go/semconv/semconv.go
+	$(WEAVER) registry generate -r $(REGISTRY) --templates weaver-templates python generated/python
+	$(WEAVER) registry generate -r $(REGISTRY) --templates weaver-templates ts generated/ts
 
 # Regenerate invariants/names.go from invariants/*.traceql.
 generate-invariants:
@@ -146,7 +149,7 @@ registry-check:
 
 # Fails if generated/ is stale relative to registry/.
 check-generated: generate
-	git diff --exit-code generated/
+	git add -N generated/ && git diff --exit-code generated/
 
 # -e: tolerate test-only dependencies of dependencies on unreachable vanity hosts.
 tidy:

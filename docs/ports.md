@@ -13,7 +13,7 @@ progress, and it says so.
 
 | Piece | Port writes its own | Reuses from this repo |
 | --- | --- | --- |
-| Generated names | Weaver templates for the language | `registry/`, Weaver |
+| Generated names | nothing: Python and TypeScript are generated | `registry/`, Weaver |
 | Tier-1 harness | yes (H1–H6) | — |
 | TraceQL evaluation | optional (Q1–Q3) | `subpoena-traceql`, until it has its own evaluator |
 | Witness | a reader for its tests (W1–W3) | `subpoena-witness`, `pkg/cgroup` conventions |
@@ -140,8 +140,17 @@ Neither is needed to start. Until a port has them, it says so.
 
 ## Generated names
 
-The registry generates one constants module per language. The Go templates
-are in `weaver-templates/registry/go/`. A port adds
-`weaver-templates/registry/<language>/` emitting span names, attribute keys and
-the per-attribute export tier (`test` or `all`; see `pkg/production`). CI
-checks generated code against the registry for every language it emits.
+The registry generates one constants module per language, with Weaver, from
+`weaver-templates/registry/<language>/`:
+
+| Language | File | Names |
+| --- | --- | --- |
+| Go | `generated/go/semconv/semconv.go` | `SpanAgentSessionExec`, `AttrSessionId`, `AttributeTiers` |
+| Python | `generated/python/semconv.py` | `SPAN_AGENT_SESSION_EXEC`, `ATTR_SESSION_ID`, `ATTRIBUTE_TIERS` |
+| TypeScript | `generated/ts/semconv.ts` | `SPAN_AGENT_SESSION_EXEC`, `ATTR_SESSION_ID`, `ATTRIBUTE_TIERS` |
+
+Each holds the span names, attribute keys, enum values and the per-attribute
+export tier (`test` or `all`; see `pkg/production`). A port's code and tests
+take every telemetry name from its module, never a string literal. CI
+regenerates all three, compiles the Python and TypeScript, and fails if any is
+stale; `pkg/production/languages_test.go` checks the three agree.
