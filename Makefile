@@ -34,9 +34,10 @@ fmt:
 test:
 	go test ./...
 
-# Lint the example gateway with subpoena-lint (must be clean).
+# Lint the example gateway with subpoena-lint (must be clean). The gateway is
+# the whole service the registry describes, so dead-telemetry applies.
 lint:
-	go run ./cmd/subpoena-lint ./examples/gateway
+	go run ./cmd/subpoena-lint -dead-telemetry ./examples/gateway
 
 # registry-drift: does a change set touch registry/ and a test that asserts on
 # the changed identifiers? Working tree vs HEAD by default; in CI or on a

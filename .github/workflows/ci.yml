@@ -26,6 +26,6 @@ jobs:
       - name: test
         run: go test -race ./...
       - name: subpoena-lint over examples/gateway
-        run: go run ./cmd/subpoena-lint ./examples/gateway
+        run: go run ./cmd/subpoena-lint -dead-telemetry ./examples/gateway
       - name: fault gate over examples/gateway
         run: go run ./cmd/subpoena-gate ./examples/gateway

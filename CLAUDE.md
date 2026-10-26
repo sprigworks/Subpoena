@@ -21,6 +21,10 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   file holding only pure-logic tests (no telemetry) is marked
   `//subpoena:pure_logic` above the package clause instead; never add the
   marker to a file that touches telemetry to quiet the lint.
+- Code under test gets its tracer from the harness. Never construct or install
+  another tracer provider outside a `main` package to make a test pass; a
+  genuine need is marked `//subpoena:own_provider <reason>` on the call, and
+  the reason must be true.
 - Absence assertions (`RequireAbsent`, `.Absent`) run only after `Collect()`.
   An `Inconclusive` verdict is a failure, not a pass. Do not set
   `AllowInconclusive` to get green.

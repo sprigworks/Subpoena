@@ -235,6 +235,7 @@ func TestPlacementFailureIsNotReportedAsCgroup(t *testing.T) {
 func TestNoopTracerAndDisabledCgroups(t *testing.T) {
 	// A tracer with no valid trace ID cannot name a cgroup; nothing is created.
 	root := standInRoot(t)
+	//subpoena:own_provider a noop tracer is the case under test (no trace ID); no span is asserted on
 	gw := gateway.New(noop.NewTracerProvider().Tracer("noop"), gateway.WithCgroups(&cgroup.Manager{Root: root}))
 	ctx, sess := gw.Open(context.Background(), gateway.User{Name: "alice"})
 	if _, err := gw.Run(ctx, sess, "dev-1", "true"); err != nil {

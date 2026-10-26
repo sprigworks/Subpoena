@@ -235,7 +235,7 @@ A file that begins with a `//go:build` line is fine: the marker may precede it.
 ## 6. Run the lint and the gate
 
 ```
-go run ./cmd/subpoena-lint .                     # make lint (the repo's target lints examples/gateway)
+go run ./cmd/subpoena-lint -dead-telemetry .     # make lint (the repo's target lints examples/gateway)
 go run ./cmd/subpoena-gate ./path/to/package     # make gate: the package(s) holding enforcement points
 make lint-drift BASE=origin/main                 # registry-drift, for review
 ```
@@ -248,6 +248,8 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 | `missing-provenance` | Add the marker (step 5) |
 | `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`) what happened |
 | `orphan-invariant` | Load the query by name, or add `invariants/<name>.traceql` and regenerate |
+| `provider-override` | Legacy tests often build their own `TracerProvider` with an in-memory exporter. Use the harness's tracer instead; mark a real need with `//subpoena:own_provider <reason>` |
+| `dead-telemetry` | A registry entry nothing emits. Emit it, or remove it from the registry (reviewed). Pass `-dead-telemetry` only when the targets cover the whole service |
 | `registry-drift` | A registry change and a test that uses it are in one change set; a human confirms the test was not bent to fit |
 
 The gate is the check that matters most. It requires a green baseline, removes

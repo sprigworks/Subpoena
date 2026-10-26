@@ -26,6 +26,8 @@ const (
 	RuleMissingProvenance      = "missing-provenance"
 	RuleOrphanInvariant        = "orphan-invariant"
 	RuleRegistryDrift          = "registry-drift"
+	RuleProviderOverride       = "provider-override"
+	RuleDeadTelemetry          = "dead-telemetry"
 )
 
 // Markers recognised in source comments.
@@ -35,6 +37,27 @@ const (
 
 // witnessMethods are the method names that count as "calling a Witness".
 var witnessMethods = map[string]bool{"Spawned": true}
+
+// harnessSuffix and witnessSuffix gate the name-matched rules: a Collect call
+// counts only in a file importing the harness, a Spawned call only in a file
+// importing the witness package (or one under it, such as execbpf). Matched by
+// suffix, so a service that vendored them under its own path is covered.
+const (
+	harnessSuffix = "/pkg/harness"
+	witnessSuffix = "/pkg/witness"
+)
+
+// importsSuffix reports whether f imports a path ending in suffix, or a
+// package below it.
+func importsSuffix(f *ast.File, suffix string) bool {
+	for _, imp := range f.Imports {
+		p := strings.Trim(imp.Path.Value, `"`)
+		if strings.HasSuffix(p, suffix) || strings.Contains(p, suffix+"/") {
+			return true
+		}
+	}
+	return false
+}
 
 // absenceCalls are the names of absence-assertion helpers.
 var absenceCalls = map[string]bool{"RequireAbsent": true, "Absent": true}
@@ -82,6 +105,8 @@ type Registry struct {
 	Values  map[string]bool   // string values: span names and attribute keys (not enum member values)
 	Names   map[string]bool   // Go identifiers: SpanAgentSessionOpen, AttrSessionId, ...
 	ByValue map[string]string // value -> Go identifier ("session.id" -> "AttrSessionId")
+	// Pos is where each identifier in ByValue is declared, for dead-telemetry.
+	Pos map[string]token.Position
 }
 
 // LoadRegistry reads the string constants of the generated semconv package in dir.
@@ -93,7 +118,7 @@ func LoadRegistry(dir string) (*Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lint: load registry %s: %w", dir, err)
 	}
-	r := &Registry{Values: map[string]bool{}, Names: map[string]bool{}, ByValue: map[string]string{}}
+	r := &Registry{Values: map[string]bool{}, Names: map[string]bool{}, ByValue: map[string]string{}, Pos: map[string]token.Position{}}
 	for _, pkg := range pkgs {
 		for _, f := range pkg.Files {
 			for _, d := range f.Decls {
@@ -116,6 +141,11 @@ func LoadRegistry(dir string) (*Registry, error) {
 							continue
 						}
 						r.Names[id.Name] = true
+						if vs.Type != nil {
+							// A typed constant (semconv.TierTest) is a value of some
+							// other type, never a span name or attribute key.
+							continue
+						}
 						if strings.HasPrefix(id.Name, enumValuePrefix) {
 							// An enum member's value ("cgroup") is not a span name or
 							// attribute key, so it must not make a literal acceptable.
@@ -123,6 +153,7 @@ func LoadRegistry(dir string) (*Registry, error) {
 						}
 						r.Values[val] = true
 						r.ByValue[val] = id.Name
+						r.Pos[id.Name] = fset.Position(id.Pos())
 					}
 				}
 			}
@@ -151,6 +182,9 @@ type Options struct {
 	// orphan-invariant. If empty it is found by walking up from each root; if
 	// none exists the invariant set is empty, so every TraceQL literal is an orphan.
 	InvariantsDir string
+	// DeadTelemetry enables dead-telemetry, which assumes the roots are the
+	// whole service: a registry entry no root emits is reported.
+	DeadTelemetry bool
 }
 
 // Run lints every .go file under each root and returns findings sorted by position.
@@ -159,11 +193,13 @@ func Run(roots []string, reg *Registry) ([]Finding, error) { return RunWith(root
 // RunWith is Run with explicit Options.
 func RunWith(roots []string, reg *Registry, opts Options) ([]Finding, error) {
 	var out []Finding
+	var trees []*tree
 	for _, root := range roots {
 		t, err := load(root)
 		if err != nil {
 			return nil, err
 		}
+		trees = append(trees, t)
 		out = append(out, checkUnknownTelemetry(t, reg)...)
 		out = append(out, checkNoTraceAssertion(t)...)
 		out = append(out, checkUnwitnessedEnforcement(t)...)
@@ -174,6 +210,10 @@ func RunWith(roots []string, reg *Registry, opts Options) ([]Finding, error) {
 			return nil, err
 		}
 		out = append(out, checkOrphanInvariant(t, invs)...)
+		out = append(out, checkProviderOverride(t)...)
+	}
+	if opts.DeadTelemetry {
+		out = append(out, checkDeadTelemetry(trees, reg)...)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i].Pos, out[j].Pos
@@ -304,7 +344,7 @@ func checkNoTraceAssertion(t *tree) []Finding {
 			}
 			continue
 		}
-		if !definesTests(f.ast) || callsMethod(f.ast, map[string]bool{"Collect": true}) {
+		if !definesTests(f.ast) || (importsSuffix(f.ast, harnessSuffix) && callsMethod(f.ast, map[string]bool{"Collect": true})) {
 			continue
 		}
 		out = append(out, t.finding(RuleNoTraceAssertion, f.ast.Package,
@@ -380,7 +420,7 @@ func callsMethod(n ast.Node, names map[string]bool) bool {
 func checkUnwitnessedEnforcement(t *tree) []Finding {
 	witnessed := false
 	for _, f := range t.files {
-		if f.isTest && callsMethod(f.ast, witnessMethods) {
+		if f.isTest && importsSuffix(f.ast, witnessSuffix) && callsMethod(f.ast, witnessMethods) {
 			witnessed = true
 			break
 		}
