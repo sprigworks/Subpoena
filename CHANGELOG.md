@@ -1,0 +1,68 @@
+# Changelog
+
+## v0.1.0-alpha.1 (unreleased)
+
+First alpha. Go only; APIs will change. Everything listed under "Verified" has
+run, on a real machine and in CI; anything else says what it is.
+
+### What you get
+
+- **Registry and generated names.** A Weaver registry is the telemetry
+  contract; `weaver registry generate` emits Go constants and a per-attribute
+  export tier (`test` or `all`). CI checks the registry, diffs it against main,
+  and fails if `generated/` is stale.
+- **Tier 1: `pkg/harness`.** An in-memory recorder, `Collect()` (force-flush,
+  fails on dropped or unfinished spans) and three-valued absence verdicts
+  (Pass, Fail, Inconclusive; Inconclusive fails by default).
+- **`pkg/traceql`.** A documented TraceQL subset (`docs/traceql-subset.md`)
+  evaluated in-process. Tempo is AGPL and is never linked; it runs as a
+  separate process in the conformance suite.
+- **Witnesses.** `pkg/witness` (`ProcWitness`, polling /proc) and
+  `pkg/witness/execbpf` (eBPF, every exec with its cgroup, read in the kernel),
+  with `cmd/subpoena-witness` to ship its events. `pkg/cgroup` puts each
+  session in a cgroup named with its trace ID, so a witness ties a process to a
+  session without trusting the application.
+- **`cmd/subpoena-lint`.** unknown-telemetry, no-trace-assertion,
+  unwitnessed-enforcement, unguarded-absence, missing-provenance,
+  orphan-invariant, provider-override, dead-telemetry, and registry-drift as a
+  subcommand. See `lint/README.md`, including its known imprecision.
+- **`cmd/subpoena-gate`.** The fault gate: removes each marked enforcement
+  statement and requires the suite to go red.
+- **`cmd/subpoena-invgen`.** Generates invariant name constants, from any
+  module.
+- **`pkg/production`.** Keeps test-tier attributes out of production: an
+  exporter wrapper for Go services, and a generated Collector config for
+  everything else.
+- **Tier 2 and tier 3 examples.** An OATS stack with the eBPF witness, and
+  Grafana alert rules (the invariant, plus a liveness rule), for
+  `examples/gateway`.
+- **Two worked examples.** `examples/gateway` (inside this module) and
+  `examples/adopter` (a separate module adopting Subpoena from outside, with
+  the commands as Go tools).
+
+### Verified
+
+On Linux 6.17 with rootful Docker, and in CI on GitHub's ubuntu runners:
+
+- `make check`: tests, lint clean, the gateway's enforcement mutant killed.
+- `make conformance`: the subset agrees with Tempo 2.8.2 on every query and
+  fixture.
+- `make test-cgroup`, `make test-ebpf`: real session cgroups; the eBPF witness
+  in the kernel, including processes that exit at once.
+- `make oats`: both tier-2 cases pass, and both fail against the enforcement
+  mutant.
+- `make alerts`: the alert rules provisioned into Grafana 13.2 with Tempo 3.1,
+  driven through the scheduler: quiet on silence and on clean traffic, firing
+  on one violation.
+- `examples/adopter`: tests, lint and gate from a separate module.
+
+### Known limits
+
+- Go only. The registry is language-neutral; Python and TypeScript harnesses
+  are not written.
+- No instrumentation helper library yet: spans are written with the OTel API
+  and the generated constants.
+- The witness interface is process-shaped (`Spawned`). Network, file and
+  database witnesses need a sibling interface.
+- The lint matches some calls by name, not by type (`lint/README.md`).
+- Tetragon is kept only as a draft enforcement policy; it is not the witness.

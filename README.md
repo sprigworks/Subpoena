@@ -9,8 +9,13 @@ it, so enforcement is only proven by an independent witness, a process-exec
 observer the application does not control, and a fault gate checks that the
 suite can tell the difference.
 
-**Status: pre-alpha.** Go only so far (Python and TypeScript later; the
-registry is language-neutral). APIs will change.
+**Status: alpha** (v0.1.0-alpha.1, see [CHANGELOG.md](CHANGELOG.md)). Go only
+so far (Python and TypeScript later; the registry is language-neutral). APIs
+will change.
+
+To use it in a service of your own, follow
+[docs/migrating-an-existing-service.md](docs/migrating-an-existing-service.md);
+`examples/adopter` is a separate module doing exactly that.
 
 ## The three tiers
 
@@ -62,6 +67,7 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | Tetragon policy, `witnesses/tetragon` | Loads on Tetragon v1.7.1; kept for enforcement, not used. Not the witness: outside Kubernetes its events lack the session cgroup |
 | `pkg/production`: test-tier attributes kept out of production | Runs, in `make test`; the generated Collector config was validated and run on otelcol-contrib 0.116.1 |
 | Tier 3: `examples/gateway/alerts` (`make alerts`) | Runs (needs Docker): provisioned into Grafana 13.2 with Tempo 3.1 and driven through the scheduler. Quiet on silence and on clean traffic, fires on a violation. The first run found the unvalidated rule could never fire; see the rule file's header |
+| `examples/adopter`: adopting Subpoena from a separate module | Runs in CI (`adopter` job): test, lint, gate, and its generated names checked with Weaver |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
 | Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses |
 
