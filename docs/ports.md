@@ -44,11 +44,15 @@ progress, and it says so.
   explicit per-call option, off by default.
 - **H6. The snapshot's model is the evaluator's.** Spans convert to `{trace
   id, span id, parent span id, name, attributes}`. IDs are lower-case hex
-  (32 and 16 digits). Attribute values are string, bool, int64 or float64;
-  arrays and maps are not compared (a query on one is false).
+  (32 and 16 digits). Attribute values are string, bool, int64 or float64.
+  Array and map values are outside the subset (the corpus has none); do not
+  put an invariant on one.
 
-Check: the port's own test suite has a case for each of H3–H5. The Go
-reference is `pkg/harness/harness_test.go`.
+Check: `conformance/harness.yaml` holds these rules as cases: spans to
+create (start order, parents, which never end, recorder capacity), what
+`collect()` must report, and the verdict and the Require helper's outcome for
+each assertion. A port runs every case through its own harness. The Go runner
+is `conformance/harness_test.go`.
 
 ## Q: TraceQL
 
