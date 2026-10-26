@@ -313,3 +313,48 @@ func TestCgroupRootBaseComesFromFieldOrEnvironment(t *testing.T) {
 		t.Fatalf("env base: %+v", got)
 	}
 }
+
+// ---- a process that exits before the scan finishes ----
+
+// TestProcessReapedDuringScanKeepsItsDetails: with thousands of processes (and
+// the race detector) one scan of /proc can outlast a short-lived child. Its
+// stat is read mid-scan; if cmdline, exe and cgroup are read only after the
+// scan, the child is already gone and the event is left with Command "". The
+// details must be read when the process is first seen.
+func TestProcessReapedDuringScanKeepsItsDetails(t *testing.T) {
+	w, root := freshFake(t, func(w *ProcWitness) { w.CgroupRoot = "/sys/fs/cgroup/" + sessionBase })
+	fakeProc(t, root, 800, 100, "100", "/bin/sleep\x000.15\x00", session(tid))
+	must(t, os.Symlink("/bin/sleep", filepath.Join(root, "800", "exe")))
+	w.afterScan = func() { must(t, os.RemoveAll(filepath.Join(root, "800"))) }
+	w.Poll()
+
+	evs := w.Spawned(tid)
+	if len(evs) != 1 {
+		t.Fatalf("a process seen must not be dropped: %s", brief(evs))
+	}
+	e := evs[0]
+	if e.Command != "/bin/sleep 0.15" || e.Exe != "/bin/sleep" || e.Attribution != ByCgroup || e.TraceID != tid {
+		t.Fatalf("details lost to the exit: %+v", e)
+	}
+}
+
+// TestForkChildIsUpdatedOnExec: a child first seen between fork and exec shows
+// its parent's command line; a later poll that sees the exec must replace it,
+// and a poll after the exit must not erase what was seen.
+func TestForkChildIsUpdatedOnExec(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 810, 100, "110", "gateway\x00", "0::/\n")
+	w.Poll()
+	must(t, os.WriteFile(filepath.Join(root, "810", "cmdline"), []byte("/bin/sleep\x000.15\x00"), 0o644))
+	must(t, os.Symlink("/bin/sleep", filepath.Join(root, "810", "exe")))
+	w.Poll()
+	// Exited but not yet reaped: a zombie has an empty cmdline and no exe.
+	must(t, os.WriteFile(filepath.Join(root, "810", "cmdline"), nil, 0o644))
+	must(t, os.Remove(filepath.Join(root, "810", "exe")))
+	w.Poll()
+
+	evs := w.Events()
+	if len(evs) != 1 || evs[0].Command != "/bin/sleep 0.15" || evs[0].Exe != "/bin/sleep" {
+		t.Fatalf("exec not recorded, or erased by the exit: %s", brief(evs))
+	}
+}

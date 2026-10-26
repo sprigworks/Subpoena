@@ -24,8 +24,9 @@ import (
 // Limitations, deliberately visible:
 //   - Polling can miss a process that starts and exits between two polls.
 //     Tests that rely on seeing a process should run one that lives a few
-//     polling intervals. The kernel-side witness (pkg/witness/execbpf) does
-//     not have this gap.
+//     polling intervals. A poll is no shorter than one scan of /proc, which on
+//     a busy machine under the race detector can take 100ms or more. The
+//     kernel-side witness (pkg/witness/execbpf) does not have this gap.
 //   - A Go program's first os/exec call forks a throwaway pidfd probe; Start
 //     absorbs it with a warm-up. A process that never ran Start before its first
 //     exec could still see that probe as an extra event.
@@ -53,6 +54,8 @@ type ProcWitness struct {
 	order    []procKey
 	stop     chan struct{}
 	done     chan struct{}
+
+	afterScan func() // test hook: runs in Poll between the scan and recording
 }
 
 type procKey struct {
@@ -105,7 +108,7 @@ func (w *ProcWitness) Start() error {
 	if w.stop != nil {
 		return fmt.Errorf("witness: already started")
 	}
-	procs, err := w.scan()
+	procs, err := w.scan(nil)
 	if err != nil {
 		return err
 	}
@@ -153,10 +156,19 @@ func (w *ProcWitness) loop(iv time.Duration, stop, done chan struct{}) {
 
 type procInfo struct {
 	pid, ppid int
+	snap      *procSnap // nil for baseline processes
 }
 
-// scan reads the stat of every process.
-func (w *ProcWitness) scan() (map[procKey]procInfo, error) {
+// procSnap is what a process looked like when its stat was read. Empty fields
+// were unreadable (the process had exited, or had not yet exec'd).
+type procSnap struct {
+	cmdline, comm, exe, cgroup string
+}
+
+// scan reads the stat of every process, and the details of every process not in
+// baseline right after its stat: a full scan of a busy /proc can outlast a
+// short-lived child, so reading them after the scan would find it gone.
+func (w *ProcWitness) scan(baseline map[procKey]bool) (map[procKey]procInfo, error) {
 	ents, err := os.ReadDir(w.root())
 	if err != nil {
 		return nil, fmt.Errorf("witness: read %s: %w", w.root(), err)
@@ -175,9 +187,34 @@ func (w *ProcWitness) scan() (map[procKey]procInfo, error) {
 		if !ok {
 			continue
 		}
-		out[procKey{pid, start}] = procInfo{pid: pid, ppid: ppid}
+		k := procKey{pid, start}
+		p := procInfo{pid: pid, ppid: ppid}
+		if baseline != nil && !baseline[k] {
+			p.snap = w.readSnap(pid)
+		}
+		out[k] = p
 	}
 	return out, nil
+}
+
+func (w *ProcWitness) readSnap(pid int) *procSnap {
+	dir := filepath.Join(w.root(), strconv.Itoa(pid))
+	s := &procSnap{}
+	if b, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
+		s.cmdline = strings.Join(strings.Split(strings.TrimRight(string(b), "\x00"), "\x00"), " ")
+	}
+	if s.cmdline == "" {
+		if b, err := os.ReadFile(filepath.Join(dir, "comm")); err == nil {
+			s.comm = strings.TrimSpace(string(b))
+		}
+	}
+	if exe, err := os.Readlink(filepath.Join(dir, "exe")); err == nil {
+		s.exe = exe
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "cgroup")); err == nil {
+		s.cgroup = strings.TrimSpace(string(b))
+	}
+	return s
 }
 
 // parseStat extracts ppid (field 4) and starttime (field 22). The comm field
@@ -202,9 +239,18 @@ func parseStat(s string) (ppid int, start string, ok bool) {
 // Poll scans /proc once and records new descendants. It is called by the
 // background loop and may be called directly (tests do, with a fake procfs).
 func (w *ProcWitness) Poll() {
-	procs, err := w.scan()
+	w.mu.Lock()
+	baseline := w.baseline // never mutated after Start
+	w.mu.Unlock()
+	if baseline == nil {
+		return
+	}
+	procs, err := w.scan(baseline)
 	if err != nil {
 		return
+	}
+	if w.afterScan != nil {
+		w.afterScan()
 	}
 	byPID := map[int]procInfo{}
 	for _, p := range procs {
@@ -223,11 +269,11 @@ func (w *ProcWitness) Poll() {
 	sort.Slice(keys, func(i, j int) bool { return keys[i].pid < keys[j].pid })
 	for _, k := range keys {
 		p := procs[k]
-		if w.baseline[k] || p.pid == w.RootPID {
+		if p.snap == nil || p.pid == w.RootPID {
 			continue
 		}
 		// Cgroup membership is checked first: it finds processes lineage loses.
-		if !w.inSessionCgroup(p.pid) && !descends(p.pid, w.RootPID, byPID) {
+		if !w.inSessionCgroup(p.snap.cgroup) && !descends(p.pid, w.RootPID, byPID) {
 			continue
 		}
 		ev, seen := w.tracked[k]
@@ -236,26 +282,24 @@ func (w *ProcWitness) Poll() {
 			w.tracked[k] = ev
 			w.order = append(w.order, k)
 		}
-		w.refresh(ev)
+		w.refresh(ev, p.snap)
 	}
 }
 
-// refresh (re)reads cmdline, exe and cgroup. It is repeated while the process
-// is alive because a forked child briefly shows its parent's cmdline.
-func (w *ProcWitness) refresh(ev *ProcessEvent) {
-	dir := filepath.Join(w.root(), strconv.Itoa(ev.PID))
-	if b, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil && len(b) > 0 {
-		ev.Command = strings.Join(strings.Split(strings.TrimRight(string(b), "\x00"), "\x00"), " ")
+// refresh updates an event from a later sighting. It is repeated while the
+// process is alive because a forked child briefly shows its parent's cmdline;
+// fields the sighting could not read (an exited process) keep what was seen.
+func (w *ProcWitness) refresh(ev *ProcessEvent, s *procSnap) {
+	if s.cmdline != "" {
+		ev.Command = s.cmdline
 	} else if ev.Command == "" {
-		if b, err := os.ReadFile(filepath.Join(dir, "comm")); err == nil {
-			ev.Command = strings.TrimSpace(string(b))
-		}
+		ev.Command = s.comm
 	}
-	if exe, err := os.Readlink(filepath.Join(dir, "exe")); err == nil {
-		ev.Exe = exe
+	if s.exe != "" {
+		ev.Exe = s.exe
 	}
-	if b, err := os.ReadFile(filepath.Join(dir, "cgroup")); err == nil {
-		ev.Cgroup = strings.TrimSpace(string(b))
+	if s.cgroup != "" {
+		ev.Cgroup = s.cgroup
 	}
 	ev.Attribution, ev.TraceID = ByLineage, ""
 	if id, ok := cgroup.SessionTrace(ev.Cgroup, w.cgroupBase()); ok {
@@ -263,13 +307,9 @@ func (w *ProcWitness) refresh(ev *ProcessEvent) {
 	}
 }
 
-// inSessionCgroup reports whether the process is in a session cgroup.
-func (w *ProcWitness) inSessionCgroup(pid int) bool {
-	b, err := os.ReadFile(filepath.Join(w.root(), strconv.Itoa(pid), "cgroup"))
-	if err != nil {
-		return false
-	}
-	_, ok := cgroup.SessionTrace(string(b), w.cgroupBase())
+// inSessionCgroup reports whether a cgroup file's content names a session cgroup.
+func (w *ProcWitness) inSessionCgroup(cg string) bool {
+	_, ok := cgroup.SessionTrace(cg, w.cgroupBase())
 	return ok
 }
 
