@@ -257,7 +257,9 @@ tool. The gateway's `TestDeniedSessionNeverExecs` kills the mutant because the
 witness sees a process that should not exist.
 
 CI runs gofmt, build, vet, `go test -race ./...`, the lint and the gate
-(`.github/workflows/ci.yml`).
+(`.github/workflows/ci.yml`), and, on a runner with a real kernel and Docker,
+the real-cgroup tests, the eBPF witness, conformance and tier 2
+(`.github/workflows/kernel.yml`).
 
 ## 7. Promote invariants to OATS and alerts
 

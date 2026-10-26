@@ -59,10 +59,10 @@ type Event struct {
 	PID, PPID int
 	// HostPID and HostPPID are the same processes in the initial namespace.
 	HostPID, HostPPID int
-	Comm     string // task name after exec
-	Exe      string // path passed to execve (may be relative); empty for forks
-	Args     []string
-	CgroupID uint64 // bpf_get_current_cgroup_id: equals pkg/cgroup Group.ID()
+	Comm              string // task name after exec
+	Exe               string // path passed to execve (may be relative); empty for forks
+	Args              []string
+	CgroupID          uint64 // bpf_get_current_cgroup_id: equals pkg/cgroup Group.ID()
 	// Cgroup is the cgroup path as far up as the kernel walked (up to 8
 	// elements), root-most first, without the hierarchy root: "subpoena/<trace id>".
 	Cgroup string

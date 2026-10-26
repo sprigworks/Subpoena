@@ -50,10 +50,11 @@ gate:
 
 # The real-cgroup tests (pkg/cgroup, examples/gateway) without root: run them in
 # a systemd user scope with cgroup delegation, rooted inside that scope. They
-# skip under plain `make test` when /sys/fs/cgroup is not writable.
+# skip under plain `make test` when /sys/fs/cgroup is not writable;
+# SUBPOENA_CGROUP_REQUIRE makes that skip a failure here.
 test-cgroup:
 	systemd-run --user --scope -q -p Delegate=yes -- sh -c 'cg=/sys/fs/cgroup$$(cut -d: -f3 /proc/self/cgroup); \
-	SUBPOENA_CGROUP_ROOT=$$cg/subpoena SUBPOENA_CGROUP_REAL_ROOT=$$cg/subpoena-gw \
+	SUBPOENA_CGROUP_REQUIRE=1 SUBPOENA_CGROUP_ROOT=$$cg/subpoena SUBPOENA_CGROUP_REAL_ROOT=$$cg/subpoena-gw \
 	go test -count=1 -v -run "Real|StartInto" ./pkg/cgroup ./examples/gateway'
 
 # The kernel half of pkg/witness/execbpf: load the eBPF program and watch real
@@ -87,11 +88,11 @@ conformance:
 	$(CONFORMANCE_COMPOSE) down -v; exit $$rc
 
 # Tier 2: the OATS cases in examples/gateway/oats. Needs rootful Docker on a
-# Linux host with cgroup v2 and kernel BTF (Tetragon runs privileged), and
+# Linux host with cgroup v2 and kernel BTF (the witness loads eBPF, privileged), and
 # `go install github.com/grafana/oats@latest`. A `go install` build of OATS
 # has no pinned gcx, hence GCX_VERSION (OATS's own mise.toml pins 1.0.0).
 # --container-runtime docker: auto picks Podman when installed, and rootless
-# Podman cannot run Tetragon. The env -u list turns off gcx's agent mode,
+# Podman cannot run the privileged witness. The env -u list turns off gcx's agent mode,
 # auto-detected from those variables: it switches gcx to JSON output, which
 # OATS v0.10.0 counts as one row, so every `absent` fails and every
 # `count: '>= 1'` passes regardless of the data. --no-cache: OATS skips a case

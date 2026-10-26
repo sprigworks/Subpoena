@@ -221,9 +221,10 @@ func TestSessionTrace(t *testing.T) {
 }
 
 // realGroup returns a group on a real cgroup v2 hierarchy when this machine
-// lets us write one (root, or a delegated subtree), and skips otherwise. Set
-// SUBPOENA_CGROUP_ROOT to use a specific parent directory; otherwise the usual
-// mount points are tried. It cleans up everything it creates.
+// lets us write one (root, or a delegated subtree), and skips otherwise
+// (fails instead when SUBPOENA_CGROUP_REQUIRE=1, as make test-cgroup and CI
+// set). Set SUBPOENA_CGROUP_ROOT to use a specific parent directory; otherwise
+// the usual mount points are tried. It cleans up everything it creates.
 func realGroup(t *testing.T) (g *Group, root string) {
 	t.Helper()
 	uniq := fmt.Sprintf("subpoena-test-%d", os.Getpid())
@@ -245,7 +246,11 @@ func realGroup(t *testing.T) (g *Group, root string) {
 		errs = append(errs, err.Error())
 	}
 	if g == nil {
-		t.Skipf("no writable cgroup v2 hierarchy: %s", strings.Join(errs, "; "))
+		msg := "no writable cgroup v2 hierarchy: " + strings.Join(errs, "; ")
+		if os.Getenv("SUBPOENA_CGROUP_REQUIRE") == "1" {
+			t.Fatal(msg)
+		}
+		t.Skip(msg)
 	}
 	t.Cleanup(func() {
 		_ = g.Remove()

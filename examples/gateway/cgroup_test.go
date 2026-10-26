@@ -257,7 +257,8 @@ func TestNoopTracerAndDisabledCgroups(t *testing.T) {
 	harness.RequireExists(t, tr, correlationQuery(semconv.ValSubpoenaWitnessCorrelationLineage))
 }
 
-// realRoot finds a cgroup v2 directory this process may create cgroups in, or skips.
+// realRoot finds a cgroup v2 directory this process may create cgroups in, or
+// skips (fails when SUBPOENA_CGROUP_REQUIRE=1).
 func realRoot(t *testing.T) string {
 	t.Helper()
 	uniq := fmt.Sprintf("subpoena-gateway-test-%d", os.Getpid())
@@ -284,7 +285,11 @@ func realRoot(t *testing.T) string {
 		t.Cleanup(func() { _ = os.Remove(c) })
 		return c
 	}
-	t.Skipf("no writable cgroup v2 hierarchy (set SUBPOENA_CGROUP_REAL_ROOT to one): %s", strings.Join(errs, "; "))
+	msg := "no writable cgroup v2 hierarchy (set SUBPOENA_CGROUP_REAL_ROOT to one): " + strings.Join(errs, "; ")
+	if os.Getenv("SUBPOENA_CGROUP_REQUIRE") == "1" {
+		t.Fatal(msg)
+	}
+	t.Skip(msg)
 	return ""
 }
 

@@ -1,0 +1,65 @@
+name: kernel
+
+# The tests that need a real Linux kernel and Docker: real session cgroups, the
+# eBPF witness, the TraceQL subset against a real Tempo, and tier 2 (OATS).
+# GitHub's ubuntu runners have rootful Docker, cgroup v2 and kernel BTF. Each
+# target turns "cannot run here" into a failure, so none of these jobs can go
+# green by skipping.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cgroup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - run: go test -c -o /tmp/cgroup.test ./pkg/cgroup && go test -c -o /tmp/gateway.test ./examples/gateway
+      # Root writes /sys/fs/cgroup directly (make test-cgroup uses a delegated
+      # systemd user scope instead, for machines without sudo).
+      - name: real cgroups
+        run: |
+          cd pkg/cgroup && sudo SUBPOENA_CGROUP_REQUIRE=1 /tmp/cgroup.test -test.count=1 -test.v -test.run 'Real|StartInto'
+          cd ../../examples/gateway && sudo SUBPOENA_CGROUP_REQUIRE=1 /tmp/gateway.test -test.count=1 -test.v -test.run 'Real|StartInto'
+
+  ebpf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - run: uname -r && ls -l /sys/kernel/btf/vmlinux
+      - run: make test-ebpf
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - run: make conformance
+
+  oats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # OATS v0.10.0 needs Go 1.26; the gateway image builds its own Go.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: false
+      - run: go install github.com/grafana/oats@v0.10.0
+      - run: make oats
