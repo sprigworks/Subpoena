@@ -106,7 +106,9 @@ invariants/           *.traceql invariants (+ embedded loader)
 cmd/subpoena-lint/    static checks (see lint/README.md)
 cmd/subpoena-gate/    fault gate
 cmd/subpoena-witness/ runs the kernel-side witness, JSON lines out
+cmd/subpoena-invgen/  writes invariants/names.go (also for other modules)
 examples/gateway/     toy agent gateway, tests, OATS stack, alert rule
+examples/adopter/     separate module adopting Subpoena from outside (CI keeps it working)
 conformance/          fixtures + expected results, subset-vs-Tempo conformance test
 docs/                 architecture, TraceQL subset, migrating an existing service
 ```

@@ -1,0 +1,46 @@
+# Custom attribute `tier` annotation (Subpoena convention):
+#   test - never exported in production (high cardinality / diagnostic only)
+#   all  - safe to export in every environment
+groups:
+  - id: registry.ci.job
+    type: attribute_group
+    display_name: CI job attributes
+    brief: Attributes describing a submitted CI job.
+    stability: development
+    attributes:
+      - id: ci.job.id
+        type: string
+        stability: development
+        brief: Identifier of the job.
+        note: High cardinality; tier test, so it is never exported in production.
+        examples: ["job-42"]
+        annotations:
+          tier: test
+      - id: ci.job.trusted
+        type: boolean
+        stability: development
+        brief: Whether the job comes from a trusted source (the main repository, not a fork).
+        examples: [true, false]
+        annotations:
+          tier: all
+      - id: ci.job.secrets_requested
+        type: boolean
+        stability: development
+        brief: Whether the job asks for repository secrets.
+        examples: [true, false]
+        annotations:
+          tier: all
+
+  - id: registry.ci.admission
+    type: attribute_group
+    display_name: CI admission attributes
+    brief: Attributes describing the admission decision for a job.
+    stability: development
+    attributes:
+      - id: ci.admission.allowed
+        type: boolean
+        stability: development
+        brief: Whether the job was admitted to run.
+        examples: [true, false]
+        annotations:
+          tier: all

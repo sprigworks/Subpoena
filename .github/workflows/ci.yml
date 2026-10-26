@@ -29,3 +29,33 @@ jobs:
         run: go run ./cmd/subpoena-lint -dead-telemetry ./examples/gateway
       - name: fault gate over examples/gateway
         run: go run ./cmd/subpoena-gate ./examples/gateway
+
+  # examples/adopter is a separate module adopting Subpoena from outside, with
+  # only its public packages and commands (as Go tools). It keeps that path
+  # working, and checks its generated names with real Weaver.
+  adopter:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/adopter
+    env:
+      WEAVER_VERSION: v0.28.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+          cache-dependency-path: examples/adopter/go.sum
+      - name: Install Weaver
+        run: |
+          curl -fsSL -o /tmp/weaver.tar.xz \
+            "https://github.com/open-telemetry/weaver/releases/download/${WEAVER_VERSION}/weaver-x86_64-unknown-linux-gnu.tar.xz"
+          tar -xf /tmp/weaver.tar.xz -C /tmp
+          sudo install /tmp/weaver-x86_64-unknown-linux-gnu/weaver /usr/local/bin/weaver
+      - name: generated/ matches registry/ (Weaver)
+        run: make check-generated
+      - name: invariants/names.go is current
+        run: go generate ./invariants && git diff --exit-code invariants/
+      - name: test, lint, gate
+        run: make check

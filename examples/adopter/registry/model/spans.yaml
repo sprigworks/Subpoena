@@ -1,0 +1,36 @@
+groups:
+  - id: span.ci.job.receive
+    type: span
+    name: ci.job.receive
+    span_kind: server
+    stability: development
+    brief: The runner receives a submitted job.
+    attributes:
+      - ref: ci.job.id
+        requirement_level: required
+      - ref: ci.job.trusted
+        requirement_level: required
+      - ref: ci.job.secrets_requested
+        requirement_level: required
+
+  - id: span.ci.job.admit
+    type: span
+    name: ci.job.admit
+    span_kind: internal
+    stability: development
+    brief: The runner decides whether the job may run. This is an enforcement point.
+    attributes:
+      - ref: ci.job.id
+        requirement_level: required
+      - ref: ci.admission.allowed
+        requirement_level: required
+
+  - id: span.ci.job.exec
+    type: span
+    name: ci.job.exec
+    span_kind: internal
+    stability: development
+    brief: The runner executes an admitted job's command.
+    attributes:
+      - ref: ci.job.id
+        requirement_level: required

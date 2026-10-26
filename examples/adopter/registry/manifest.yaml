@@ -1,0 +1,4 @@
+file_format: definition_manifest/2.0
+name: jobrunner
+description: Telemetry contract for the jobrunner example, a separate module adopting Subpoena from outside.
+schema_url: https://example.com/jobrunner/schemas/0.1.0
