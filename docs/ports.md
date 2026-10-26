@@ -9,6 +9,11 @@ meet. Each requirement has a check you can run against the port.
 A port has passed when every check below passes. Until then it is a port in
 progress, and it says so.
 
+| Port | Status |
+| --- | --- |
+| Python ([python/](../python/README.md)) | H, Q and W pass: harness cases, 139 evaluator cases, witness reader. L and G not yet |
+| TypeScript | not started |
+
 ## What a port is, and what it reuses
 
 | Piece | Port writes its own | Reuses from this repo |
