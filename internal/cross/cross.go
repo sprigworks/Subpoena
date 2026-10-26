@@ -53,6 +53,7 @@ type Mutant struct {
 	Removed string // the source text removed
 	start   int    // byte offsets of the statement in File
 	end     int
+	point   int // byte offset of the enclosing function declaration in File
 }
 
 // Result is the outcome of running one mutant.
@@ -116,7 +117,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	}
 	points := map[string]bool{}
 	for _, m := range mutants {
-		points[m.File+"\x00"+m.Func] = true
+		points[fmt.Sprintf("%s:%d", m.File, m.point)] = true
 	}
 	rep.EnforcementPoints = len(points)
 
@@ -282,6 +283,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 			out = append(out, Mutant{
 				Func: fd.Name.Name, File: filepath.ToSlash(rel), Line: line,
 				Removed: string(src[s:e]), start: s, end: e,
+				point: fset.Position(fd.Pos()).Offset,
 			})
 			return true
 		})
@@ -297,18 +299,17 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 	return out, nil
 }
 
-var (
-	enforcementRE = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcement) + `(\s|$)`)
-	pointRE       = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcementPoint) + `(\s|$)`)
-)
+var enforcementRE = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcement) + `(\s|$)`)
 
 func isEnforcementComment(text string) bool { return enforcementRE.MatchString(text) }
 
-// hasPointMarker reports whether a doc comment has a //subpoena:enforcement_point
-// line, matched as a whole word.
+// hasPointMarker reports whether a doc comment mentions the enforcement-point
+// marker anywhere, as subpoena-lint does (internal/lint commentHas). Matching
+// loosely fails closed: anything lint treats as an enforcement point must have
+// a statement to cross-examine.
 func hasPointMarker(g *ast.CommentGroup) bool {
 	for _, c := range g.List {
-		if pointRE.MatchString(c.Text) {
+		if strings.Contains(c.Text, MarkerEnforcementPoint) {
 			return true
 		}
 	}

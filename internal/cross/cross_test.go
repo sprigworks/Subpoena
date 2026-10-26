@@ -261,13 +261,62 @@ func TestMarkerRegexDoesNotMatchEnforcementPoint(t *testing.T) {
 	}
 }
 
-func TestPointMarkerIsMatchedAsAWord(t *testing.T) {
-	for _, doc := range []string{"//subpoena:enforcement_point_helper", "// see subpoena:enforcement_point"} {
+// The doc marker is matched as subpoena-lint matches it, so a function lint
+// treats as an enforcement point cannot slip past cross-examination.
+func TestPointMarkerMatchesLikeLint(t *testing.T) {
+	for _, doc := range []string{"//subpoena:enforcement_points", "// see subpoena:enforcement_point", "/* subpoena:enforcement_point */"} {
 		src := strings.Replace(authOK, "//subpoena:enforcement_point", doc, 1)
 		src = strings.Replace(src, " //subpoena:enforcement", "", 1)
 		dir := module(t, map[string]string{"auth.go": src})
-		if ms, err := FindMutants(dir, dir); err != nil || len(ms) != 0 {
-			t.Fatalf("%s: not an enforcement point, want none, got %v %v", doc, ms, err)
+		if _, err := FindMutants(dir, dir); err == nil || !strings.Contains(err.Error(), "Allow") {
+			t.Fatalf("%s: want an error naming Allow, got %v", doc, err)
 		}
+	}
+}
+
+// Methods share a name across receivers; each is its own enforcement point.
+func TestMethodsWithTheSameNameCountSeparately(t *testing.T) {
+	src := `package mini
+
+import "errors"
+
+var ErrDenied = errors.New("denied")
+
+type A struct{}
+type B struct{}
+
+//subpoena:enforcement_point
+func (A) Allow(admin bool) error {
+	if !admin {
+		return ErrDenied //subpoena:enforcement
+	}
+	return nil
+}
+
+//subpoena:enforcement_point
+func (B) Allow(admin bool) error {
+	if !admin {
+		return ErrDenied //subpoena:enforcement
+	}
+	return nil
+}
+`
+	test := `package mini
+
+import "testing"
+
+func TestDeny(t *testing.T) {
+	if (A{}).Allow(false) == nil || (B{}).Allow(false) == nil {
+		t.Fatal("non-admin allowed")
+	}
+}
+`
+	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": test})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.EnforcementPoints != 2 || len(rep.Results) != 2 || rep.Failed() {
+		t.Fatalf("want 2 points, 2 killed; got %d points, %+v", rep.EnforcementPoints, rep.Results)
 	}
 }
