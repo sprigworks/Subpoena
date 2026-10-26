@@ -65,9 +65,10 @@ type Result struct {
 
 // Report is the outcome of a whole cross-examination.
 type Report struct {
-	ModuleRoot string
-	Target     string // target directory relative to the module root
-	Results    []Result
+	ModuleRoot        string
+	Target            string // target directory relative to the module root
+	EnforcementPoints int    // functions marked //subpoena:enforcement_point
+	Results           []Result
 }
 
 // Failed reports whether any mutant survived or was invalid.
@@ -111,8 +112,13 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		return nil, err
 	}
 	if len(mutants) == 0 {
-		return nil, fmt.Errorf("cross: no enforcement points with a //%s statement under %s; cross-examination would be vacuous", MarkerEnforcement, o.Target)
+		return nil, fmt.Errorf("cross: no //%s functions under %s; cross-examination would be vacuous", MarkerEnforcementPoint, o.Target)
 	}
+	points := map[string]bool{}
+	for _, m := range mutants {
+		points[m.File+"\x00"+m.Func] = true
+	}
+	rep.EnforcementPoints = len(points)
 
 	tmp, err := os.MkdirTemp("", "subpoena-cross-")
 	if err != nil {
@@ -236,9 +242,10 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 	var out []Mutant
 	for _, d := range f.Decls {
 		fd, ok := d.(*ast.FuncDecl)
-		if !ok || fd.Body == nil || fd.Doc == nil || !strings.Contains(commentText(fd.Doc), MarkerEnforcementPoint) {
+		if !ok || fd.Body == nil || fd.Doc == nil || !hasPointMarker(fd.Doc) {
 			continue
 		}
+		found := 0
 		// Marker lines inside this function. Both markers share a prefix, so
 		// match the exact comment word.
 		lines := map[int]bool{}
@@ -270,6 +277,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 				return true
 			}
 			delete(lines, line)
+			found++
 			s, e := fset.Position(st.Pos()).Offset, fset.Position(st.End()).Offset
 			out = append(out, Mutant{
 				Func: fd.Name.Name, File: filepath.ToSlash(rel), Line: line,
@@ -280,21 +288,31 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 		if len(lines) > 0 {
 			return nil, fmt.Errorf("cross: %s: //%s in %s is not on a simple statement line", rel, MarkerEnforcement, fd.Name.Name)
 		}
+		// An enforcement point with nothing to remove would never be
+		// cross-examined, and the run would still go green.
+		if found == 0 {
+			return nil, fmt.Errorf("cross: %s: %s is marked //%s but has no //%s statement, so it cannot be cross-examined", rel, fd.Name.Name, MarkerEnforcementPoint, MarkerEnforcement)
+		}
 	}
 	return out, nil
 }
 
-var enforcementRE = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcement) + `(\s|$)`)
+var (
+	enforcementRE = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcement) + `(\s|$)`)
+	pointRE       = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcementPoint) + `(\s|$)`)
+)
 
 func isEnforcementComment(text string) bool { return enforcementRE.MatchString(text) }
 
-func commentText(g *ast.CommentGroup) string {
-	var b strings.Builder
+// hasPointMarker reports whether a doc comment has a //subpoena:enforcement_point
+// line, matched as a whole word.
+func hasPointMarker(g *ast.CommentGroup) bool {
 	for _, c := range g.List {
-		b.WriteString(c.Text)
-		b.WriteByte('\n')
+		if pointRE.MatchString(c.Text) {
+			return true
+		}
 	}
-	return b.String()
+	return false
 }
 
 // absoluteReplaces rewrites the copy's go.mod so that a replace pointing at a

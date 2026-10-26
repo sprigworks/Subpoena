@@ -196,7 +196,8 @@ func (g *Gateway) Authorize(ctx context.Context, s *Session, host string) (conte
 `//subpoena:enforcement_point` goes in the function's doc comment;
 `//subpoena:enforcement` goes on the first line of the one statement that does
 the enforcing. Cross-examination (step 6) deletes that statement and requires the suite
-to fail.
+to fail. A function with the first marker but not the second makes
+cross-examination exit with an error naming it.
 
 Then ask who can observe the side effect without trusting your code. For the
 gateway the effect is a process exec and the witness is a process observer.

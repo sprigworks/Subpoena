@@ -97,6 +97,9 @@ func TestStrongSuiteKillsMutant(t *testing.T) {
 	if len(rep.Results) != 1 || rep.Results[0].Outcome != Killed || rep.Failed() {
 		t.Fatalf("want killed, got %+v", rep.Results)
 	}
+	if rep.EnforcementPoints != 1 {
+		t.Fatalf("enforcement points = %d, want 1", rep.EnforcementPoints)
+	}
 	if got := rep.Results[0].Failing; len(got) != 1 || got[0] != "TestDeny" {
 		t.Fatalf("failing tests: %v", got)
 	}
@@ -195,6 +198,37 @@ func TestRedBaselineIsAnError(t *testing.T) {
 func TestNoMarkerIsAnError(t *testing.T) {
 	src := strings.Replace(authOK, " //subpoena:enforcement", "", 1)
 	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": strongTest})
+	if _, err := run(t, dir); err == nil || !strings.Contains(err.Error(), "Allow is marked //subpoena:enforcement_point but has no //subpoena:enforcement statement") {
+		t.Fatalf("want an error naming Allow, got %v", err)
+	}
+}
+
+// One covered enforcement point must not hide another that has no statement
+// marker: the run fails and names the forgotten function.
+func TestEveryEnforcementPointNeedsAStatementMarker(t *testing.T) {
+	forgotten := authOK + `
+// Forgotten also decides.
+//
+//subpoena:enforcement_point
+func Forgotten(admin bool) error {
+	if !admin {
+		return ErrDenied
+	}
+	return nil
+}
+`
+	dir := module(t, map[string]string{"auth.go": forgotten, "auth_test.go": strongTest})
+	if _, err := FindMutants(dir, dir); err == nil || !strings.Contains(err.Error(), "Forgotten") {
+		t.Fatalf("want an error naming Forgotten, got %v", err)
+	}
+	if _, err := run(t, dir); err == nil {
+		t.Fatal("cross-examination must fail when an enforcement point has no statement marker")
+	}
+}
+
+func TestNoEnforcementPointIsVacuous(t *testing.T) {
+	src := strings.Replace(authOK, "//\n//subpoena:enforcement_point\n", "", 1)
+	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": strongTest})
 	if _, err := run(t, dir); err == nil || !strings.Contains(err.Error(), "vacuous") {
 		t.Fatalf("want vacuous cross-examination error, got %v", err)
 	}
@@ -224,5 +258,16 @@ func TestMarkerRegexDoesNotMatchEnforcementPoint(t *testing.T) {
 	}
 	if !isEnforcementComment("//subpoena:enforcement") || !isEnforcementComment("// subpoena:enforcement because") {
 		t.Fatal("statement marker not recognised")
+	}
+}
+
+func TestPointMarkerIsMatchedAsAWord(t *testing.T) {
+	for _, doc := range []string{"//subpoena:enforcement_point_helper", "// see subpoena:enforcement_point"} {
+		src := strings.Replace(authOK, "//subpoena:enforcement_point", doc, 1)
+		src = strings.Replace(src, " //subpoena:enforcement", "", 1)
+		dir := module(t, map[string]string{"auth.go": src})
+		if ms, err := FindMutants(dir, dir); err != nil || len(ms) != 0 {
+			t.Fatalf("%s: not an enforcement point, want none, got %v %v", doc, ms, err)
+		}
 	}
 }

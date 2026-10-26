@@ -73,7 +73,10 @@ It copies the module to a temp directory, removes the statement marked
 and runs the tests. A red suite kills the mutant. A green suite means the tests
 cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
-mutant that does not compile is "invalid", never "killed".
+mutant that does not compile is "invalid", never "killed". An enforcement point
+with no `//subpoena:enforcement` statement is an error, not a skip, so one
+covered function cannot hide an unexamined one. The report starts with the
+number of enforcement points and mutants.
 
 ## The registry
 
