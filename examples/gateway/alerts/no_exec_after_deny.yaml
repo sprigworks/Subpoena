@@ -1,13 +1,26 @@
-# Tier 3: the same invariant as a Grafana alert rule (file provisioning format).
-# NOT VALIDATED: never loaded into Grafana. Two things to verify on a real stack:
-#  1. The Tempo data source must evaluate this TraceQL metrics query. Structural
-#     operators inside metrics queries depend on the Tempo version; if they are
-#     unsupported, derive a counter with the metrics-generator or a recording
-#     rule and alert on that.
-#  2. The datasource UID below.
+# Tier 3: the same invariant as Grafana alert rules (file provisioning format).
 #
-# The TraceQL string is identical to invariants/no_exec_after_deny.traceql plus a
-# metrics function. A test in invariants/ checks the invariant text appears here.
+# Verified by `make alerts` (conformance/alert_test.go) on grafana/otel-lgtm
+# 0.38.0 (Grafana 13.2, Tempo 3.1): the file provisions; with no traffic the
+# invariant is quiet and the liveness rule alerts; after clean sessions both
+# are quiet; after one violating trace the invariant fires.
+#
+# What the first, unvalidated version got wrong, found by that run:
+#  - A range metrics query returns a "long" frame, which the reduce expression
+#    rejects, so every evaluation with data was an error (and execErrState
+#    turned that into an alert). The query is instant. The reduce stays: the
+#    scheduler refuses a threshold on the instant query's time series ("only
+#    reduced data can be alerted on"), although Grafana's /api/v1/eval accepts
+#    it, so only a scheduler-driven test shows the difference.
+#  - A violation query returns no series when nothing violates, which is the
+#    healthy state, so noDataState must be OK. "The telemetry is missing" is a
+#    different question, asked by the second rule.
+# Tempo serves metrics only for spans older than query_end_cutoff (30s by
+# default): a violation alerts about one evaluation interval after that.
+#
+# The TraceQL string is identical to invariants/no_exec_after_deny.traceql plus
+# a metrics function. A test in invariants/ checks the invariant text appears
+# here. The data source UID `tempo` is the one grafana/otel-lgtm provisions.
 apiVersion: 1
 groups:
   - orgId: 1
@@ -19,8 +32,8 @@ groups:
         title: Exec after denied authorization
         condition: C
         for: 0s
-        noDataState: Alerting    # no data means the telemetry itself is missing: treat as inconclusive, not as safe
-        execErrState: Alerting
+        noDataState: OK          # no matching spans is the healthy state, not missing data
+        execErrState: Error      # a broken query is reported as an error, not as a violation
         labels:
           severity: page
           invariant: no_exec_after_deny
@@ -36,7 +49,7 @@ groups:
             model:
               refId: A
               queryType: traceql
-              metricsQueryType: range
+              metricsQueryType: instant
               query: '{ name = "agent.session.authorize" && span.authorization.allowed = false } >> { name = "agent.session.exec" } | count_over_time()'
           - refId: B
             relativeTimeRange: {from: 300, to: 0}
@@ -45,7 +58,7 @@ groups:
               refId: B
               type: reduce
               expression: A
-              reducer: sum
+              reducer: last
           - refId: C
             relativeTimeRange: {from: 300, to: 0}
             datasourceUid: __expr__
@@ -55,3 +68,44 @@ groups:
               expression: B
               conditions:
                 - evaluator: {type: gt, params: [0]}
+
+      # Liveness: the invariant above is silent both when nothing violates and
+      # when no authorize spans arrive at all. This rule tells those apart. A
+      # quiet service also has no sessions, so tune `for` to your traffic.
+      - uid: subpoena-authorize-telemetry-missing
+        title: No authorization telemetry
+        condition: C
+        for: 15m
+        noDataState: Alerting    # here no data is exactly the condition
+        execErrState: Error
+        labels:
+          severity: warning
+          invariant: no_exec_after_deny
+        annotations:
+          summary: No agent.session.authorize spans reached Tempo, so no_exec_after_deny cannot be evaluated.
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: tempo
+            model:
+              refId: A
+              queryType: traceql
+              metricsQueryType: instant
+              query: '{ name = "agent.session.authorize" } | count_over_time()'
+          - refId: B
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: lt, params: [1]}

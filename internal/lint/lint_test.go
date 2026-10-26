@@ -117,8 +117,8 @@ func f(tr T, span S, ctx C) {
 // ---- no-trace-assertion ----
 
 func TestNoTraceAssertion(t *testing.T) {
-	bad := "//subpoena:impl_derived\npackage p\nimport \"testing\"\nfunc TestX(t *testing.T) { _ = 1 }\n"
-	good := "//subpoena:impl_derived\npackage p\nimport \"testing\"\nfunc TestX(t *testing.T) { h.Collect(ctx) }\n"
+	bad := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestX(t *testing.T) { _ = 1 }\n"
+	good := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestX(t *testing.T) { h.Collect(ctx) }\n"
 	helperOnly := "//subpoena:impl_derived\npackage p\nfunc helper() {}\n"
 	only(t, lintTree(t, map[string]string{"bad_test.go": bad}), RuleNoTraceAssertion, 1)
 	if fs := lintTree(t, map[string]string{"good_test.go": good, "helpers_test.go": helperOnly}); len(fs) != 0 {
@@ -171,8 +171,8 @@ func Authorize() {}
 `
 
 func TestUnwitnessedEnforcement(t *testing.T) {
-	unwitnessed := "//subpoena:impl_derived\npackage p\nimport \"testing\"\nfunc TestA(t *testing.T) { h.Collect(ctx) }\n"
-	witnessed := "//subpoena:impl_derived\npackage p\nimport \"testing\"\nfunc TestA(t *testing.T) { h.Collect(ctx); w.Spawned(id) }\n"
+	unwitnessed := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestA(t *testing.T) { h.Collect(ctx) }\n"
+	witnessed := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestA(t *testing.T) { h.Collect(ctx); w.Spawned(id) }\n"
 
 	fs := lintTree(t, map[string]string{"auth.go": enforced, "a_test.go": unwitnessed})
 	only(t, fs, RuleUnwitnessedEnforcement, 1)
@@ -195,7 +195,7 @@ func TestUnwitnessedEnforcement(t *testing.T) {
 // ---- unguarded-absence ----
 
 func TestUnguardedAbsence(t *testing.T) {
-	head := "//subpoena:impl_derived\npackage p\nimport \"testing\"\n"
+	head := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\n"
 	cases := []struct {
 		name string
 		body string
@@ -231,11 +231,11 @@ func TestUnguardedAbsence(t *testing.T) {
 // ---- missing-provenance ----
 
 func TestMissingProvenance(t *testing.T) {
-	body := "package p\nimport \"testing\"\nfunc TestA(t *testing.T) { h.Collect(ctx) }\n"
+	body := "package p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestA(t *testing.T) { h.Collect(ctx) }\n"
 	only(t, lintTree(t, map[string]string{"a_test.go": body}), RuleMissingProvenance, 1)
 	only(t, lintTree(t, map[string]string{"a_test.go": "// just a comment\n" + body}), RuleMissingProvenance, 1)
 	// Marker after the package clause is too late.
-	only(t, lintTree(t, map[string]string{"a_test.go": "package p\n//subpoena:spec_derived\nimport \"testing\"\nfunc TestA(t *testing.T) { h.Collect(ctx) }\n"}), RuleMissingProvenance, 1)
+	only(t, lintTree(t, map[string]string{"a_test.go": "package p\n//subpoena:spec_derived\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestA(t *testing.T) { h.Collect(ctx) }\n"}), RuleMissingProvenance, 1)
 	for _, m := range []string{"spec_derived", "impl_derived"} {
 		for _, form := range []string{"//subpoena:" + m + "\n\n", "//go:build !nope\n\n//subpoena:" + m + "\n\n", "// subpoena:" + m + "\n"} {
 			if fs := lintTree(t, map[string]string{"a_test.go": form + body}); len(fs) != 0 {
@@ -252,7 +252,7 @@ func TestMissingProvenance(t *testing.T) {
 }
 
 func TestSkipsTestdataAndSortsFindings(t *testing.T) {
-	bad := "package p\nimport \"testing\"\nfunc TestA(t *testing.T) {}\n"
+	bad := "package p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestA(t *testing.T) {}\n"
 	fs := lintTree(t, map[string]string{"testdata/x_test.go": bad, "b_test.go": bad, "a_test.go": bad})
 	got := rules(fs)
 	// Each of a_test.go and b_test.go: no-trace-assertion + missing-provenance.

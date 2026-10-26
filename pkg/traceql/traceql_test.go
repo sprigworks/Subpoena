@@ -174,3 +174,20 @@ func TestRejectsOutsideSubset(t *testing.T) {
 		}
 	}
 }
+
+func TestAttributesListsEveryAttributeRead(t *testing.T) {
+	q, err := Parse(`{ name = "a" && span.x = 1 } >> { (span.y = "v" || span.x != 2) && span.z = true } > { }`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(q.Attributes(), ","), "x,y,z"; got != want {
+		t.Errorf("Attributes() = %s, want %s", got, want)
+	}
+	q, err = Parse(`{ name = "a" }`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := q.Attributes(); len(got) != 0 {
+		t.Errorf("Attributes() = %v, want none", got)
+	}
+}

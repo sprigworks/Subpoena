@@ -1,0 +1,21 @@
+# Tier 3: Grafana with the alert rules in examples/gateway/alerts provisioned,
+# Tempo behind it (grafana/otel-lgtm, the same image the OATS stack uses).
+#
+#   make alerts
+#
+# Grafana and Tempo are AGPL-3.0; they run here as separate processes and are
+# only ever spoken to over HTTP. Throwaway stack: anonymous admin access, no
+# credentials, loopback-only ephemeral ports.
+services:
+  lgtm:
+    image: grafana/otel-lgtm:0.38.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ../examples/gateway/alerts/no_exec_after_deny.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/subpoena.yaml:ro
+    ports:
+      - "127.0.0.1::3000"   # Grafana (SUBPOENA_GRAFANA_URL)
+      - "127.0.0.1::3200"   # Tempo query API (SUBPOENA_TEMPO_URL)
+      - "127.0.0.1::4318"   # OTLP/HTTP via the collector (SUBPOENA_OTLP_URL)

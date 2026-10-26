@@ -11,7 +11,7 @@ import (
 const invA = `{ name = "a" } >> { name = "b" }`
 
 func TestOrphanInvariant(t *testing.T) {
-	head := "//subpoena:impl_derived\npackage p\nimport \"testing\"\nfunc TestA(t *testing.T) {\n\th.Collect(ctx)\n"
+	head := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestA(t *testing.T) {\n\th.Collect(ctx)\n"
 	cases := []struct {
 		name string
 		call string
@@ -54,7 +54,7 @@ func TestOrphanInvariant(t *testing.T) {
 }
 
 func TestOrphanInvariantReportsFileAndLine(t *testing.T) {
-	src := "//subpoena:impl_derived\npackage p\nimport \"testing\"\nfunc TestA(t *testing.T) {\n\th.Collect(ctx)\n\n\ttr.Absent(`{ name = \"zzz\" }`)\n}\n"
+	src := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestA(t *testing.T) {\n\th.Collect(ctx)\n\n\ttr.Absent(`{ name = \"zzz\" }`)\n}\n"
 	fs := lintTree(t, map[string]string{"invariants/a.traceql": invA, "a_test.go": src})
 	only(t, fs, RuleOrphanInvariant, 1)
 	if filepath.Base(fs[0].Pos.Filename) != "a_test.go" || fs[0].Pos.Line != 7 {
@@ -76,7 +76,7 @@ func TestOrphanInvariantNonTestFilesAreIgnored(t *testing.T) {
 }
 
 func TestOrphanInvariantWithoutInvariantsDir(t *testing.T) {
-	src := "//subpoena:impl_derived\npackage p\nimport \"testing\"\nfunc TestA(t *testing.T) { h.Collect(ctx); tr.Query(`{}`) }\n"
+	src := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestA(t *testing.T) { h.Collect(ctx); tr.Query(`{}`) }\n"
 	fs := lintTree(t, map[string]string{"a_test.go": src})
 	only(t, fs, RuleOrphanInvariant, 1)
 	if !strings.Contains(fs[0].Msg, "no invariants/") {
@@ -87,7 +87,7 @@ func TestOrphanInvariantWithoutInvariantsDir(t *testing.T) {
 func TestOrphanInvariantExplicitDir(t *testing.T) {
 	dir := t.TempDir()
 	inv := filepath.Join(dir, "elsewhere")
-	src := "//subpoena:impl_derived\npackage p\nimport \"testing\"\nfunc TestA(t *testing.T) { h.Collect(ctx); tr.Query(`" + invA + "`) }\n"
+	src := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestA(t *testing.T) { h.Collect(ctx); tr.Query(`" + invA + "`) }\n"
 	tree := writeTree(t, map[string]string{"elsewhere/x.traceql": invA, "pkg/a_test.go": src}, dir)
 	fs, err := RunWith([]string{filepath.Join(tree, "pkg")}, registry(t), Options{InvariantsDir: inv})
 	if err != nil {
@@ -102,7 +102,7 @@ func TestOrphanInvariantExplicitDir(t *testing.T) {
 func TestOrphanInvariantFoundInAncestor(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"invariants/x.traceql": invA,
-		"pkg/a_test.go":        "//subpoena:impl_derived\npackage p\nimport \"testing\"\nfunc TestA(t *testing.T) { h.Collect(ctx); tr.Query(`" + invA + "`); tr.Query(`{}`) }\n",
+		"pkg/a_test.go":        "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\"; \"x/pkg/witness\")\nfunc TestA(t *testing.T) { h.Collect(ctx); tr.Query(`" + invA + "`); tr.Query(`{}`) }\n",
 	}, t.TempDir())
 	fs, err := Run([]string{filepath.Join(dir, "pkg")}, registry(t))
 	if err != nil {

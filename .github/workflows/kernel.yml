@@ -1,7 +1,8 @@
 name: kernel
 
 # The tests that need a real Linux kernel and Docker: real session cgroups, the
-# eBPF witness, the TraceQL subset against a real Tempo, and tier 2 (OATS).
+# eBPF witness, the TraceQL subset against a real Tempo, tier 2 (OATS) and the
+# tier-3 alert rules in a real Grafana.
 # GitHub's ubuntu runners have rootful Docker, cgroup v2 and kernel BTF. Each
 # target turns "cannot run here" into a failure, so none of these jobs can go
 # green by skipping.
@@ -50,6 +51,16 @@ jobs:
           go-version: "1.24"
           cache: true
       - run: make conformance
+
+  alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - run: make alerts
 
   oats:
     runs-on: ubuntu-latest

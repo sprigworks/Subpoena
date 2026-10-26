@@ -22,7 +22,11 @@ moves between places unchanged.
   catches what the subset evaluator cannot: real exporter behaviour, sampling,
   attribute limits, query semantics.
 - Tier 3 is the production alert rule with the same query. The invariant stops
-  being a test and becomes a standing check.
+  being a test and becomes a standing check. A liveness rule beside it alerts
+  when the spans it depends on stop arriving, since "no violations" and "no
+  telemetry" look the same to the invariant. `make alerts` provisions both into
+  a real Grafana and drives them from silence through clean traffic to a
+  violation.
 
 `invariants/` holds the strings. A test fails if the OATS case or the alert rule
 drifts from the invariant file.
@@ -77,6 +81,11 @@ mutant that does not compile is "invalid", never "killed".
 upstream OTel semantic conventions. It defines the spans and attributes the
 system may emit. Every attribute carries a `tier` annotation: `test` attributes
 (such as `session.id`) are never exported in production, `all` attributes are.
+`pkg/production` enforces that from the generated `AttributeTiers`: an exporter
+wrapper for Go services and a generated Collector transform processor for
+everything else (`examples/gateway/production/otelcol.yaml`). A test fails if
+an invariant promoted to a production alert reads a test-tier attribute, since
+that alert could never fire.
 Go constants are generated into `generated/go/semconv` and are the only source
 of telemetry names. `subpoena-lint` rejects names that are not in the registry.
 CI checks the registry, diffs it against main, and CODEOWNERS requires review.

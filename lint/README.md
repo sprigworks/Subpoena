@@ -5,7 +5,7 @@ deliberately secondary to a clear, working skeleton: each rule is one function
 in `internal/lint/` (`lint.go`, `orphan.go`, `drift.go`), with tests alongside.
 
 ```
-go run ./cmd/subpoena-lint [-registry dir] [-invariants dir] <dir>...
+go run ./cmd/subpoena-lint [-registry dir] [-invariants dir] [-dead-telemetry] <dir>...
 go run ./cmd/subpoena-lint registry-drift [--base ref] [repo]
 ```
 
@@ -23,6 +23,8 @@ Exit status: 0 clean, 1 findings, 2 usage or load error. The registry package
 | `unguarded-absence` | A `RequireAbsent(...)` or `.Absent(...)` call with no `Collect()` call earlier in the same top-level function. |
 | `missing-provenance` | A `_test.go` file without `//subpoena:spec_derived` or `//subpoena:impl_derived` above the package clause. |
 | `orphan-invariant` | A TraceQL string literal passed to a harness query or assert function in a `_test.go` file (`RequireAbsent`/`RequireExists` third argument; `Absent`, `Exists`, `Query` first argument) that, trimmed, does not byte-match a file in `invariants/`. Reported at the literal's `file:line`. |
+| `provider-override` | A call that constructs or installs a tracer provider (`otel.SetTracerProvider`, `sdk/trace.NewTracerProvider`, `trace/noop.NewTracerProvider`), resolved by import path so aliases count, outside a `main` package. Code under test must take its tracer from the harness: spans sent elsewhere make every absence assertion pass for the wrong reason. Exempt one call with `//subpoena:own_provider <reason>` on its line or the line above; the reason is required. |
+| `dead-telemetry` | With `-dead-telemetry`: a registry span name or attribute key that no non-test file in any target references (as a `semconv` constant or an equal literal). Reported at its declaration in the generated package. Opt-in because it assumes the targets are the whole service. |
 | `registry-drift` | Separate subcommand, see below. |
 
 ### Pure-logic test files
@@ -92,15 +94,15 @@ compile), string literals (the `unknown-telemetry` rule steers tests to
 constants, and fixture strings in unrelated tests would make this noisy),
 and queries assembled from constants through variables.
 
-Known imprecision: rules 2 to 4 match by call name, not by type, so any method
-called `Collect` or `Spawned` satisfies them. Rule 3 is tree-wide, not
-per-function. These are acceptable for a skeleton and listed here so nobody
+Known imprecision: rules 2 to 4 match by call name, not by type. A `Collect`
+call counts only in a file importing a package ending in `/pkg/harness`, and a
+`Spawned` call only in a file importing `/pkg/witness` or a package below it
+(such as `execbpf`), but within such a file any method of that name still
+satisfies them. Rule 3 is tree-wide, not per-function. These are acceptable for a skeleton and listed here so nobody
 mistakes them for guarantees. The fault gate (`cmd/subpoena-gate`) is the
 backstop that checks behaviour rather than shape.
 
 ## Not implemented
 
-- `dead-telemetry`: a registry entry with no emitter in code. Needs a
-  whole-program pass. The other half of the old `registry-drift` idea,
-  `generated/` out of date with `registry/`, is covered by
-  `make check-generated`.
+- Type-checked matching for rules 2 to 4 (`go/types`), which would close the
+  name-matching gap above.

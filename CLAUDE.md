@@ -21,6 +21,10 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   file holding only pure-logic tests (no telemetry) is marked
   `//subpoena:pure_logic` above the package clause instead; never add the
   marker to a file that touches telemetry to quiet the lint.
+- Code under test gets its tracer from the harness. Never construct or install
+  another tracer provider outside a `main` package to make a test pass; a
+  genuine need is marked `//subpoena:own_provider <reason>` on the call, and
+  the reason must be true.
 - Absence assertions (`RequireAbsent`, `.Absent`) run only after `Collect()`.
   An `Inconclusive` verdict is a failure, not a pass. Do not set
   `AllowInconclusive` to get green.
@@ -44,8 +48,8 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   (go.opentelemetry.io, golang.org) use `make SANDBOX=1 <target>`, which
   activates `go.work.sandbox` (GitHub-mirror replaces) and sets
   `GOPROXY=direct GOSUMDB=off`. Keep `go.mod` free of those replaces.
-- Tier 2 (`make oats`) and `make conformance` need Docker; tier 2 needs
-  rootful Docker, cgroup v2 and kernel BTF. Where those are missing (cloud
+- Tier 2 (`make oats`), tier 3 (`make alerts`) and `make conformance` need
+  Docker; tier 2 needs rootful Docker, cgroup v2 and kernel BTF. Where those are missing (cloud
   sandboxes), say the target was not run; never claim it passes. Run OATS only
   through `make oats`: run directly from an agent session, gcx's agent mode
   makes `absent` and `count` assertions meaningless (oats/README.md).

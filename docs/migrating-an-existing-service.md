@@ -54,7 +54,12 @@ A span group names the span and refs its attributes (`registry/model/spans.yaml`
 
 Decide each attribute's `tier` now, while you are looking at them. `test`
 attributes are the high-cardinality or diagnostic ones (session IDs, command
-lines); `all` attributes are safe in production. Attributes defined upstream
+lines); `all` attributes are safe in production. In production, wrap the
+exporter with `production.Exporter(exp, semconv.AttributeTiers)` or put the
+Collector processor from `production.CollectorConfig` in front of the backend
+(the gateway's `cmd/gateway` and `examples/gateway/production` show both). An
+invariant you promote to an alert may read only `all` attributes;
+`invariants/` tests that. Attributes defined upstream
 (`process.command_line`) are referenced with `ref:`; the manifest depends on the
 OpenTelemetry semantic conventions for that.
 
@@ -230,7 +235,7 @@ A file that begins with a `//go:build` line is fine: the marker may precede it.
 ## 6. Run the lint and the gate
 
 ```
-go run ./cmd/subpoena-lint .                     # make lint (the repo's target lints examples/gateway)
+go run ./cmd/subpoena-lint -dead-telemetry .     # make lint (the repo's target lints examples/gateway)
 go run ./cmd/subpoena-gate ./path/to/package     # make gate: the package(s) holding enforcement points
 make lint-drift BASE=origin/main                 # registry-drift, for review
 ```
@@ -243,6 +248,8 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 | `missing-provenance` | Add the marker (step 5) |
 | `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`) what happened |
 | `orphan-invariant` | Load the query by name, or add `invariants/<name>.traceql` and regenerate |
+| `provider-override` | Legacy tests often build their own `TracerProvider` with an in-memory exporter. Use the harness's tracer instead; mark a real need with `//subpoena:own_provider <reason>` |
+| `dead-telemetry` | A registry entry nothing emits. Emit it, or remove it from the registry (reviewed). Pass `-dead-telemetry` only when the targets cover the whole service |
 | `registry-drift` | A registry change and a test that uses it are in one change set; a human confirms the test was not bent to fit |
 
 The gate is the check that matters most. It requires a green baseline, removes
@@ -270,8 +277,12 @@ An invariant is a string, so promotion is copy and paste:
   of `Inconclusive`: the pipeline is live, so the absence is not vacuous). Add
   the witness query alongside. See `examples/gateway/oats/oats-case.yaml`.
 - **Tier 3, production.** The same string, plus a metrics function, as an alert
-  rule: `examples/gateway/alerts/no_exec_after_deny.yaml`. Set `noDataState` to
-  alerting; no data means the telemetry is missing, not that the system is safe.
+  rule: `examples/gateway/alerts/no_exec_after_deny.yaml`. Use an instant
+  metrics query, reduce it, then threshold it. Set `noDataState: OK` on the
+  invariant: when nothing violates, the query returns no series, and that is
+  the healthy state. Add a separate liveness rule (`noDataState: Alerting`) on
+  the spans the invariant depends on, so missing telemetry still alerts. Copy
+  the pair from the example; `make alerts` checks it against a real Grafana.
 - **Keep them from drifting.** Add a row to `promotions` in
   `invariants/invariants_test.go` naming the files that must contain the
   invariant verbatim. The test fails on any difference.
@@ -280,8 +291,7 @@ An invariant is a string, so promotion is copy and paste:
   same matches. Add a row to `conformance/expected.yaml` for each new invariant.
 
 Tier 2 has been run (`examples/gateway/oats/README.md` lists what was verified
-and the tooling traps found). Tier 3 is written but has not been validated
-against Grafana.
+and the tooling traps found). Tier 3 has been run too (`make alerts`).
 
 ## What to delete
 
