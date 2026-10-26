@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.0-alpha.1 (unreleased)
+## v0.1.0-alpha.1 (2026-10-26)
 
 First alpha. Go only; APIs will change. Everything listed under "Verified" has
 run, on a real machine and in CI; anything else says what it is.
