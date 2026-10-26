@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-//go:generate go run gen.go
+//go:generate go run ../cmd/subpoena-invgen
 
 //go:embed *.traceql
 var files embed.FS
