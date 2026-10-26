@@ -78,6 +78,7 @@ tempo.yaml            minimal Tempo config (OTLP/HTTP in, fast search availabili
 otlp.go               OTLP/JSON model, fixture loader, conversion to traceql.Trace
 tempo.go              HTTP client and the comparison run
 runner.go             runs any evaluator command over the corpus (subpoena-conform)
+harness.yaml          harness cases (docs/ports.md H1-H6) every language runs
 ```
 
 ## Other languages
