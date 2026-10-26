@@ -110,9 +110,13 @@ func (f *fakeTempo) handler() http.Handler {
 		}
 		var ids []string
 		if f.searches > f.emptyFirst {
-			for _, m := range p.Eval(f.traces) {
-				// Tempo may trim leading zeros; NormID must cope.
-				ids = append(ids, strings.TrimLeft(m.TraceID, "0"))
+			for _, tr := range f.traces {
+				// A trace the subset refuses (array values) is left out;
+				// Run does not compare those.
+				if ok, err := p.MatchesTrace(tr); err == nil && ok {
+					// Tempo may trim leading zeros; NormID must cope.
+					ids = append(ids, strings.TrimLeft(tr.ID, "0"))
+				}
 			}
 		}
 		if f.mutate != nil && q != "{ true }" {

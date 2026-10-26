@@ -1,0 +1,99 @@
+# Harness cases: docs/ports.md H1-H6 as data. Every harness, in every language,
+# runs each case and must produce exactly these results. Derived from
+# docs/ports.md before running anything; the Go runner is harness_test.go.
+#
+# A case builds spans with its harness's tracer:
+#   - spans start in list order; `parent` names an earlier span of the case
+#     (its trace); a span without one is the root of a new trace;
+#   - spans end in reverse list order (children before parents), except those
+#     with `ended: false`, which never end;
+#   - `capacity` (default: the harness default) is how many finished spans the
+#     recorder keeps; further spans count as dropped.
+# Attribute values are YAML scalars (string, bool, integer) or a list of
+# strings (a string-array attribute).
+#
+# Then it collects once and checks:
+#   collect: complete, dropped (count), unfinished (span names, sorted), traces
+#            (the number of trace IDs among the captured, ended spans)
+#   each assertion: absent or exists on a query, and either
+#     verdict: Pass | Fail | Inconclusive, plus require: passes | fails (what
+#     the test-runner helper does with that verdict, by default), or
+#     error: true (the query does not parse: an error, never a verdict).
+cases:
+  - name: complete_capture
+    spans:
+      - { id: a, name: a, attrs: { k: false, n: 3, s: x } }
+      - { id: b, parent: a, name: b }
+    collect: { complete: true, dropped: 0, unfinished: [], traces: 1 }
+    assertions:
+      - { absent: '{ name = "a" && span.k = false } >> { name = "b" }', verdict: Fail, require: fails }
+      - { exists: '{ name = "a" && span.k = false } >> { name = "b" }', verdict: Pass, require: passes }
+      - { absent: '{ name = "zzz" }', verdict: Pass, require: passes }
+      - { exists: '{ name = "zzz" }', verdict: Fail, require: fails }
+      - { exists: '{ span.n = 3 && span.s = "x" }', verdict: Pass, require: passes }
+
+  # H3: a span that never ends makes the capture incomplete.
+  - name: unfinished_span
+    spans:
+      - { id: seen, name: seen }
+      - { id: open, name: open, ended: false }
+    collect: { complete: false, dropped: 0, unfinished: [open], traces: 1 }
+    assertions:
+      # H4: no match from an incomplete capture proves nothing...
+      - { absent: '{ name = "zzz" }', verdict: Inconclusive, require: fails }
+      - { exists: '{ name = "zzz" }', verdict: Inconclusive, require: fails }
+      # ...but a match is definitive either way.
+      - { absent: '{ name = "seen" }', verdict: Fail, require: fails }
+      - { exists: '{ name = "seen" }', verdict: Pass, require: passes }
+
+  # H3: overflow is counted as dropped, never silently ignored.
+  - name: dropped_span
+    capacity: 1
+    spans:
+      - { id: one, name: one }
+      - { id: two, name: two }
+    collect: { complete: false, dropped: 1, unfinished: [], traces: 1 }
+    assertions:
+      - { absent: '{ name = "zzz" }', verdict: Inconclusive, require: fails }
+
+  # H4: a query that does not parse is an error, never a verdict.
+  - name: invalid_query
+    spans:
+      - { id: a, name: a }
+    collect: { complete: true, dropped: 0, unfinished: [], traces: 1 }
+    assertions:
+      - { absent: '{ name = ', error: true }
+      - { exists: '{ name = ', error: true }
+      - { absent: '{ true } | count() > 1', error: true }
+
+  # H6 and the subset: relations never cross traces, and types are compared
+  # strictly.
+  - name: separate_traces_and_types
+    spans:
+      - { id: a, name: a, attrs: { k: false, n: 3 } }
+      - { id: b, name: b }
+    collect: { complete: true, dropped: 0, unfinished: [], traces: 2 }
+    assertions:
+      - { absent: '{ name = "a" } >> { name = "b" }', verdict: Pass, require: passes }
+      - { exists: '{ span.n = "3" }', verdict: Fail, require: fails }
+      - { exists: '{ span.k = "false" }', verdict: Fail, require: fails }
+      - { exists: '{ span.missing != "x" }', verdict: Fail, require: fails }
+
+  # H1: the resource is empty, so a span has only the attributes the code set.
+  - name: empty_resource
+    spans:
+      - { id: a, name: a }
+    collect: { complete: true, dropped: 0, unfinished: [], traces: 1 }
+    assertions:
+      - { exists: '{ span.service.name != "" }', verdict: Fail, require: fails }
+
+  # H6: an array value is refused, not stringified or guessed at.
+  - name: array_attribute
+    spans:
+      - { id: a, name: exec, attrs: { args: [rm, -rf], n: 3 } }
+    collect: { complete: true, dropped: 0, unfinished: [], traces: 1 }
+    assertions:
+      - { exists: '{ span.args = "rm" }', error: true }
+      - { absent: '{ span.args = "[rm -rf]" }', error: true }
+      - { absent: '{ span.args != "x" }', error: true }
+      - { exists: '{ span.n = 3 }', verdict: Pass, require: passes }

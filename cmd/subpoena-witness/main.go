@@ -6,7 +6,8 @@
 //	subpoena-witness -check-ready file   # exit 0 once the witness is attached
 //
 // By default only execs inside a session cgroup are written; -all writes every
-// exec on the machine, which an argument-based witness query needs.
+// exec on the machine, which an argument-based witness query needs. The line
+// format is witness.Line (schema: docs/witness-event.schema.json).
 package main
 
 import (
@@ -19,28 +20,10 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/sprigworks/subpoena/pkg/witness"
 	"github.com/sprigworks/subpoena/pkg/witness/execbpf"
 )
-
-// line is the JSON written per exec. Field names are what LogQL queries use
-// (`| json | attribution="cgroup"`), so they are part of the interface.
-type line struct {
-	Time        time.Time `json:"time"`
-	PID         int       `json:"pid"`
-	PPID        int       `json:"ppid"`
-	HostPID     int       `json:"host_pid"`
-	Comm        string    `json:"comm"`
-	Exe         string    `json:"exe"`
-	Command     string    `json:"command"`
-	Args        []string  `json:"args"`
-	CgroupID    uint64    `json:"cgroup_id"`
-	Cgroup      string    `json:"cgroup"`
-	TraceID     string    `json:"trace_id,omitempty"`
-	Attribution string    `json:"attribution,omitempty"`
-}
 
 func main() {
 	root := flag.String("cgroup-root", "", "parent of the session cgroups (default $SUBPOENA_CGROUP_ROOT or /sys/fs/cgroup/subpoena)")
@@ -84,9 +67,13 @@ func run(root string, all bool, out, ready string) error {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if err := enc.Encode(line{
+			args := e.Args
+			if args == nil {
+				args = []string{} // the schema requires an array, never null
+			}
+			if err := enc.Encode(witness.Line{
 				Time: e.Time.UTC(), PID: e.PID, PPID: e.PPID, HostPID: e.HostPID,
-				Comm: e.Comm, Exe: e.Exe, Command: strings.Join(e.Args, " "), Args: e.Args,
+				Comm: e.Comm, Exe: e.Exe, Command: strings.Join(args, " "), Args: args,
 				CgroupID: e.CgroupID, Cgroup: e.Cgroup, TraceID: e.TraceID, Attribution: string(e.Attribution),
 			}); err != nil && writeErr == nil {
 				writeErr = err

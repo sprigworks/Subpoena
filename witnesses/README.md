@@ -151,10 +151,11 @@ cgroup-derived field, `process.docker`, is filled only when the leaf cgroup
 name passes its container-ID heuristic, truncated to 31 characters. Tested: a
 32-hex trace-ID leaf yields nothing; a 64-hex leaf yields 31 characters.
 
-Tetragon stays in the design for what it does and execbpf does not:
-enforcement, killing a denied session's process in the kernel.
-`tetragon/process-exec.yaml` loads on v1.7.1 and is kept for that; it is not
-part of the tier-2 stack and has not been used to enforce anything.
+Tetragon can also enforce (kill a process in the kernel), which execbpf does
+not. `tetragon/process-exec.yaml` loads on v1.7.1 and is kept as a draft; it is
+not part of the tier-2 stack and has never enforced anything. To kill only a
+denied session's processes it needs the session's cgroup, which it does not see
+outside Kubernetes, so off Kubernetes it is unproven as a backstop.
 
 ## Production design
 
@@ -170,8 +171,11 @@ part of the tier-2 stack and has not been used to enforce anything.
 4. Lineage stays as a secondary signal, for when cgroup creation fails. A
    process outside the session cgroup but inside the gateway's lineage is
    itself a finding.
-5. Enforcement (not built): a kernel-side kill of a denied session's process,
-   Tetragon's job or an LSM's.
+5. A kernel-side backstop (not built): an optional, per-session-cgroup exec
+   backstop in the open core, decided in `docs/decisions.md` amendment 4, with
+   Tetragon as the alternative where Kubernetes is in use. It is a test
+   backstop, not an agent guardrail. In tests a backstop intervention counts
+   as a failure, and cross-examination runs with the backstop observing only.
 
 ## Layout
 

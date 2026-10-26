@@ -6,12 +6,14 @@ TraceQL string, runs in unit tests, in an integration environment and in
 production. The distinctive part: a system's spans are testimony, not proof.
 The code that enforces a policy is also the code that reports having enforced
 it, so enforcement is only proven by an independent witness, a process-exec
-observer the application does not control, and a fault gate checks that the
+observer the application does not control, and cross-examination checks that the
 suite can tell the difference.
 
 **Status: alpha** (v0.1.0-alpha.1, see [CHANGELOG.md](CHANGELOG.md)). Go only
-so far (Python and TypeScript later; the registry is language-neutral). APIs
-will change.
+so far. Python and TypeScript are next: the registry, invariants, witness
+output and tiers 2–3 are language-neutral, and [docs/ports.md](docs/ports.md)
+is the contract a harness in another language must meet, with a check for
+each part. APIs will change.
 
 To use it in a service of your own, follow
 [docs/migrating-an-existing-service.md](docs/migrating-an-existing-service.md);
@@ -43,8 +45,8 @@ Details in [docs/architecture.md](docs/architecture.md).
 ## Quickstart
 
 ```
-make test      # tier 1: harness, traceql, witness, lint, gate and gateway tests
-make check     # test + vet + subpoena-lint + subpoena-gate over examples/gateway
+make test      # tier 1: harness, traceql, witness, lint, cross-examination and gateway tests
+make check     # test + vet + subpoena-lint + subpoena-cross over examples/gateway
 make conformance  # subset vs a real Tempo in Docker (optional)
 make oats         # tier 2: OATS + the eBPF witness (rootful Docker, cgroup v2, BTF)
 make test-ebpf    # the eBPF witness against the real kernel, in a privileged container
@@ -61,15 +63,16 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | Registry (`registry/`), Weaver check and Go generation | Runs. Weaver 0.28 checked the registry and generated `generated/go/semconv` |
 | `pkg/harness`, `pkg/traceql`, `pkg/witness` (`ProcWitness`), `pkg/cgroup` | Runs, in `make test`. Cgroup tests use a real cgroup v2 when the machine allows it and skip that part otherwise |
 | `examples/gateway` tier-1 tests | Runs, in `make test` |
-| `subpoena-lint`, `subpoena-gate` | Runs; the gate kills the gateway mutant |
+| `subpoena-lint`, `subpoena-cross` | Runs; cross-examination kills the gateway mutant |
 | Tier 2: `examples/gateway/oats` (`make oats`) | Runs (needs rootful Docker, cgroup v2, BTF): both cases pass, cgroup-correlated and argument-correlated, and both fail against the enforcement mutant |
 | Kernel-side witness, `pkg/witness/execbpf`, `cmd/subpoena-witness` | Runs: unit tests in `make test`, kernel tests in `make test-ebpf` (privileged container); the tier-2 witness |
 | Tetragon policy, `witnesses/tetragon` | Loads on Tetragon v1.7.1; kept for enforcement, not used. Not the witness: outside Kubernetes its events lack the session cgroup |
 | `pkg/production`: test-tier attributes kept out of production | Runs, in `make test`; the generated Collector config was validated and run on otelcol-contrib 0.116.1 |
 | Tier 3: `examples/gateway/alerts` (`make alerts`) | Runs (needs Docker): provisioned into Grafana 13.2 with Tempo 3.1 and driven through the scheduler. Quiet on silence and on clean traffic, fires on a violation. The first run found the unvalidated rule could never fire; see the rule file's header |
-| `examples/adopter`: adopting Subpoena from a separate module | Runs in CI (`adopter` job): test, lint, gate, and its generated names checked with Weaver |
+| `examples/adopter`: adopting Subpoena from a separate module | Runs in CI (`adopter` job): test, lint, cross-examination, and its generated names checked with Weaver |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
-| Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses |
+| Port checks: `subpoena-traceql`, `subpoena-conform` (`make conform`), the witness file format and reader (`witness.ReadLog`) | Runs, in `make test`: the Go evaluator, through the same protocol a port uses, agrees on all 139 cases (13 queries over 9 fixtures, 22 rejected queries) |
+| Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses. Array values are refused: Tempo's answers on them follow no rule the subset could copy (measured; see `docs/traceql-subset.md`) |
 
 Other things to know:
 
@@ -93,6 +96,7 @@ Other things to know:
 - `docs/decisions.md` — positioning and the resolved open questions, with amendments.
 - `docs/architecture.md` — what was actually built, in text.
 - `docs/traceql-subset.md`, `docs/migrating-an-existing-service.md` — the subset grammar and the migration playbook.
+- `docs/ports.md` — the contract for a Python or TypeScript harness, and how each part is checked.
 - `docs/background/tdd-vs-telemetry.md` — the analysis that started the project: whether OTel assertions can replace test suites (they can't; this is what they can do).
 
 ## Layout
@@ -110,9 +114,11 @@ pkg/production/       drop test-tier attributes in production (exporter, Collect
 witnesses/            witness design notes, Tetragon policy (enforcement)
 invariants/           *.traceql invariants (+ embedded loader)
 cmd/subpoena-lint/    static checks (see lint/README.md)
-cmd/subpoena-gate/    fault gate
+cmd/subpoena-cross/    cross-examination
 cmd/subpoena-witness/ runs the kernel-side witness, JSON lines out
 cmd/subpoena-invgen/  writes invariants/names.go (also for other modules)
+cmd/subpoena-traceql/ the Go evaluator as a command (the port protocol)
+cmd/subpoena-conform/ checks any language's evaluator against the corpus
 examples/gateway/     toy agent gateway, tests, OATS stack, alert rule
 examples/adopter/     separate module adopting Subpoena from outside (CI keeps it working)
 conformance/          fixtures + expected results, subset-vs-Tempo conformance test

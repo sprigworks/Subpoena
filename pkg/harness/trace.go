@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"fmt"
 	"sort"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -61,13 +60,19 @@ type Result struct {
 func (r *Result) Count() int { return len(r.Matches) }
 
 // Query evaluates a TraceQL string against the snapshot. The same string can
-// be used unchanged in OATS and in an alert rule.
+// be used unchanged in OATS and in an alert rule. The error is non-nil if q
+// does not parse, or reads an attribute that holds an array value in the
+// snapshot (*traceql.UnsupportedValueError).
 func (t *Trace) Query(q string) (*Result, error) {
 	p, err := traceql.Parse(q)
 	if err != nil {
 		return nil, err
 	}
-	return &Result{Matches: p.Eval(t.traces), Complete: t.complete}, nil
+	ms, err := p.Eval(t.traces)
+	if err != nil {
+		return nil, err
+	}
+	return &Result{Matches: ms, Complete: t.complete}, nil
 }
 
 func convert(spans []sdktrace.ReadOnlySpan) []traceql.Trace {
@@ -112,5 +117,6 @@ func attrValue(v attribute.Value) any {
 	case attribute.STRING:
 		return v.AsString()
 	}
-	return fmt.Sprint(v.AsInterface())
+	// Slices: outside the subset, refused by any query that reads them.
+	return traceql.Unsupported{Kind: "array"}
 }

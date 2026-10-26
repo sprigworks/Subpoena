@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift gate test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift cross conform test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -45,9 +45,16 @@ lint:
 lint-drift:
 	go run ./cmd/subpoena-lint registry-drift $(if $(BASE),--base $(BASE)) .
 
-# Fault gate: remove each enforcement statement; the suite must go red.
-gate:
-	go run ./cmd/subpoena-gate ./examples/gateway
+# Cross-examination: remove each enforcement statement; the suite must go red.
+cross:
+	go run ./cmd/subpoena-cross ./examples/gateway
+
+# Check a TraceQL evaluator in any language against the conformance corpus
+# (docs/ports.md): make conform EVAL="python -m subpoena.traceql". Without
+# EVAL it checks the Go reference, subpoena-traceql.
+conform:
+	@bin=$$(mktemp -d)/subpoena-traceql && go build -o $$bin ./cmd/subpoena-traceql && \
+	go run ./cmd/subpoena-conform -- $${EVAL:-$$bin}
 
 # The real-cgroup tests (pkg/cgroup, examples/gateway) without root: run them in
 # a systemd user scope with cgroup delegation, rooted inside that scope. They
@@ -123,12 +130,15 @@ oats:
 	docker volume ls -q --filter name=_witness-events | grep '^oats-' | xargs -r docker volume rm >/dev/null; exit $$rc
 
 # Everything that runs without Docker or eBPF.
-check: build vet test lint gate
+check: build vet test lint cross
 
-# Regenerate Go constants from the registry (intended path: Weaver).
+# Regenerate the constants from the registry with Weaver: Go, Python and
+# TypeScript (one module each, the same names).
 generate:
 	$(WEAVER) registry generate -r $(REGISTRY) --templates weaver-templates go generated/go/semconv
 	gofmt -w generated/go/semconv/semconv.go
+	$(WEAVER) registry generate -r $(REGISTRY) --templates weaver-templates python generated/python
+	$(WEAVER) registry generate -r $(REGISTRY) --templates weaver-templates ts generated/ts
 
 # Regenerate invariants/names.go from invariants/*.traceql.
 generate-invariants:
@@ -139,7 +149,7 @@ registry-check:
 
 # Fails if generated/ is stale relative to registry/.
 check-generated: generate
-	git diff --exit-code generated/
+	git add -N generated/ && git diff --exit-code generated/
 
 # -e: tolerate test-only dependencies of dependencies on unreachable vanity hosts.
 tidy:

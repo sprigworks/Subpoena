@@ -1,6 +1,6 @@
 // Package jobrunner is a toy CI job runner, written as a separate module that
 // adopts Subpoena from outside: its own registry, generated names, invariants,
-// tests, lint and gate, using only Subpoena's public packages and commands.
+// tests, lint and cross-examination, using only Subpoena's public packages and commands.
 //
 // The rule it enforces: a job from an untrusted source (a fork) that asks for
 // secrets is rejected and never runs.
