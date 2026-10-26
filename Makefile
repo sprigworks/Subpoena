@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift gate test-cgroup test-ebpf generate-bpf conformance oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift gate test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -86,6 +86,20 @@ conformance:
 	SUBPOENA_OTLP_URL=http://$$($(CONFORMANCE_COMPOSE) port tempo 4318) \
 	SUBPOENA_CONFORMANCE_REQUIRE=1 go test ./conformance -run TestTempo -count=1 -v; rc=$$?; \
 	$(CONFORMANCE_COMPOSE) down -v; exit $$rc
+
+# Tier 3: the alert rules in examples/gateway/alerts, provisioned into a real
+# Grafana with Tempo behind it, driven through Grafana's scheduler from silence
+# to clean traffic to a violation. Needs Docker; takes about four minutes (the
+# rule group evaluates once a minute). SUBPOENA_ALERTS_REQUIRE makes a missing
+# Grafana a failure, not a skip.
+ALERTS_COMPOSE := docker compose -f conformance/docker-compose.alerts.yml
+alerts:
+	$(ALERTS_COMPOSE) up -d
+	SUBPOENA_GRAFANA_URL=http://$$($(ALERTS_COMPOSE) port lgtm 3000) \
+	SUBPOENA_TEMPO_URL=http://$$($(ALERTS_COMPOSE) port lgtm 3200) \
+	SUBPOENA_OTLP_URL=http://$$($(ALERTS_COMPOSE) port lgtm 4318) \
+	SUBPOENA_ALERTS_REQUIRE=1 go test ./conformance -run TestAlertRules -count=1 -v -timeout 12m; rc=$$?; \
+	$(ALERTS_COMPOSE) down -v; exit $$rc
 
 # Tier 2: the OATS cases in examples/gateway/oats. Needs rootful Docker on a
 # Linux host with cgroup v2 and kernel BTF (the witness loads eBPF, privileged), and

@@ -270,8 +270,12 @@ An invariant is a string, so promotion is copy and paste:
   of `Inconclusive`: the pipeline is live, so the absence is not vacuous). Add
   the witness query alongside. See `examples/gateway/oats/oats-case.yaml`.
 - **Tier 3, production.** The same string, plus a metrics function, as an alert
-  rule: `examples/gateway/alerts/no_exec_after_deny.yaml`. Set `noDataState` to
-  alerting; no data means the telemetry is missing, not that the system is safe.
+  rule: `examples/gateway/alerts/no_exec_after_deny.yaml`. Use an instant
+  metrics query, reduce it, then threshold it. Set `noDataState: OK` on the
+  invariant: when nothing violates, the query returns no series, and that is
+  the healthy state. Add a separate liveness rule (`noDataState: Alerting`) on
+  the spans the invariant depends on, so missing telemetry still alerts. Copy
+  the pair from the example; `make alerts` checks it against a real Grafana.
 - **Keep them from drifting.** Add a row to `promotions` in
   `invariants/invariants_test.go` naming the files that must contain the
   invariant verbatim. The test fails on any difference.
@@ -280,8 +284,7 @@ An invariant is a string, so promotion is copy and paste:
   same matches. Add a row to `conformance/expected.yaml` for each new invariant.
 
 Tier 2 has been run (`examples/gateway/oats/README.md` lists what was verified
-and the tooling traps found). Tier 3 is written but has not been validated
-against Grafana.
+and the tooling traps found). Tier 3 has been run too (`make alerts`).
 
 ## What to delete
 

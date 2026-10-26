@@ -22,7 +22,11 @@ moves between places unchanged.
   catches what the subset evaluator cannot: real exporter behaviour, sampling,
   attribute limits, query semantics.
 - Tier 3 is the production alert rule with the same query. The invariant stops
-  being a test and becomes a standing check.
+  being a test and becomes a standing check. A liveness rule beside it alerts
+  when the spans it depends on stop arriving, since "no violations" and "no
+  telemetry" look the same to the invariant. `make alerts` provisions both into
+  a real Grafana and drives them from silence through clean traffic to a
+  violation.
 
 `invariants/` holds the strings. A test fails if the OATS case or the alert rule
 drifts from the invariant file.

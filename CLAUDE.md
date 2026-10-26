@@ -44,8 +44,8 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   (go.opentelemetry.io, golang.org) use `make SANDBOX=1 <target>`, which
   activates `go.work.sandbox` (GitHub-mirror replaces) and sets
   `GOPROXY=direct GOSUMDB=off`. Keep `go.mod` free of those replaces.
-- Tier 2 (`make oats`) and `make conformance` need Docker; tier 2 needs
-  rootful Docker, cgroup v2 and kernel BTF. Where those are missing (cloud
+- Tier 2 (`make oats`), tier 3 (`make alerts`) and `make conformance` need
+  Docker; tier 2 needs rootful Docker, cgroup v2 and kernel BTF. Where those are missing (cloud
   sandboxes), say the target was not run; never claim it passes. Run OATS only
   through `make oats`: run directly from an agent session, gcx's agent mode
   makes `absent` and `count` assertions meaningless (oats/README.md).
