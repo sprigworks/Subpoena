@@ -122,9 +122,14 @@ func TestWeakSuiteLetsMutantSurvive(t *testing.T) {
 }
 
 func TestNonCompilingMutantIsInvalidNotKilled(t *testing.T) {
-	// errors is imported only for the removed line, so the mutant fails to build.
-	src := strings.Replace(authOK, "var ErrDenied = errors.New(\"denied\")\n", "", 1)
-	src = strings.Replace(src, "return ErrDenied //subpoena:enforcement", "return errors.New(\"denied\") //subpoena:enforcement", 1)
+	// The removed statement declares a variable used later, so the mutant
+	// cannot build whatever the gate does.
+	src := strings.Replace(authOK, `	if !admin {
+		return ErrDenied //subpoena:enforcement
+	}`, `	err := ErrDenied //subpoena:enforcement
+	if !admin {
+		return err
+	}`, 1)
 	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": strongTest})
 	rep, err := run(t, dir)
 	if err != nil {
@@ -132,6 +137,50 @@ func TestNonCompilingMutantIsInvalidNotKilled(t *testing.T) {
 	}
 	if rep.Results[0].Outcome != Invalid || !rep.Failed() {
 		t.Fatalf("a compile failure must not count as a kill: %+v", rep.Results[0])
+	}
+}
+
+func TestImportOnlyUsedByTheRemovedStatementIsPruned(t *testing.T) {
+	// errors is imported only for the removed line: without pruning the
+	// mutant would not build and would prove nothing.
+	src := strings.Replace(authOK, "var ErrDenied = errors.New(\"denied\")\n", "var ErrDenied error\n", 1)
+	src = strings.Replace(src, "return ErrDenied //subpoena:enforcement", "return errors.New(\"denied\") //subpoena:enforcement", 1)
+	test := strings.Replace(strongTest, "Allow(false) == nil", "Allow(false) == nil && ErrDenied == nil", 1)
+	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": test})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Results[0].Outcome != Killed {
+		t.Fatalf("want killed after pruning the unused import, got %+v", rep.Results[0])
+	}
+}
+
+func TestRelativeReplaceStillResolvesInTheCopy(t *testing.T) {
+	// mini depends on a sibling module through `replace ... => ../lib`, as a
+	// service developed against a local checkout does.
+	root := t.TempDir()
+	write := func(p, src string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(root, "lib", "go.mod"), "module example.com/lib\n\ngo 1.24\n")
+	write(filepath.Join(root, "lib", "lib.go"), "package lib\n\nfunc Admin(name string) bool { return name == \"root\" }\n")
+	write(filepath.Join(root, "mini", "go.mod"), "module mini\n\ngo 1.24\n\nrequire example.com/lib v0.0.0\n\nreplace example.com/lib => ../lib\n")
+	write(filepath.Join(root, "mini", "auth.go"), authOK)
+	write(filepath.Join(root, "mini", "auth_test.go"), strings.Replace(strongTest, `import "testing"`, "import (\n\t\"testing\"\n\n\t\"example.com/lib\"\n)", 1)+
+		"\nfunc TestLib(t *testing.T) {\n\tif !lib.Admin(\"root\") {\n\t\tt.Fatal(\"lib\")\n\t}\n}\n")
+	rep, err := run(t, filepath.Join(root, "mini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Results[0].Outcome != Killed {
+		t.Fatalf("want killed, got %+v", rep.Results[0])
 	}
 }
 

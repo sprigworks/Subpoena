@@ -11,6 +11,24 @@ Subpoena is pre-alpha and Go-only; the registry is language-neutral. The order
 matters: registry first, tests once names are stable, witnesses before you trust
 any absence claim.
 
+`examples/adopter` is a second worked example: a separate module that adopts
+Subpoena from outside, as your service will, and CI keeps it working. When this
+guide shows a `make` target from this repository, the adopter's `Makefile` has
+the outside equivalent.
+
+## 0. Add Subpoena and its commands
+
+```
+go get github.com/sprigworks/subpoena
+go get -tool github.com/sprigworks/subpoena/cmd/subpoena-lint
+go get -tool github.com/sprigworks/subpoena/cmd/subpoena-gate
+go get -tool github.com/sprigworks/subpoena/cmd/subpoena-invgen
+```
+
+The commands become Go tools of your module (Go 1.24+), pinned to the Subpoena
+version in your `go.mod`, and run with `go tool subpoena-lint` and so on. In
+this repository the same commands run as `go run ./cmd/...`.
+
 ## 1. Extract a registry from your existing span names
 
 Inventory what you emit today. Anything that starts a span or sets an
@@ -92,7 +110,7 @@ Let the linter be your worklist: a literal that is not in the registry is a
 finding, and one that is in the registry is accepted but should still go:
 
 ```
-go run ./cmd/subpoena-lint .          # rule: unknown-telemetry (takes directories, walks them)
+go tool subpoena-lint .          # rule: unknown-telemetry (takes directories, walks them)
 ```
 
 Names that are new to you (a span someone added without telling anyone) show up
@@ -140,7 +158,10 @@ What to carry over, and what changes:
   `Inconclusive`, which fails the test. Never set `AllowInconclusive` to get green.
 - **Pair every absence with a presence control** (the denial was observed).
 - **Write the query once, as an invariant:** `invariants/<name>.traceql` (any
-  match is a violation), `make generate-invariants`, then `invariants.<Name>`.
+  match is a violation), then `invariants.<Name>`. Your `invariants` package
+  embeds the files (copy `examples/adopter/invariants/invariants.go`); its
+  `//go:generate go run github.com/sprigworks/subpoena/cmd/subpoena-invgen`
+  writes `names.go`, so run `go generate ./invariants` after adding one.
   The `orphan-invariant` rule flags a pasted TraceQL literal in a test, because
   it cannot be promoted in step 7. One-off queries built from registry constants
   with `fmt.Sprintf`, as the gateway tests do, are fine.
@@ -235,8 +256,8 @@ A file that begins with a `//go:build` line is fine: the marker may precede it.
 ## 6. Run the lint and the gate
 
 ```
-go run ./cmd/subpoena-lint -dead-telemetry .     # make lint (the repo's target lints examples/gateway)
-go run ./cmd/subpoena-gate ./path/to/package     # make gate: the package(s) holding enforcement points
+go tool subpoena-lint -dead-telemetry .     # dead-telemetry only when . is the whole service
+go tool subpoena-gate ./path/to/package     # the package(s) holding enforcement points
 make lint-drift BASE=origin/main                 # registry-drift, for review
 ```
 

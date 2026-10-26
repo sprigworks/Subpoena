@@ -11,6 +11,7 @@ package gate
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -121,6 +122,9 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	if err := copyTree(root, tmp); err != nil {
 		return nil, fmt.Errorf("gate: copy tree: %w", err)
 	}
+	if err := absoluteReplaces(ctx, root, tmp); err != nil {
+		return nil, err
+	}
 	// A GOWORK file inside the module (e.g. go.work.sandbox) was copied along
 	// with the tree; point the copy's builds at the copied file so its `use .`
 	// resolves to the mutated tree, not the original.
@@ -157,7 +161,18 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		fmt.Fprintf(o.Log, "mutant: %s (%s:%d) removed %q\n", m.Func, m.File, m.Line, oneLine(m.Removed))
 
 		res := Result{Mutant: m}
-		if out, err := goCmd(ctx, o.Timeout, tmp, "build", pkgs); err != nil {
+		out, err := goCmd(ctx, o.Timeout, tmp, "build", pkgs)
+		if err != nil {
+			// Removing the statement may leave an import unused (the removed
+			// line was its only use); drop those imports and build again.
+			if pruned, ok := pruneUnusedImports(mutated, m.File, out); ok {
+				if err := os.WriteFile(path, pruned, 0o644); err != nil {
+					return nil, err
+				}
+				out, err = goCmd(ctx, o.Timeout, tmp, "build", pkgs)
+			}
+		}
+		if err != nil {
 			res.Outcome, res.Output = Invalid, tail(out, 20)
 		} else if out, err := goCmd(ctx, o.Timeout, tmp, "test", "-count=1", pkgs); err != nil {
 			if buildFailed(out) {
@@ -280,6 +295,72 @@ func commentText(g *ast.CommentGroup) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// absoluteReplaces rewrites the copy's go.mod so that a replace pointing at a
+// relative directory (replace example.com/x => ../x, common while developing
+// against a local checkout) still points at that directory from the temp
+// copy, where the relative path would resolve to nothing.
+func absoluteReplaces(ctx context.Context, root, tmp string) error {
+	out, err := goCmd(ctx, time.Minute, root, "mod", "edit", "-json")
+	if err != nil {
+		return fmt.Errorf("gate: read go.mod: %s", tail(out, 10))
+	}
+	var mod struct {
+		Replace []struct {
+			Old, New struct{ Path, Version string }
+		}
+	}
+	if err := json.Unmarshal([]byte(out), &mod); err != nil {
+		return fmt.Errorf("gate: read go.mod: %w", err)
+	}
+	for _, r := range mod.Replace {
+		if r.New.Version != "" || !(strings.HasPrefix(r.New.Path, "./") || strings.HasPrefix(r.New.Path, "../")) {
+			continue
+		}
+		old := r.Old.Path
+		if r.Old.Version != "" {
+			old += "@" + r.Old.Version
+		}
+		abs := filepath.Join(root, filepath.FromSlash(r.New.Path))
+		if out, err := goCmd(ctx, time.Minute, tmp, "mod", "edit", "-replace="+old+"="+abs); err != nil {
+			return fmt.Errorf("gate: rewrite replace %s: %s", old, tail(out, 10))
+		}
+	}
+	return nil
+}
+
+var unusedImportRE = regexp.MustCompile(`(?m)^(?:\./)?(\S+\.go):(\d+):\d+: "[^"]+" imported (?:as \S+ )?and not used`)
+
+// pruneUnusedImports removes from src (the mutated file, at module-relative
+// path file) the import lines the compiler output reports as unused, and
+// reports whether it removed any. Only lines in the mutated file are touched,
+// and only import specs on a line of their own.
+func pruneUnusedImports(src []byte, file, buildOut string) ([]byte, bool) {
+	drop := map[int]bool{}
+	for _, m := range unusedImportRE.FindAllStringSubmatch(buildOut, -1) {
+		if filepath.ToSlash(filepath.Clean(m[1])) != filepath.ToSlash(filepath.Clean(file)) && !strings.HasSuffix(filepath.ToSlash(file), "/"+filepath.ToSlash(m[1])) {
+			continue
+		}
+		var n int
+		fmt.Sscan(m[2], &n)
+		drop[n] = true
+	}
+	if len(drop) == 0 {
+		return nil, false
+	}
+	lines := strings.SplitAfter(string(src), "\n")
+	var b strings.Builder
+	removed := false
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if drop[i+1] && (strings.HasPrefix(t, `"`) || strings.HasPrefix(t, "import ") || (len(t) > 0 && strings.Contains(t, ` "`))) {
+			removed = true
+			continue
+		}
+		b.WriteString(l)
+	}
+	return []byte(b.String()), removed
 }
 
 func moduleRoot(dir string) (string, error) {
