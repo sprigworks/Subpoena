@@ -7,7 +7,7 @@ authorize, exec), one policy rule (a non-admin may not act on `prod-*`), and one
 invariant (a denied session never execs). Every step leaves the build green, so
 you can stop after any of them and keep what you have.
 
-Subpoena is pre-alpha and Go-only; the registry is language-neutral. The order
+Subpoena is alpha and Go-only; the registry is language-neutral. The order
 matters: registry first, tests once names are stable, witnesses before you trust
 any absence claim.
 
