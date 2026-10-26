@@ -1,0 +1,93 @@
+# Expected matching traces for every (query, fixture) pair, derived by hand from
+# docs/traceql-subset.md before running anything. TestSubsetMatchesExpected
+# checks pkg/traceql against this table; TestTempoAgreesWithSubset checks that a
+# real Tempo agrees with pkg/traceql. A query lists only the fixtures that
+# match, and a fixture that is not listed must produce no match. Every query
+# file must have an entry, even an empty one.
+#
+# Trace IDs are c0de + fixture number + trace number (see fixtures/*.json).
+queries:
+  invariants/no_exec_after_deny:
+    # deny >> exec. 05: allowed is the string "false", not a boolean. 07: the
+    # authorize span has no allowed attribute (trace 1); the exec is an orphan
+    # (trace 2). 08: the exec below the denied authorize.
+    deny_then_exec_violation: ["c0de0000000000000000000100000001"]
+    nested_descendant_vs_direct_child: ["c0de0000000000000000000400000001"]
+    multiple_traces_one_push: ["c0de0000000000000000000600000001"]
+    repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+
+  queries/direct_child_after_deny:
+    # deny > exec. 04: an intermediate span separates them. 08: the violating
+    # exec hangs off an open span, not directly off the denied authorize.
+    deny_then_exec_violation: ["c0de0000000000000000000100000001"]
+    multiple_traces_one_push: ["c0de0000000000000000000600000001"]
+
+  queries/any_exec:
+    deny_then_exec_violation: ["c0de0000000000000000000100000001"]
+    allow_then_exec: ["c0de0000000000000000000300000001"]
+    nested_descendant_vs_direct_child: ["c0de0000000000000000000400000001"]
+    attribute_type_mismatch: ["c0de0000000000000000000500000001"]
+    multiple_traces_one_push: ["c0de0000000000000000000600000001", "c0de0000000000000000000600000002"]
+    missing_attribute_and_orphan: ["c0de0000000000000000000700000001", "c0de0000000000000000000700000002"]
+    repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+
+  queries/denied_authorize:
+    # allowed = false, boolean only. Not 03 and 06/2 (true), 05 (string), 07/1 (missing).
+    deny_then_exec_violation: ["c0de0000000000000000000100000001"]
+    deny_without_exec: ["c0de0000000000000000000200000001"]
+    nested_descendant_vs_direct_child: ["c0de0000000000000000000400000001"]
+    multiple_traces_one_push: ["c0de0000000000000000000600000001", "c0de0000000000000000000600000003"]
+    missing_attribute_and_orphan: ["c0de0000000000000000000700000002"]
+    repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+
+  queries/authorize_not_denied:
+    # allowed != false matches only a boolean true: a missing attribute (07/1)
+    # and a type mismatch (05) are false for != as well.
+    allow_then_exec: ["c0de0000000000000000000300000001"]
+    multiple_traces_one_push: ["c0de0000000000000000000600000002"]
+    repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+
+  queries/or_and_precedence:
+    # exec || (authorize && allowed = true): && binds tighter. Read as
+    # (exec || authorize) && allowed = true it would match only 03, 06/2, 08.
+    deny_then_exec_violation: ["c0de0000000000000000000100000001"]
+    allow_then_exec: ["c0de0000000000000000000300000001"]
+    nested_descendant_vs_direct_child: ["c0de0000000000000000000400000001"]
+    attribute_type_mismatch: ["c0de0000000000000000000500000001"]
+    multiple_traces_one_push: ["c0de0000000000000000000600000001", "c0de0000000000000000000600000002"]
+    missing_attribute_and_orphan: ["c0de0000000000000000000700000001", "c0de0000000000000000000700000002"]
+    repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+
+  queries/int_attr_int_literal:
+    attribute_type_mismatch: ["c0de0000000000000000000500000001"]
+
+  queries/int_attr_string_literal:
+    # retry.count is the integer 2; comparing with the string "2" is false.
+
+  queries/int_attr_ne_string_literal:
+    # Type mismatch is false for != as well (docs/traceql-subset.md). This is
+    # the entry most likely to differ in Tempo; if it does, one of the two is
+    # wrong and the docs or the evaluator must change, not this comment.
+
+  queries/int_attr_ne_int_literal:
+    attribute_type_mismatch: ["c0de0000000000000000000500000001"]
+
+  queries/open_authorize_exec_chain:
+    # open >> authorize > exec, left to right: the authorize spans that have an
+    # open ancestor, then their direct exec children. Not 04 (open in between),
+    # not 07/2 (authorize has no open ancestor), not 02 and 06/3 (no exec).
+    deny_then_exec_violation: ["c0de0000000000000000000100000001"]
+    allow_then_exec: ["c0de0000000000000000000300000001"]
+    attribute_type_mismatch: ["c0de0000000000000000000500000001"]
+    multiple_traces_one_push: ["c0de0000000000000000000600000001", "c0de0000000000000000000600000002"]
+    missing_attribute_and_orphan: ["c0de0000000000000000000700000001"]
+    repeated_names_deep_chain: ["c0de0000000000000000000800000001"]
+
+  queries/exec_command_line:
+    # 03 runs echo, 06/2 runs true, 07/2 has no command line.
+    deny_then_exec_violation: ["c0de0000000000000000000100000001"]
+    nested_descendant_vs_direct_child: ["c0de0000000000000000000400000001"]
+    attribute_type_mismatch: ["c0de0000000000000000000500000001"]
+    multiple_traces_one_push: ["c0de0000000000000000000600000001"]
+    missing_attribute_and_orphan: ["c0de0000000000000000000700000001"]
+    repeated_names_deep_chain: ["c0de0000000000000000000800000001"]

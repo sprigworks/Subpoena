@@ -1,0 +1,25 @@
+# Tempo only: the reference TraceQL evaluator for the conformance suite.
+#
+#   docker compose -f conformance/docker-compose.yml up -d
+#   go test ./conformance -run TestTempo -v
+#   docker compose -f conformance/docker-compose.yml down -v
+#
+# or just `make conformance`. Tempo is AGPL-3.0; it runs here as a separate
+# process and is only ever spoken to over HTTP. Nothing from Tempo is linked
+# into this repository.
+#
+# First run 2026-10-25 with this image and tempo.yaml: 0 divergences after the
+# &&/|| precedence fix (see README.md, Status).
+services:
+  tempo:
+    # Pinned so a Tempo upgrade is a reviewed change to this file, not a surprise.
+    image: grafana/tempo:2.8.2
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+    ports:
+      # Ephemeral loopback host ports, so this never collides with a local LGTM
+      # stack or anything else; `make conformance` reads them back with
+      # `docker compose port` and sets the URLs.
+      - "127.0.0.1::3200"   # query API: /ready, /api/search (SUBPOENA_TEMPO_URL)
+      - "127.0.0.1::4318"   # OTLP/HTTP receiver: /v1/traces (SUBPOENA_OTLP_URL)

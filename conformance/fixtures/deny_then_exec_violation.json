@@ -1,0 +1,18 @@
+{
+  "_comment": "Denied authorization followed by an exec directly below it: the violation the invariant exists to catch.",
+  "resourceSpans": [
+    {
+      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "conformance-fixture-deny_then_exec_violation"}}]},
+      "scopeSpans": [
+        {
+          "scope": {"name": "subpoena.conformance"},
+          "spans": [
+          {"traceId":"c0de0000000000000000000100000001","spanId":"0101000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000001001000000","endTimeUnixNano":"1700000001001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-v1"}}]},
+          {"traceId":"c0de0000000000000000000100000001","spanId":"0101000000000002","parentSpanId":"0101000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000001002000000","endTimeUnixNano":"1700000001002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-v1"}},{"key":"authorization.allowed","value":{"boolValue":false}},{"key":"authorization.policy_id","value":{"stringValue":"deny-prod-nonadmin"}}]},
+          {"traceId":"c0de0000000000000000000100000001","spanId":"0101000000000003","parentSpanId":"0101000000000002","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000001003000000","endTimeUnixNano":"1700000001003500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-v1"}},{"key":"process.command_line","value":{"stringValue":"sleep 0.15"}}]}
+          ]
+        }
+      ]
+    }
+  ]
+}

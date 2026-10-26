@@ -1,0 +1,18 @@
+{
+  "_comment": "authorization.allowed is the string \"false\" (not a boolean) and retry.count is the integer 2: comparisons across types must not match.",
+  "resourceSpans": [
+    {
+      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "conformance-fixture-attribute_type_mismatch"}}]},
+      "scopeSpans": [
+        {
+          "scope": {"name": "subpoena.conformance"},
+          "spans": [
+          {"traceId":"c0de0000000000000000000500000001","spanId":"0501000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000005001000000","endTimeUnixNano":"1700000005001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-t1"}}]},
+          {"traceId":"c0de0000000000000000000500000001","spanId":"0501000000000002","parentSpanId":"0501000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000005002000000","endTimeUnixNano":"1700000005002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-t1"}},{"key":"authorization.allowed","value":{"stringValue":"false"}},{"key":"authorization.policy_id","value":{"stringValue":"deny-prod-nonadmin"}}]},
+          {"traceId":"c0de0000000000000000000500000001","spanId":"0501000000000003","parentSpanId":"0501000000000002","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000005003000000","endTimeUnixNano":"1700000005003500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-t1"}},{"key":"process.command_line","value":{"stringValue":"sleep 0.15"}},{"key":"retry.count","value":{"intValue":"2"}}]}
+          ]
+        }
+      ]
+    }
+  ]
+}

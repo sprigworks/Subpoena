@@ -1,0 +1,22 @@
+# Loaded by Tetragon v1.7.1 on Linux 6.17 in the OATS stack (2026-10-25):
+# "Loaded generic kprobe sensor ... kprobe_multi (1 functions)". v1.4.0 failed
+# to load it on that kernel. Its kprobe events are not exported there (the
+# stack exports PROCESS_EXEC only); it has not been used for enforcement.
+#
+# Tetragon emits process_exec events for every exec by default (base sensor).
+# This policy adds an explicit hook on the binary-load LSM path so exec events
+# can be filtered and, later, switched to enforcement (Sigkill/Override) for
+# sessions that were denied. Observation only for now: no actions.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: subpoena-process-exec
+spec:
+  kprobes:
+    - call: "security_bprm_check"
+      syscall: false
+      args:
+        - index: 0
+          type: "linux_binprm"
+      # No selectors: observe every exec. Filtering to session cgroups happens
+      # downstream (Alloy/Loki), keyed on the cgroup named with the trace ID.

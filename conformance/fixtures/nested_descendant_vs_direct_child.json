@@ -1,0 +1,19 @@
+{
+  "_comment": "The exec is a grandchild of the denied authorization (an intermediate span in between): >> matches, > does not.",
+  "resourceSpans": [
+    {
+      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "conformance-fixture-nested_descendant_vs_direct_child"}}]},
+      "scopeSpans": [
+        {
+          "scope": {"name": "subpoena.conformance"},
+          "spans": [
+          {"traceId":"c0de0000000000000000000400000001","spanId":"0401000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000004001000000","endTimeUnixNano":"1700000004001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-n1"}}]},
+          {"traceId":"c0de0000000000000000000400000001","spanId":"0401000000000002","parentSpanId":"0401000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000004002000000","endTimeUnixNano":"1700000004002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-n1"}},{"key":"authorization.allowed","value":{"boolValue":false}},{"key":"authorization.policy_id","value":{"stringValue":"deny-prod-nonadmin"}}]},
+          {"traceId":"c0de0000000000000000000400000001","spanId":"0401000000000003","parentSpanId":"0401000000000002","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000004003000000","endTimeUnixNano":"1700000004003500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-n1"}}]},
+          {"traceId":"c0de0000000000000000000400000001","spanId":"0401000000000004","parentSpanId":"0401000000000003","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000004004000000","endTimeUnixNano":"1700000004004500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-n1"}},{"key":"process.command_line","value":{"stringValue":"sleep 0.15"}}]}
+          ]
+        }
+      ]
+    }
+  ]
+}

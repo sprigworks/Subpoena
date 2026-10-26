@@ -1,0 +1,5 @@
+# Registry changes need explicit review: the registry is the telemetry contract.
+# Replace @nickhenggeler with a @sprigworks/<team> handle once the org has one.
+/registry/   @nickhenggeler
+/generated/  @nickhenggeler
+/invariants/ @nickhenggeler

@@ -1,0 +1,21 @@
+{
+  "_comment": "Repeated span names in a deep chain: an allowed authorize and its exec, then (below that exec) a denied authorize whose descendant exec violates.",
+  "resourceSpans": [
+    {
+      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "conformance-fixture-repeated_names_deep_chain"}}]},
+      "scopeSpans": [
+        {
+          "scope": {"name": "subpoena.conformance"},
+          "spans": [
+          {"traceId":"c0de0000000000000000000800000001","spanId":"0801000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000008001000000","endTimeUnixNano":"1700000008001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-r1"}}]},
+          {"traceId":"c0de0000000000000000000800000001","spanId":"0801000000000002","parentSpanId":"0801000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000008002000000","endTimeUnixNano":"1700000008002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-r1"}},{"key":"authorization.allowed","value":{"boolValue":true}},{"key":"authorization.policy_id","value":{"stringValue":"allow-default"}}]},
+          {"traceId":"c0de0000000000000000000800000001","spanId":"0801000000000003","parentSpanId":"0801000000000002","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000008003000000","endTimeUnixNano":"1700000008003500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-r1"}},{"key":"process.command_line","value":{"stringValue":"sleep 0.15"}}]},
+          {"traceId":"c0de0000000000000000000800000001","spanId":"0801000000000004","parentSpanId":"0801000000000003","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000008004000000","endTimeUnixNano":"1700000008004500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-r1"}},{"key":"authorization.allowed","value":{"boolValue":false}},{"key":"authorization.policy_id","value":{"stringValue":"deny-prod-nonadmin"}}]},
+          {"traceId":"c0de0000000000000000000800000001","spanId":"0801000000000005","parentSpanId":"0801000000000004","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000008005000000","endTimeUnixNano":"1700000008005500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-r1"}}]},
+          {"traceId":"c0de0000000000000000000800000001","spanId":"0801000000000006","parentSpanId":"0801000000000005","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000008006000000","endTimeUnixNano":"1700000008006500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-r1"}},{"key":"process.command_line","value":{"stringValue":"sleep 0.15"}}]}
+          ]
+        }
+      ]
+    }
+  ]
+}

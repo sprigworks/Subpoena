@@ -1,0 +1,8 @@
+# Run with `make oats` from the repository root (OATS v0.10.0, gcx 1.0.0); see
+# README.md for why the target is needed. https://github.com/grafana/oats
+meta:
+  version: 3
+cases:
+  - oats-case-argument.yaml  # witness correlated by argument
+  # oats-case.yaml (cgroup correlation) is blocked: Tetragon's events do not
+  # carry the session cgroup name. See its header.

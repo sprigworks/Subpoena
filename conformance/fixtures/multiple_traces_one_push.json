@@ -1,0 +1,23 @@
+{
+  "_comment": "Three traces in one OTLP request, spans interleaved: 1 violates, 2 is allowed, 3 is denied with no exec.",
+  "resourceSpans": [
+    {
+      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "conformance-fixture-multiple_traces_one_push"}}]},
+      "scopeSpans": [
+        {
+          "scope": {"name": "subpoena.conformance"},
+          "spans": [
+          {"traceId":"c0de0000000000000000000600000001","spanId":"0601000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000006001000000","endTimeUnixNano":"1700000006001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-m1"}}]},
+          {"traceId":"c0de0000000000000000000600000002","spanId":"0602000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000006001000000","endTimeUnixNano":"1700000006001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-m2"}}]},
+          {"traceId":"c0de0000000000000000000600000003","spanId":"0603000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000006001000000","endTimeUnixNano":"1700000006001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-m3"}}]},
+          {"traceId":"c0de0000000000000000000600000001","spanId":"0601000000000002","parentSpanId":"0601000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000006002000000","endTimeUnixNano":"1700000006002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-m1"}},{"key":"authorization.allowed","value":{"boolValue":false}},{"key":"authorization.policy_id","value":{"stringValue":"deny-prod-nonadmin"}}]},
+          {"traceId":"c0de0000000000000000000600000002","spanId":"0602000000000002","parentSpanId":"0602000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000006002000000","endTimeUnixNano":"1700000006002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-m2"}},{"key":"authorization.allowed","value":{"boolValue":true}},{"key":"authorization.policy_id","value":{"stringValue":"allow-default"}}]},
+          {"traceId":"c0de0000000000000000000600000003","spanId":"0603000000000002","parentSpanId":"0603000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000006002000000","endTimeUnixNano":"1700000006002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-m3"}},{"key":"authorization.allowed","value":{"boolValue":false}},{"key":"authorization.policy_id","value":{"stringValue":"deny-prod-nonadmin"}}]},
+          {"traceId":"c0de0000000000000000000600000001","spanId":"0601000000000003","parentSpanId":"0601000000000002","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000006003000000","endTimeUnixNano":"1700000006003500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-m1"}},{"key":"process.command_line","value":{"stringValue":"sleep 0.15"}}]},
+          {"traceId":"c0de0000000000000000000600000002","spanId":"0602000000000003","parentSpanId":"0602000000000002","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000006003000000","endTimeUnixNano":"1700000006003500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-m2"}},{"key":"process.command_line","value":{"stringValue":"true"}}]}
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "_comment": "Trace 1: the authorize span has no authorization.allowed attribute. Trace 2: a denied root authorize, and an exec whose parent span is not in the trace (orphan): structural operators must not relate them.",
+  "resourceSpans": [
+    {
+      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "conformance-fixture-missing_attribute_and_orphan"}}]},
+      "scopeSpans": [
+        {
+          "scope": {"name": "subpoena.conformance"},
+          "spans": [
+          {"traceId":"c0de0000000000000000000700000001","spanId":"0701000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000007001000000","endTimeUnixNano":"1700000007001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-o1"}}]},
+          {"traceId":"c0de0000000000000000000700000001","spanId":"0701000000000002","parentSpanId":"0701000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000007002000000","endTimeUnixNano":"1700000007002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-o1"}},{"key":"authorization.policy_id","value":{"stringValue":"unknown"}}]},
+          {"traceId":"c0de0000000000000000000700000001","spanId":"0701000000000003","parentSpanId":"0701000000000002","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000007003000000","endTimeUnixNano":"1700000007003500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-o1"}},{"key":"process.command_line","value":{"stringValue":"sleep 0.15"}}]},
+          {"traceId":"c0de0000000000000000000700000002","spanId":"0702000000000001","parentSpanId":"","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000007001000000","endTimeUnixNano":"1700000007001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-o2"}},{"key":"authorization.allowed","value":{"boolValue":false}},{"key":"authorization.policy_id","value":{"stringValue":"deny-prod-nonadmin"}}]},
+          {"traceId":"c0de0000000000000000000700000002","spanId":"0702000000000002","parentSpanId":"deadbeef00000000","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000007002000000","endTimeUnixNano":"1700000007002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-o2"}}]}
+          ]
+        }
+      ]
+    }
+  ]
+}

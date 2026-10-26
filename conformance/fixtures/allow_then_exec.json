@@ -1,0 +1,18 @@
+{
+  "_comment": "Allowed authorization followed by an exec: legitimate, no match for the invariant.",
+  "resourceSpans": [
+    {
+      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "conformance-fixture-allow_then_exec"}}]},
+      "scopeSpans": [
+        {
+          "scope": {"name": "subpoena.conformance"},
+          "spans": [
+          {"traceId":"c0de0000000000000000000300000001","spanId":"0301000000000001","parentSpanId":"","name":"agent.session.open","kind":1,"startTimeUnixNano":"1700000003001000000","endTimeUnixNano":"1700000003001500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-a1"}}]},
+          {"traceId":"c0de0000000000000000000300000001","spanId":"0301000000000002","parentSpanId":"0301000000000001","name":"agent.session.authorize","kind":1,"startTimeUnixNano":"1700000003002000000","endTimeUnixNano":"1700000003002500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-a1"}},{"key":"authorization.allowed","value":{"boolValue":true}},{"key":"authorization.policy_id","value":{"stringValue":"allow-default"}}]},
+          {"traceId":"c0de0000000000000000000300000001","spanId":"0301000000000003","parentSpanId":"0301000000000002","name":"agent.session.exec","kind":1,"startTimeUnixNano":"1700000003003000000","endTimeUnixNano":"1700000003003500000","attributes":[{"key":"session.id","value":{"stringValue":"sess-a1"}},{"key":"process.command_line","value":{"stringValue":"echo allowed"}}]}
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+groups:
+  - id: span.agent.session.open
+    type: span
+    name: agent.session.open
+    span_kind: server
+    stability: stable
+    brief: A client opens an agent session through the gateway.
+    attributes:
+      - ref: session.id
+        requirement_level: required
+
+  - id: span.agent.session.authorize
+    type: span
+    name: agent.session.authorize
+    span_kind: internal
+    stability: stable
+    brief: The gateway evaluates policy for a requested action. This is an enforcement point.
+    attributes:
+      - ref: session.id
+        requirement_level: required
+      - ref: authorization.allowed
+        requirement_level: required
+      - ref: authorization.policy_id
+        requirement_level: required
+
+  - id: span.agent.session.exec
+    type: span
+    name: agent.session.exec
+    span_kind: internal
+    stability: stable
+    brief: The gateway executes a command on behalf of an authorized session.
+    attributes:
+      - ref: session.id
+        requirement_level: required
+      - ref: process.command_line
+        requirement_level: required
+        annotations:
+          tier: test
+      - ref: subpoena.witness.correlation
+        requirement_level: required

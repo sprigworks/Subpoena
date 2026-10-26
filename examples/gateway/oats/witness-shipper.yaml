@@ -1,0 +1,25 @@
+# Tail Tetragon's JSON export and send each event to Loki (via the LGTM
+# collector's OTLP/HTTP endpoint) as a log line labelled service_name=tetragon.
+receivers:
+  filelog:
+    include: [/var/run/tetragon/events.json]
+    start_at: beginning
+processors:
+  resource:
+    attributes:
+      - key: service.name
+        value: tetragon
+        action: upsert
+  batch:
+    timeout: 200ms
+exporters:
+  otlphttp:
+    endpoint: http://lgtm:4318
+    tls:
+      insecure: true
+service:
+  pipelines:
+    logs:
+      receivers: [filelog]
+      processors: [resource, batch]
+      exporters: [otlphttp]

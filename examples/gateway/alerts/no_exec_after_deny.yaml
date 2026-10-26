@@ -1,0 +1,57 @@
+# Tier 3: the same invariant as a Grafana alert rule (file provisioning format).
+# NOT VALIDATED: never loaded into Grafana. Two things to verify on a real stack:
+#  1. The Tempo data source must evaluate this TraceQL metrics query. Structural
+#     operators inside metrics queries depend on the Tempo version; if they are
+#     unsupported, derive a counter with the metrics-generator or a recording
+#     rule and alert on that.
+#  2. The datasource UID below.
+#
+# The TraceQL string is identical to invariants/no_exec_after_deny.traceql plus a
+# metrics function. A test in invariants/ checks the invariant text appears here.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: subpoena-invariants
+    folder: Subpoena
+    interval: 1m
+    rules:
+      - uid: subpoena-no-exec-after-deny
+        title: Exec after denied authorization
+        condition: C
+        for: 0s
+        noDataState: Alerting    # no data means the telemetry itself is missing: treat as inconclusive, not as safe
+        execErrState: Alerting
+        labels:
+          severity: page
+          invariant: no_exec_after_deny
+        annotations:
+          summary: A denied agent session was followed by an exec in the same trace.
+          description: >-
+            Any match is a violation of invariants/no_exec_after_deny.traceql.
+            Cross-check the witness: {service_name="tetragon"} |= "process_exec".
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: tempo
+            model:
+              refId: A
+              queryType: traceql
+              metricsQueryType: range
+              query: '{ name = "agent.session.authorize" && span.authorization.allowed = false } >> { name = "agent.session.exec" } | count_over_time()'
+          - refId: B
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: sum
+          - refId: C
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [0]}

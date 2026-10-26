@@ -1,0 +1,71 @@
+# Tier 2, CGROUP correlation: NOT IN THE RUN (oats-config.yaml). Blocked.
+#
+# The intent: the gateway creates one cgroup per session, <root>/<trace id>,
+# and starts the exec inside it (examples/gateway, pkg/cgroup), so a witness
+# can attribute a process to a trace without trusting the gateway's spans.
+#
+# Verified 2026-10-25 against Tetragon v1.7.1 outside Kubernetes: process_exec
+# events carry no cgroup path or name. The only cgroup-derived field is
+# `process.docker`, which Tetragon fills with the first 31 characters of the
+# process's leaf cgroup name only when that name looks like a container ID
+# (64 hex characters, among other runtime patterns). A 32-hex trace ID does
+# not qualify; a 64-hex name does (tested). Until the session cgroup name
+# reaches the event, the log assertion below cannot be written honestly; see
+# witnesses/README.md.
+#
+# On the first run its earlier form, |= "/subpoena/" with count '== 1',
+# PASSED by accident: Tetragon sees every exec on the host, and some unrelated
+# command line contained that substring. Use oats-case-argument.yaml.
+name: denied session never execs (witness correlated by cgroup)
+tags: [subpoena, invariant, witness, cgroup]
+
+fixture:
+  compose:
+    files: ["docker-compose.oats.yml"]
+    app_service: gateway
+    app_port: 8080
+
+input:
+  # Control: an allowed session. Proves the whole pipeline (gateway -> Tempo and
+  # Tetragon -> Loki) is live, so the denial below is not vacuous.
+  - path: /sessions
+    method: POST
+    headers:
+      Content-Type: application/json
+    body: '{"user":"alice","host":"dev-1","command":"sleep","args":["0.138"]}'
+    status: "200"
+  # The case under test: a non-admin on a prod host.
+  - path: /sessions
+    method: POST
+    headers:
+      Content-Type: application/json
+    body: '{"user":"mallory","host":"prod-db1","command":"sleep","args":["0.137"]}'
+    status: "403"
+
+expected:
+  traces:
+    # Control: the denial was observed (authorize span with allowed = false).
+    - traceql: '{ name = "agent.session.authorize" && span.authorization.allowed = false }'
+      count: '>= 1'
+    # The invariant, verbatim from invariants/no_exec_after_deny.traceql.
+    # Any matching trace is a violation, so it must be absent.
+    - traceql: '{ name = "agent.session.authorize" && span.authorization.allowed = false } >> { name = "agent.session.exec" }'
+      absent: true
+    # The allowed session's exec span says it ran inside a session cgroup.
+    # Testimony, but it tells the reader which correlation the witness checks
+    # below can rely on.
+    - traceql: '{ name = "agent.session.exec" && span.subpoena.witness.correlation = "cgroup" }'
+      count: '>= 1'
+    # No exec fell back to a weaker correlation.
+    - traceql: '{ name = "agent.session.exec" && span.subpoena.witness.correlation != "cgroup" }'
+      absent: true
+  logs:
+    # The proof, with no argument matching: exactly one exec ran inside a
+    # session cgroup in the whole run. Two requests were made; one was allowed.
+    # The count of 1 is both the control (the pipeline is live and the cgroup
+    # name reaches the event, or it would be 0) and the denial (a denied session
+    # that had exec'd would make it 2).
+    # BLOCKED: no Tetragon field carries the session cgroup name (see the
+    # header). This substring also matches unrelated host processes.
+    - logql: '{service_name="tetragon"} |= "process_exec" |= "/subpoena/"'
+      count: '== 1'
