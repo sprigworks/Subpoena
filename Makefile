@@ -97,13 +97,15 @@ conformance:
 # OATS v0.10.0 counts as one row, so every `absent` fails and every
 # `count: '>= 1'` passes regardless of the data. --no-cache: OATS skips a case
 # whose case files are unchanged even when the application changed, and
-# reports the skip as a pass.
+# reports the skip as a pass. OATS takes its stacks down but leaves named
+# volumes, so the witness-events volumes are removed afterwards.
 OATS ?= oats
 GCX_VERSION ?= 1.0.0
 oats:
 	cd examples/gateway/oats && env -u CLAUDECODE -u CLAUDE_CODE -u CURSOR_AGENT \
 	-u GITHUB_COPILOT -u AMAZON_Q -u GCX_AGENT_MODE \
-	$(OATS) --container-runtime docker --gcx-version $(GCX_VERSION) --no-cache --timeout 2m
+	$(OATS) --container-runtime docker --gcx-version $(GCX_VERSION) --no-cache --timeout 2m; rc=$$?; \
+	docker volume ls -q --filter name=_witness-events | grep '^oats-' | xargs -r docker volume rm >/dev/null; exit $$rc
 
 # Everything that runs without Docker or eBPF.
 check: build vet test lint gate
