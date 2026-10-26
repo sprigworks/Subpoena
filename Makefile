@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift cross conform test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift cross conform python test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -55,6 +55,13 @@ cross:
 conform:
 	@bin=$$(mktemp -d)/subpoena-traceql && go build -o $$bin ./cmd/subpoena-traceql && \
 	go run ./cmd/subpoena-conform -- $${EVAL:-$$bin}
+
+# The Python port: a local venv (uv), its tests over the shared corpus, and its
+# evaluator through subpoena-conform.
+python:
+	cd python && (test -x .venv/bin/python || uv venv -q .venv) && uv pip install -q --python .venv/bin/python -e ".[test]"
+	cd python && .venv/bin/python -m pytest -q
+	$(MAKE) conform EVAL="$(CURDIR)/python/.venv/bin/python -I -m subpoena.traceql"
 
 # The real-cgroup tests (pkg/cgroup, examples/gateway) without root: run them in
 # a systemd user scope with cgroup delegation, rooted inside that scope. They

@@ -22,7 +22,10 @@ func count(t *testing.T, q string) int {
 	if err != nil {
 		t.Fatalf("Parse(%q): %v", q, err)
 	}
-	ms := p.Eval([]Trace{fixture()})
+	ms, err := p.Eval([]Trace{fixture()})
+	if err != nil {
+		t.Fatalf("Eval(%q): %v", q, err)
+	}
 	if len(ms) == 0 {
 		return 0
 	}
@@ -89,7 +92,7 @@ func TestNoCrossTraceRelations(t *testing.T) {
 	a := Trace{ID: "a", Spans: []Span{{ID: "1", Name: "authorize"}}}
 	b := Trace{ID: "b", Spans: []Span{{ID: "2", ParentID: "1", Name: "exec"}}}
 	q, _ := Parse(`{ name = "authorize" } >> { name = "exec" }`)
-	if ms := q.Eval([]Trace{a, b}); len(ms) != 0 {
+	if ms, err := q.Eval([]Trace{a, b}); err != nil || len(ms) != 0 {
 		t.Fatalf("relations must not cross traces: %v", ms)
 	}
 }
@@ -101,11 +104,11 @@ func TestOrphanAndCycleSafe(t *testing.T) {
 		{ID: "3", ParentID: "missing", Name: "c"},
 	}}
 	q, _ := Parse(`{ name = "a" } >> { name = "c" }`)
-	if q.MatchesTrace(tr) {
+	if ok, err := q.MatchesTrace(tr); err != nil || ok {
 		t.Fatal("orphan must not match")
 	}
 	q, _ = Parse(`{ name = "zzz" } >> { name = "b" }`)
-	if q.MatchesTrace(tr) { // must terminate on a cycle
+	if ok, err := q.MatchesTrace(tr); err != nil || ok { // must terminate on a cycle
 		t.Fatal("unexpected match")
 	}
 }

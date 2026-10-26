@@ -7,6 +7,7 @@
 package conformance
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,18 +44,13 @@ func loadAll(t *testing.T) ([]*Fixture, []Query) {
 	return fx, qs
 }
 
-type expectedFile struct {
-	// query name -> fixture name -> matching trace IDs
-	Queries map[string]map[string][]string
-}
-
-func loadExpected(t *testing.T) expectedFile {
+func loadExpected(t *testing.T) Expected {
 	t.Helper()
-	q, err := LoadExpected("expected.yaml")
+	e, err := LoadExpected("expected.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return expectedFile{Queries: q}
+	return e
 }
 
 // The scenarios the suite promises to cover; each must be a fixture.
@@ -172,6 +168,19 @@ func TestExpectedTableIsConsistent(t *testing.T) {
 			t.Errorf("expected.yaml has no entry for %s", q.Name)
 		}
 	}
+	for qn, fixtures := range exp.Unsupported {
+		if !queryNames[qn] {
+			t.Errorf("unsupported names unknown query %s", qn)
+		}
+		for _, fn := range fixtures {
+			if traceIDs[fn] == nil {
+				t.Errorf("unsupported %s: unknown fixture %s", qn, fn)
+			}
+			if len(exp.Queries[qn][fn]) > 0 {
+				t.Errorf("%s over %s is both refused and expected to match", qn, fn)
+			}
+		}
+	}
 	for qn, byFixture := range exp.Queries {
 		if !queryNames[qn] {
 			t.Errorf("expected.yaml names unknown query %s", qn)
@@ -206,8 +215,20 @@ func TestSubsetMatchesExpected(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			ms, err := parsed.Eval(trs)
+			var ue *traceql.UnsupportedValueError
+			if exp.Refused(q.Name, f.Name) {
+				if !errors.As(err, &ue) {
+					t.Errorf("%s over %s: must be refused (array value), got %v, %v", q.Name, f.Name, ms, err)
+				}
+				continue
+			}
+			if err != nil {
+				t.Errorf("%s over %s: %v", q.Name, f.Name, err)
+				continue
+			}
 			var got []string
-			for _, m := range parsed.Eval(trs) {
+			for _, m := range ms {
 				got = append(got, m.TraceID)
 			}
 			want := append([]string(nil), exp.Queries[q.Name][f.Name]...)

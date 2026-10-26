@@ -9,10 +9,15 @@ it, so enforcement is only proven by an independent witness, a process-exec
 observer the application does not control, and cross-examination checks that the
 suite can tell the difference.
 
-**Status: pre-alpha.** Go only so far. Python and TypeScript are next: the
-registry, invariants, witness output and tiers 2–3 are language-neutral, and
-[docs/ports.md](docs/ports.md) is the contract a harness in another language
-must meet, with a check for each part. APIs will change.
+**Status: alpha** (v0.1.0-alpha.1, see [CHANGELOG.md](CHANGELOG.md)). Go only
+so far. Python and TypeScript are next: the registry, invariants, witness
+output and tiers 2–3 are language-neutral, and [docs/ports.md](docs/ports.md)
+is the contract a harness in another language must meet, with a check for
+each part. APIs will change.
+
+To use it in a service of your own, follow
+[docs/migrating-an-existing-service.md](docs/migrating-an-existing-service.md);
+`examples/adopter` is a separate module doing exactly that.
 
 ## The three tiers
 
@@ -64,9 +69,11 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | Tetragon policy, `witnesses/tetragon` | Loads on Tetragon v1.7.1; kept for enforcement, not used. Not the witness: outside Kubernetes its events lack the session cgroup |
 | `pkg/production`: test-tier attributes kept out of production | Runs, in `make test`; the generated Collector config was validated and run on otelcol-contrib 0.116.1 |
 | Tier 3: `examples/gateway/alerts` (`make alerts`) | Runs (needs Docker): provisioned into Grafana 13.2 with Tempo 3.1 and driven through the scheduler. Quiet on silence and on clean traffic, fires on a violation. The first run found the unvalidated rule could never fire; see the rule file's header |
+| `examples/adopter`: adopting Subpoena from a separate module | Runs in CI (`adopter` job): test, lint, cross-examination, and its generated names checked with Weaver |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
-| Port checks: `subpoena-traceql`, `subpoena-conform` (`make conform`), the witness file format and reader (`witness.ReadLog`) | Runs, in `make test`: the Go evaluator, through the same protocol a port uses, agrees on all 118 cases (12 queries over 8 fixtures, 22 rejected queries) |
-| Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses |
+| Python port, `python/` (`make python`) | Runs, in CI on Python 3.9 and 3.12: the harness passes every `conformance/harness.yaml` case, its native evaluator agrees on all 139 corpus cases, and its witness reader passes the Go reader's cases. No lint or cross-examination yet. On PyPI: `pip install subpoena` (0.1.0a1) |
+| Port checks: `subpoena-traceql`, `subpoena-conform` (`make conform`), the witness file format and reader (`witness.ReadLog`) | Runs, in `make test`: the Go evaluator, through the same protocol a port uses, agrees on all 139 cases (13 queries over 9 fixtures, 22 rejected queries) |
+| Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses. Array values are refused: Tempo's answers on them follow no rule the subset could copy (measured; see `docs/traceql-subset.md`) |
 
 Other things to know:
 
@@ -113,6 +120,7 @@ cmd/subpoena-witness/ runs the kernel-side witness, JSON lines out
 cmd/subpoena-invgen/  writes invariants/names.go (also for other modules)
 cmd/subpoena-traceql/ the Go evaluator as a command (the port protocol)
 cmd/subpoena-conform/ checks any language's evaluator against the corpus
+python/               the Python port: harness, TraceQL subset, witness reader
 examples/gateway/     toy agent gateway, tests, OATS stack, alert rule
 examples/adopter/     separate module adopting Subpoena from outside (CI keeps it working)
 conformance/          fixtures + expected results, subset-vs-Tempo conformance test

@@ -9,8 +9,17 @@ type Span struct {
 	ID       string
 	ParentID string // empty for root spans
 	Name     string
-	// Attrs holds span attributes. Values are string, bool, int64 or float64.
+	// Attrs holds span attributes. Values are string, bool, int64, float64 or
+	// Unsupported.
 	Attrs map[string]any
+}
+
+// Unsupported stands for an attribute value outside the subset: an array or a
+// map. Tempo's answers on those do not follow a rule the subset could copy
+// (docs/traceql-subset.md, "Why arrays are refused"), so a query that reads an
+// attribute holding one is refused with an *UnsupportedValueError.
+type Unsupported struct {
+	Kind string // "array", "kvlist", ...
 }
 
 // Trace is a set of spans sharing a trace ID.
