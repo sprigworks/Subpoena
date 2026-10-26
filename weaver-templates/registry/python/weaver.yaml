@@ -1,0 +1,9 @@
+templates:
+  - template: semconv.py.j2
+    filter: >
+      {
+        spans: .groups | map(select(.type == "span")) | sort_by(.id),
+        attributes: [.groups | map(select(.type == "span")) | map(.attributes) | flatten | .[]] | unique_by(.name) | sort_by(.name)
+      }
+    application_mode: single
+    file_name: semconv.py
