@@ -47,8 +47,9 @@ harness.WatchSpawns(t, w, traceID, harness.SpawnRule{
 It runs at cleanup, even after an earlier `Fatal`. It stops the witness, fails
 on any process the rule refuses and on missing or bad capture health, and when
 the test has already failed it logs every process the witness saw. `Never`
-matches a command line equal to the entry or ending with it after a space, so
-it still fires when `timeout` or `env` wraps the command. `Allowed` matches the
+matches a command line whose words end with the entry's words, so it still
+fires when `timeout` or `env` wraps the command, and its program matches with
+or without a directory on either side (`sleep 1` refuses `/usr/bin/sleep 1`). `Allowed` matches the
 whole command line exactly, so `sh -c "x; sleep 0.6"` is not allowed by
 `"sleep 0.6"`.
 

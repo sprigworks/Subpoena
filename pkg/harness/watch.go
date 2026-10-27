@@ -40,8 +40,9 @@ type SpawnRule struct {
 	// command not in Never; an empty, non-nil slice allows none.
 	Allowed []string
 	// Never lists commands that must not run in this test, whatever Allowed
-	// says. An entry matches a command line equal to it or ending with it
-	// after a space.
+	// says. An entry matches a command line whose words end with its words;
+	// the entry's program matches with or without a directory on either
+	// side ("sleep 1" refuses "/usr/bin/sleep 1", and the reverse).
 	Never []string
 	// ExcuseNameOnly logs, instead of failing, a name-only sighting whose name
 	// is the program of an Allowed entry. Set it only when the test runs
@@ -135,12 +136,20 @@ func programs(rules []string) []string {
 	return out
 }
 
-// matchesAny reports whether cmd equals one of rules or ends with one after a
-// space. Used for Never only: for an allow list, a suffix match would let any
-// command line that ends with an allowed command through.
+// matchesAny reports whether cmd's words end with one of rules' words, the
+// rule's program compared without its directory on both sides, so
+// "/usr/bin/sleep 1" and "sleep 1" match each other. Used for Never only: for
+// an allow list, a suffix match would let any command line that ends with an
+// allowed command through.
 func matchesAny(cmd string, rules []string) bool {
+	words := strings.Fields(cmd)
 	for _, r := range rules {
-		if r != "" && strings.HasSuffix(" "+cmd, " "+r) {
+		rw := strings.Fields(r)
+		if len(rw) == 0 || len(rw) > len(words) {
+			continue
+		}
+		tail := words[len(words)-len(rw):]
+		if path.Base(tail[0]) == path.Base(rw[0]) && slices.Equal(tail[1:], rw[1:]) {
 			return true
 		}
 	}
