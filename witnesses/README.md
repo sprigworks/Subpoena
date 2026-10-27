@@ -295,7 +295,7 @@ outside Kubernetes, so off Kubernetes it is unproven as a backstop.
    process outside the session cgroup but inside the gateway's lineage is
    itself a finding.
 5. A kernel-side backstop (not built): an optional, per-session-cgroup exec
-   backstop in the open core, decided in `docs/decisions.md` amendment 4, with
+   backstop in the open core, decided in `docs/decisions.md` ("The exec backstop"), with
    Tetragon as the alternative where Kubernetes is in use. It is a test
    backstop, not an agent guardrail. In tests a backstop intervention counts
    as a failure, and cross-examination runs with the backstop observing only.

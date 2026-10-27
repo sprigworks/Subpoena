@@ -98,8 +98,8 @@ Other things to know:
 
 ## Where the thinking lives
 
-- `docs/design.md` — the original design: thesis, prior art, architecture, test taxonomy, the agent drop-in, worked example.
-- `docs/decisions.md` — positioning and the resolved open questions, with amendments.
+- `docs/design.md` — the design: the problem, the principles, prior art, where it fits in a test suite, rules for coding agents, a worked example, open questions.
+- `docs/decisions.md` — the decisions behind it (license, evaluator, witnesses, backstop, governance, language order), with reasons.
 - `docs/architecture.md` — what was actually built, in text.
 - `docs/traceql-subset.md`, `docs/migrating-an-existing-service.md` — the subset grammar and the migration playbook.
 - `docs/ports.md` — the contract for a Python or TypeScript harness, and how each part is checked.

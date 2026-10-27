@@ -131,6 +131,6 @@ The Python harness passes its contract checks for the harness, the TraceQL
 evaluator and the witness reader; lint and cross-examination are not ported
 (`docs/ports.md`). TypeScript has generated names
 (`generated/ts/semconv.ts`) and no harness. An exec backstop in the open core
-was decided and is not built (`docs/decisions.md`, amendment 4). Tetragon was
+was decided and is not built (`docs/decisions.md`, "The exec backstop"). Tetragon was
 the first tier-2 witness; outside Kubernetes its events lack the session
 cgroup, so Subpoena has its own (`witnesses/README.md`).
