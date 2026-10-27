@@ -53,7 +53,7 @@ make test-ebpf    # the eBPF witness against the real kernel, in a privileged co
 make test-cgroup  # real-cgroup tests without root, in a delegated systemd scope
 ```
 
-Needs Go 1.24 or newer. In a sandbox that cannot reach the Go module proxy or
+Needs Go 1.25 or newer. In a sandbox that cannot reach the Go module proxy or
 the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 
 ## What runs here, and what does not

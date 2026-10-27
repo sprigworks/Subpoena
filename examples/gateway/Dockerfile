@@ -1,6 +1,6 @@
 # Build context is the repository root:
 #   docker build -f examples/gateway/Dockerfile -t subpoena-gateway .
-FROM golang:1.24 AS build
+FROM golang:1.25 AS build
 WORKDIR /src
 COPY . .
 # Normal environments can use the default proxy. In a sandbox without

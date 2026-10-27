@@ -1,7 +1,7 @@
 # Build context is the repository root:
 #   docker build -f cmd/subpoena-witness/Dockerfile -t subpoena-witness .
 # Run privileged on a Linux host with cgroup v2 and BTF (/sys/kernel/btf/vmlinux).
-FROM golang:1.24 AS build
+FROM golang:1.25 AS build
 WORKDIR /src
 COPY . .
 ARG GOPROXY=https://proxy.golang.org,direct

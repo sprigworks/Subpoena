@@ -20,7 +20,7 @@ rejection is removed.
 | Tests | `runner_test.go` | `pkg/harness`, `pkg/witness` |
 | Lint, cross-examination | `make lint`, `make cross` | `subpoena-lint`, `subpoena-cross` as Go tools |
 
-The commands are pinned as Go tools (Go 1.24+), so their version is the
+The commands are pinned as Go tools (Go 1.25+), so their version is the
 `github.com/sprigworks/subpoena` version in `go.mod`:
 
 ```

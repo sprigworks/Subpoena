@@ -17,7 +17,7 @@ human and agent contributions alike.
 
 ## Checks
 
-Use Go 1.24 or newer. From the repository root:
+Use Go 1.25 or newer. From the repository root:
 
 ```sh
 make check
