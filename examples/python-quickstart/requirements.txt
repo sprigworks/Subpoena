@@ -1,0 +1,4 @@
+# From a checkout of the Subpoena repo (CI and local runs):
+-e ../../python
+pytest>=8
+# Outside the repo, replace the line above with: subpoena
