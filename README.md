@@ -9,9 +9,13 @@ it, so enforcement is only proven by an independent witness, an observer of
 process execs and outbound connections that the application does not control,
 and cross-examination checks that the suite can tell the difference.
 
-**Status: alpha** (v0.1.0-alpha.1, see [CHANGELOG.md](CHANGELOG.md)). Go only
-so far. Python and TypeScript are next: the registry, invariants, witness
-output and tiers 2–3 are language-neutral, and [docs/ports.md](docs/ports.md)
+**Status: alpha** (v0.1.0-alpha.1, see [CHANGELOG.md](CHANGELOG.md)). Go has
+all three tiers, lint and cross-examination. Python is on PyPI
+(`pip install subpoena`) with the harness, TraceQL evaluator and witness
+reader passing the same contract checks as Go, without its own lint or
+cross-examination yet. TypeScript has generated names and is next. The
+registry, invariants, witness output and tiers 2–3 are language-neutral, and
+[docs/ports.md](docs/ports.md)
 is the contract a harness in another language must meet, with a check for
 each part. APIs will change.
 
