@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -437,5 +438,34 @@ func TestChildrenPathSkipsBaselineButWalksThroughIt(t *testing.T) {
 	w.pollChildren()
 	if got := byCmd(w.Events()); len(got) != 1 || got["new"].PID != 911 {
 		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// A /proc large enough to be split across readers must give the result a
+// serial scan would: lineage that crosses chunks is still followed, a stat
+// longer than the read buffer still parses, and the reported fault is the
+// first one in listing order.
+func TestParallelScanMatchesSerialScan(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(4))
+	w, root := freshFake(t, nil)
+	for pid := 1000; pid < 1000+4*scanChunk; pid++ {
+		fakeProc(t, root, pid, 1, strconv.Itoa(pid), "stranger\x00", "0::/")
+	}
+	fakeProc(t, root, 1010, 100, "1010", "child\x00", "0::/")
+	fakeProc(t, root, 1990, 1010, "1990", "grandchild\x00", "0::/")
+	long := filepath.Join(root, "1995")
+	must(t, os.WriteFile(filepath.Join(long, "stat"), []byte("1995 ("+strings.Repeat("x", 3000)+") S 100"+
+		" 0 0 0 0 0 0 0 0 0 0 0 0 0 20 0 1 0 1995 0 0\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(long, "cmdline"), []byte("long\x00"), 0o644))
+	for _, pid := range []string{"1900", "1200"} {
+		must(t, os.WriteFile(filepath.Join(root, pid, "stat"), []byte("malformed"), 0o644))
+	}
+	w.Poll()
+	got := byCmd(w.Events())
+	if len(got) != 3 || got["child"].PID != 1010 || got["grandchild"].PID != 1990 || got["long"].PID != 1995 {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+	if err := w.Health(); err == nil || !strings.Contains(err.Error(), "PID 1200") {
+		t.Fatalf("want the first fault in listing order (PID 1200), got %v", err)
 	}
 }
