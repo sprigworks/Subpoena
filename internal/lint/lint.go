@@ -1,6 +1,8 @@
 // Package lint implements subpoena-lint: static checks that keep a codebase's
-// tests and telemetry honest. It uses go/ast only; precision is traded for a
-// simple, readable structure, one function per rule.
+// tests and telemetry honest. Most rules use go/ast; the rules that ask
+// whether a test called the harness or a witness resolve calls with go/types
+// where the package type-checks. Precision is otherwise traded for a simple,
+// readable structure, one function per rule.
 package lint
 
 import (
@@ -8,6 +10,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +19,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/tools/go/packages"
+	"golang.org/x/tools/go/types/typeutil"
 )
 
 // Rule names.
@@ -47,19 +54,19 @@ var witnessCalls = []struct{ name, importSuffix string }{
 	{"RequireNoDial", harnessSuffix},
 }
 
-// asksWitness reports whether f calls one of witnessCalls with its import present.
-func asksWitness(f *ast.File) bool {
+// asksWitness reports whether f calls one of witnessCalls (see callsFrom).
+func asksWitness(f file) bool {
 	for _, c := range witnessCalls {
-		if importsSuffix(f, c.importSuffix) && callsMethod(f, map[string]bool{c.name: true}) {
+		if callsFrom(f, f.ast, c.name, c.importSuffix) {
 			return true
 		}
 	}
 	return false
 }
 
-// harnessSuffix and witnessSuffix gate the name-matched rules: a Collect call
-// counts only in a file importing the harness, a Spawned or Dialed call only in a file
-// importing the witness package (or one under it, such as execbpf). Matched by
+// harnessSuffix and witnessSuffix say where the calls rules 2 to 4 look for
+// are declared: Collect and the absence checks in the harness, Spawned and
+// Dialed in the witness package or one under it, such as execbpf. Matched by
 // suffix, so a service that vendored them under its own path is covered.
 const (
 	harnessSuffix = "/pkg/harness"
@@ -70,16 +77,62 @@ const (
 // package below it.
 func importsSuffix(f *ast.File, suffix string) bool {
 	for _, imp := range f.Imports {
-		p := strings.Trim(imp.Path.Value, `"`)
-		if strings.HasSuffix(p, suffix) || strings.Contains(p, suffix+"/") {
+		if pathUnder(strings.Trim(imp.Path.Value, `"`), suffix) {
 			return true
 		}
 	}
 	return false
 }
 
-// absenceCalls are the names of absence-assertion helpers.
-var absenceCalls = map[string]bool{"RequireAbsent": true, "Absent": true}
+func pathUnder(p, suffix string) bool {
+	return strings.HasSuffix(p, suffix) || strings.Contains(p, suffix+"/")
+}
+
+// callsFrom reports whether a call to a function or method called name, and
+// declared in a package under suffix, appears in n. Where the call resolves
+// with go/types, the declaring package decides, so a renamed import counts
+// and a same-named method from another package does not. Where it does not
+// resolve (the file was not type-checked, or the call does not compile), the
+// name counts if f imports a package under suffix.
+func callsFrom(f file, n ast.Node, name, suffix string) bool {
+	found := false
+	ast.Inspect(n, func(x ast.Node) bool {
+		if c, ok := x.(*ast.CallExpr); ok {
+			if declared, resolved := declaredUnder(f, c, name, suffix); declared || (!resolved && sameName(c, name) && importsSuffix(f.ast, suffix)) {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// harnessCall reports whether c calls name from the harness. Where the call
+// does not resolve with go/types, the name alone counts, as unguarded-absence
+// always matched it.
+func harnessCall(f file, c *ast.CallExpr, name string) bool {
+	declared, resolved := declaredUnder(f, c, name, harnessSuffix)
+	return declared || (!resolved && sameName(c, name))
+}
+
+// declaredUnder resolves c with go/types. resolved is false if f was not
+// type-checked or c's callee did not resolve; otherwise declared reports
+// whether c calls name declared in a package under suffix.
+func declaredUnder(f file, c *ast.CallExpr, name, suffix string) (declared, resolved bool) {
+	if f.info == nil {
+		return false, false
+	}
+	fn, ok := typeutil.Callee(f.info, c).(*types.Func)
+	if !ok || fn.Pkg() == nil {
+		return false, false
+	}
+	return fn.Name() == name && pathUnder(fn.Pkg().Path(), suffix), true
+}
+
+func sameName(c *ast.CallExpr, name string) bool {
+	n, _ := calleeName(c)
+	return n == name
+}
 
 // spanStartMethods take the span name as argument index 1: tracer.Start(ctx, name).
 // attributeCtors take the attribute key as argument 0: attribute.String(key, v).
@@ -188,11 +241,15 @@ type file struct {
 	path   string
 	ast    *ast.File
 	isTest bool
+	info   *types.Info // nil if the file was not type-checked
 }
 
 type tree struct {
 	fset  *token.FileSet
 	files []file
+	// untyped counts files that were not type-checked, so rules 2 to 4
+	// matched calls there by name and import.
+	untyped int
 }
 
 // Options tune a Run.
@@ -204,6 +261,9 @@ type Options struct {
 	// DeadTelemetry enables dead-telemetry, which assumes the roots are the
 	// whole service: a registry entry no root emits is reported.
 	DeadTelemetry bool
+	// Warn, if set, receives a note for each root with files that were not
+	// type-checked.
+	Warn io.Writer
 }
 
 // Run lints every .go file under each root and returns findings sorted by position.
@@ -219,6 +279,9 @@ func RunWith(roots []string, reg *Registry, opts Options) ([]Finding, error) {
 			return nil, err
 		}
 		trees = append(trees, t)
+		if t.untyped > 0 && opts.Warn != nil {
+			fmt.Fprintf(opts.Warn, "subpoena-lint: %d file(s) under %s were not type-checked; Collect, witness and absence calls there were matched by name\n", t.untyped, root)
+		}
 		out = append(out, checkUnknownTelemetry(t, reg)...)
 		out = append(out, checkNoTraceAssertion(t)...)
 		out = append(out, checkUnwitnessedEnforcement(t)...)
@@ -246,6 +309,7 @@ func RunWith(roots []string, reg *Registry, opts Options) ([]Finding, error) {
 
 func load(root string) (*tree, error) {
 	t := &tree{fset: token.NewFileSet()}
+	typed := typeCheck(root, t.fset)
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -260,17 +324,68 @@ func load(root string) (*tree, error) {
 		if !strings.HasSuffix(p, ".go") {
 			return nil
 		}
+		isTest := strings.HasSuffix(p, "_test.go")
+		if abs, err := filepath.Abs(p); err == nil {
+			if tf, ok := typed[realPath(abs)]; ok {
+				t.files = append(t.files, file{path: p, ast: tf.ast, isTest: isTest, info: tf.info})
+				return nil
+			}
+		}
 		f, err := parser.ParseFile(t.fset, p, nil, parser.ParseComments)
 		if err != nil {
 			return err
 		}
-		t.files = append(t.files, file{path: p, ast: f, isTest: strings.HasSuffix(p, "_test.go")})
+		t.untyped++
+		t.files = append(t.files, file{path: p, ast: f, isTest: isTest})
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("lint: %w", err)
 	}
 	return t, nil
+}
+
+type typedFile struct {
+	ast  *ast.File
+	info *types.Info
+}
+
+// typeCheck loads the packages under root, tests included, and returns the
+// syntax and type information of each file by absolute path. Packages with
+// type errors keep the information that did resolve. A root outside any
+// module, and files excluded by build constraints, are left out: load parses
+// those itself, and rules 2 to 4 match calls there by name.
+func typeCheck(root string, fset *token.FileSet) map[string]typedFile {
+	out := map[string]typedFile{}
+	cfg := &packages.Config{
+		Mode:  packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir:   root,
+		Tests: true,
+		Fset:  fset,
+	}
+	pkgs, err := packages.Load(cfg, "./...")
+	if err != nil {
+		return out
+	}
+	for _, pkg := range pkgs {
+		if pkg.TypesInfo == nil || len(pkg.Syntax) != len(pkg.CompiledGoFiles) {
+			continue
+		}
+		for i, f := range pkg.Syntax {
+			if p := realPath(pkg.CompiledGoFiles[i]); out[p].info == nil {
+				out[p] = typedFile{ast: f, info: pkg.TypesInfo}
+			}
+		}
+	}
+	return out
+}
+
+// realPath resolves symlinks so the walk's paths and the go command's agree.
+func realPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
 }
 
 func (t *tree) finding(rule string, pos token.Pos, format string, a ...any) Finding {
@@ -363,7 +478,7 @@ func checkNoTraceAssertion(t *tree) []Finding {
 			}
 			continue
 		}
-		if !definesTests(f.ast) || (importsSuffix(f.ast, harnessSuffix) && callsMethod(f.ast, map[string]bool{"Collect": true})) {
+		if !definesTests(f.ast) || callsFrom(f, f.ast, "Collect", harnessSuffix) {
 			continue
 		}
 		out = append(out, t.finding(RuleNoTraceAssertion, f.ast.Package,
@@ -419,19 +534,6 @@ func definesTests(f *ast.File) bool {
 	return false
 }
 
-func callsMethod(n ast.Node, names map[string]bool) bool {
-	found := false
-	ast.Inspect(n, func(x ast.Node) bool {
-		if c, ok := x.(*ast.CallExpr); ok {
-			if name, _ := calleeName(c); names[name] {
-				found = true
-			}
-		}
-		return !found
-	})
-	return found
-}
-
 // ---- Rule 3: unwitnessed-enforcement ---------------------------------------
 
 // checkUnwitnessedEnforcement flags functions marked //subpoena:enforcement_point
@@ -439,7 +541,7 @@ func callsMethod(n ast.Node, names map[string]bool) bool {
 func checkUnwitnessedEnforcement(t *tree) []Finding {
 	witnessed := false
 	for _, f := range t.files {
-		if f.isTest && asksWitness(f.ast) {
+		if f.isTest && asksWitness(f) {
 			witnessed = true
 			break
 		}
@@ -491,11 +593,10 @@ func checkUnguardedAbsence(t *tree) []Finding {
 				if !ok {
 					return true
 				}
-				name, _ := calleeName(c)
 				switch {
-				case name == "Collect":
+				case harnessCall(f, c, "Collect"):
 					collects = append(collects, c.Pos())
-				case absenceCalls[name]:
+				case harnessCall(f, c, "RequireAbsent"), harnessCall(f, c, "Absent"):
 					absences = append(absences, c.Pos())
 				}
 				return true

@@ -46,7 +46,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	findings, err := lint.RunWith(flag.Args(), reg, lint.Options{InvariantsDir: *invariants, DeadTelemetry: *dead})
+	findings, err := lint.RunWith(flag.Args(), reg, lint.Options{InvariantsDir: *invariants, DeadTelemetry: *dead, Warn: os.Stderr})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
