@@ -156,6 +156,44 @@ exits at once is seen, lineage follows a fork that never execs, and a burst
 of execs before `Stop` is not lost. In the OATS stack it is the witness for
 both cases (`examples/gateway/oats/README.md`).
 
+### Network: `netbpf` (kernel-side)
+
+`pkg/witness/netbpf` is the network sibling of `execbpf`. It implements
+`witness.NetworkWitness`:
+
+```go
+Dialed(traceID string) []NetworkEvent
+```
+
+Two eBPF programs, on `fentry/security_socket_connect` and
+`fentry/security_socket_sendmsg`, record every outbound inet connection
+attempt on the machine: `connect`, and `sendto`/`sendmsg`/`sendmmsg` that
+carry a destination (unconnected UDP, TCP Fast Open). These are the LSM entry
+points, traced without an LSM boot parameter. Every user-space path goes
+through them, including io_uring, and the destination is a kernel copy by
+then. Each event carries the caller's cgroup ID and path, PIDs, protocol, and
+the destination address and port. It records attempts, not outcomes, so a
+refused connect still counts. Attribution is by session cgroup only. A
+connection has no parent to follow, so there is no lineage fallback.
+
+The absence check is `harness.RequireNoDial(t, w, traceID, match)`, with the
+same rules as `RequireNoSpawn`. A matching attempt is Fail. With none, the
+verdict is Pass only on healthy, stopped, retained capture. `harness.DialTo`
+matches destinations. Destinations are addresses, not names: a rule about a
+host name needs the test to pin what the name resolves to.
+
+Loss accounting is the same as `execbpf`: a per-CPU counter of failed
+ring-buffer reservations, the drain on `Stop`, and reader errors, all retained
+in `Health`. Not seen: packet sockets; the header destination of raw sockets
+that write their own IP header; traffic the kernel originates; and
+destinations reached through another process outside the session cgroup (a
+proxy, a resolver, a sidecar); and SCTP `connectx`, which goes through
+setsockopt. `make test-ebpf` runs its kernel tests: a
+successful and a refused TCP connect, an unconnected UDP send and an IPv6
+connect in a real session cgroup are attributed with the right cgroup ID; the
+test process's own dial is not attributed; and a burst of sends before `Stop`
+is not lost.
+
 ### How other witnesses identify a process's cgroup
 
 The kernel's own identity for a cgroup is its path, or its 64-bit cgroup ID
@@ -217,6 +255,8 @@ outside Kubernetes, so off Kubernetes it is unproven as a backstop.
 - `../pkg/witness/`: interface and `ProcWitness`.
 - `../pkg/witness/execbpf/`: the kernel-side witness; `bpf/exec.c` is the eBPF
   program (dual MIT/GPL-2.0, as the kernel requires for its helpers).
+- `../pkg/witness/netbpf/`: the kernel-side network witness; `bpf/net.c` is
+  its eBPF program (dual MIT/GPL-2.0).
 - `../cmd/subpoena-witness/`: runs it as a daemon, JSON lines out.
 - `../pkg/cgroup/`: per-session cgroup creation, placement and IDs, shared by
   the gateway and the witnesses.

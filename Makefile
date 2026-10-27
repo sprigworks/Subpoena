@@ -75,12 +75,12 @@ test-ebpf:
 	docker run --rm --privileged -v "$(CURDIR)":/src -w /src \
 	-v "$$(go env GOMODCACHE)":/go/pkg/mod:ro -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local \
 	-e SUBPOENA_EBPF_REQUIRE=1 $(GO_IMAGE) \
-	go test -count=1 -v ./pkg/witness/execbpf
+	go test -count=1 -v ./pkg/witness/execbpf ./pkg/witness/netbpf
 
-# Regenerate the eBPF object and Go bindings from pkg/witness/execbpf/bpf/exec.c
+# Regenerate the eBPF objects and Go bindings from pkg/witness/{execbpf,netbpf}/bpf/*.c
 # (needs clang). The output is committed so ordinary builds need no clang.
 generate-bpf:
-	go generate ./pkg/witness/execbpf
+	go generate ./pkg/witness/execbpf ./pkg/witness/netbpf
 
 # Subset-vs-Tempo conformance. Needs Docker. SUBPOENA_CONFORMANCE_REQUIRE makes
 # an unreachable Tempo a failure instead of a skip, so this target cannot go
