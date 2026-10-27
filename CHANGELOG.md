@@ -13,7 +13,8 @@
   verdicts. Load can flip a verdict either way, so gate on `-j 1`.
 - **Cross: `-select` test selection.** Each mutant runs only the tests that
   executed its line in a per-test coverage pass after the baseline. Opt-in: it
-  pays off on long suites, not on short ones.
+  pays off on long suites, not on short ones. A test that fails when run alone
+  is an error; gate releases without `-select`.
 
 - **Guard and layered mutants in `subpoena-cross`.**
   `//subpoena:enforcement_guard true|false` on an `if` forces its condition to

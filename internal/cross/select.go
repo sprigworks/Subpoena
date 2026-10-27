@@ -19,13 +19,20 @@ import (
 // Test selection (Options.Select). After the green baseline each test runs
 // alone with a coverage profile of the mutants' packages; a mutant then runs
 // only the tests that executed its line. A test that never runs the mutated
-// line cannot change its result, so leaving it out can only turn a kill into
-// a survivor, which fails the run, never the reverse. A mutant no test was
-// seen to execute runs the whole suite.
+// line cannot change its result, so leaving it out can turn a kill into a
+// survivor, which fails the run. The reverse needs a test whose result
+// depends on which tests ran before it: one that fails alone is refused, but
+// a subset can still differ from the full suite, so gate releases without
+// selection. A mutant no test was seen to execute runs the whole suite.
 
 var moduleRE = regexp.MustCompile(`(?m)^module\s+(\S+)`)
 
 // selectTests maps each mutant's Name to the tests that executed its line.
+// A test that fails alone, green in the full baseline, depends on the tests
+// before it: run in a subset it could fail with or without the mutant, and
+// that would be a kill, so it is an error.
+//
+//subpoena:enforcement_point
 func selectTests(ctx context.Context, o Options, sb sandbox, pkgs string, mutants []Mutant) (map[string][]string, error) {
 	gomod, err := os.ReadFile(filepath.Join(sb.dir, "go.mod"))
 	if err != nil {
@@ -83,9 +90,18 @@ func selectTests(ctx context.Context, o Options, sb sandbox, pkgs string, mutant
 				continue
 			}
 			prof := filepath.Join(bins, strconv.Itoa(n)+"-"+name+".cov")
-			// A test that fails alone still reports what it executed.
-			if _, err := runBin(ctx, o.Timeout, bin, p.Dir, "-test.run", "^"+name+"$", "-test.count=1", "-test.coverprofile="+prof); err != nil && ctx.Err() != nil {
+			out, err := runBin(ctx, o.Timeout, bin, p.Dir, "-test.run", "^"+name+"$", "-test.count=1", "-test.coverprofile="+prof)
+			if ctx.Err() != nil {
 				return nil, ctx.Err()
+			}
+			// The verdict is kept apart from the return so that removing the
+			// return (make cross-self) still compiles.
+			var aloneErr error
+			if err != nil {
+				aloneErr = fmt.Errorf("cross: select: %s %s fails when run alone, so a subset of the suite could fail without the mutant; fix the test or drop -select:\n%s", p.ImportPath, name, tail(out, 20))
+			}
+			if aloneErr != nil {
+				return nil, aloneErr //subpoena:enforcement
 			}
 			hit, err := executedLines(prof)
 			if err != nil {

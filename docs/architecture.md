@@ -113,7 +113,10 @@ kill. Gate releases on `-j 1`, or confirm kills there. `-select`
 first runs each test alone with coverage, then runs each mutant against only
 the tests that executed its line; a mutant no test executed runs the whole
 suite. A test that never runs the mutated line cannot change its result, so
-selection can only turn a kill into a survivor. The coverage pass costs about
+leaving it out can turn a kill into a survivor. The reverse needs tests that
+depend on each other's order: a test that fails alone is an error, but a
+subset can still behave differently from the full suite, so gate releases
+without `-select`. The coverage pass costs about
 one extra suite run, so it pays off when each mutant's suite is long: on
 cross-self (short suites) `-j 8 -select` took 141 s against 135 s for `-j 8`,
 with the same verdicts. An enforcement point

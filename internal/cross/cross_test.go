@@ -989,3 +989,33 @@ func TestSelectionRunsOnlyCoveringTests(t *testing.T) {
 		t.Fatalf("B has no covering test and must run the whole suite:\n%s", log.String())
 	}
 }
+
+// TestB passes in the full suite only because TestA ran first. Alone it fails,
+// so any subset run holding it would be a kill without the mutant: refused.
+func TestSelectionRefusesATestThatFailsAlone(t *testing.T) {
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": `//subpoena:impl_derived
+
+package mini
+
+import "testing"
+
+var ready bool
+
+func TestA(t *testing.T) {
+	ready = true
+	if Allow(false) == nil {
+		t.Fatal("denied caller allowed")
+	}
+}
+
+func TestB(t *testing.T) {
+	if !ready {
+		t.Fatal("needs TestA first")
+	}
+}
+`})
+	_, err := Run(context.Background(), Options{Target: dir, Select: true})
+	if err == nil || !strings.Contains(err.Error(), "TestB fails when run alone") {
+		t.Fatalf("want a refusal, got %v", err)
+	}
+}
