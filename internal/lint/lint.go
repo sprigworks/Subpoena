@@ -52,6 +52,9 @@ var witnessCalls = []struct{ name, importSuffix string }{
 	{"RequireNoSpawn", harnessSuffix},
 	{"NoDial", harnessSuffix},
 	{"RequireNoDial", harnessSuffix},
+	{"CheckNoSpawn", harnessSuffix},
+	{"CheckNoDial", harnessSuffix},
+	{"WatchSpawns", harnessSuffix},
 }
 
 // asksWitness reports whether f calls one of witnessCalls (see callsFrom).

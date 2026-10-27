@@ -88,17 +88,17 @@ func RequireExists(tb testing.TB, t *Trace, q string, opts ...Options) {
 func report(tb testing.TB, kind, q string, v Verdict, err error, opts []Options) {
 	tb.Helper()
 	if err != nil {
-		tb.Fatalf("%s %s: cannot evaluate: %v", kind, q, err)
+		tb.Fatalf("%s: %s %s: cannot evaluate: %v", TagTestimony, kind, q, err)
 	}
 	switch v {
 	case Pass:
 	case Inconclusive:
 		if len(opts) > 0 && opts[0].AllowInconclusive {
-			tb.Logf("%s %s: inconclusive (capture incomplete), allowed by options", kind, q)
+			tb.Logf("%s: %s %s: inconclusive (capture incomplete), allowed by options", TagTestimony, kind, q)
 			return
 		}
-		tb.Fatalf("%s %s: INCONCLUSIVE: capture incomplete, absence is not proven", kind, q)
+		tb.Fatalf("%s: %s %s: INCONCLUSIVE: capture incomplete, absence is not proven", TagTestimony, kind, q)
 	default:
-		tb.Fatalf("%s %s: %s", kind, q, v)
+		tb.Fatalf("%s: %s %s: %s", TagTestimony, kind, q, v)
 	}
 }

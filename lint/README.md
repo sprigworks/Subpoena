@@ -20,7 +20,7 @@ Exit status: 0 clean, 1 findings, 2 usage or load error. The registry package
 | --- | --- |
 | `unknown-telemetry` | A string literal passed as the span name (`x.Start(ctx, "...")`, `SetName("...")`) or as an attribute key (`attribute.String("...", v)` and the other typed constructors) whose value is not in the registry, or a `semconv.X` selector where `X` does not exist. A literal that equals a registry value is accepted; prefer the constant. |
 | `no-trace-assertion` | A `_test.go` file that defines tests but never calls `Collect()`. Files with no `Test`/`Benchmark`/`Fuzz`/`Example` function (helpers only) are exempt, and so are files marked `//subpoena:pure_logic` (below). A `pure_logic` file that imports telemetry is flagged instead. |
-| `unwitnessed-enforcement` | A function whose doc comment carries `//subpoena:enforcement_point` when no `_test.go` file in the tree asks a Witness: `Spawned` or `Dialed`, or the harness checks `NoSpawn`, `RequireNoSpawn`, `NoDial` and `RequireNoDial`. |
+| `unwitnessed-enforcement` | A function whose doc comment carries `//subpoena:enforcement_point` when no `_test.go` file in the tree asks a Witness: `Spawned` or `Dialed`, or the harness checks `NoSpawn`, `RequireNoSpawn`, `CheckNoSpawn`, `WatchSpawns`, `NoDial`, `RequireNoDial` and `CheckNoDial`. |
 | `unguarded-absence` | A `RequireAbsent(...)` or `.Absent(...)` call with no `Collect()` call earlier in the same top-level function. |
 | `missing-provenance` | A `_test.go` file without `//subpoena:spec_derived` or `//subpoena:impl_derived` above the package clause. |
 | `orphan-invariant` | A TraceQL string literal passed to a harness query or assert function in a `_test.go` file (`RequireAbsent`/`RequireExists` third argument; `Absent`, `Exists`, `Query` first argument) that, trimmed, does not byte-match a file in `invariants/`. Reported at the literal's `file:line`. |
@@ -100,8 +100,8 @@ command, tests included, and a `Collect`, `RequireAbsent` or `Absent` call
 counts only if it resolves to a function declared in a package whose path ends
 in `/pkg/harness`. `Spawned` and `Dialed` count only if they resolve to
 `/pkg/witness` or a package below it (such as `execbpf`). The checks
-`NoSpawn`, `RequireNoSpawn`, `NoDial` and `RequireNoDial` count only if they
-resolve to the harness. A renamed import still counts. A method of the same
+`NoSpawn`, `RequireNoSpawn`, `CheckNoSpawn`, `WatchSpawns`, `NoDial`,
+`RequireNoDial` and `CheckNoDial` count only if they resolve to the harness. A renamed import still counts. A method of the same
 name on another type, such as a metrics `Collect`, does not.
 
 Known imprecision: some files can't be type-checked. Examples are a target

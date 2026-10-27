@@ -196,11 +196,11 @@ def _report(kind: str, check, q: str, allow_inconclusive: bool) -> None:
     try:
         v = check(q)
     except (traceql.ParseError, traceql.UnsupportedValueError) as e:
-        raise AssertionError(f"{kind} {q}: cannot evaluate: {e}") from None
+        raise AssertionError(f"testimony: {kind} {q}: cannot evaluate: {e}") from None
     if v is Verdict.PASS:
         return
     if v is Verdict.INCONCLUSIVE:
         if allow_inconclusive:
             return
-        raise AssertionError(f"{kind} {q}: INCONCLUSIVE: capture incomplete, absence is not proven")
-    raise AssertionError(f"{kind} {q}: {v}")
+        raise AssertionError(f"testimony: {kind} {q}: INCONCLUSIVE: capture incomplete, absence is not proven")
+    raise AssertionError(f"testimony: {kind} {q}: {v}")

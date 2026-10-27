@@ -253,7 +253,8 @@ it needs root and BTF. `witnesses/README.md` lists what each does not see.
 Other side effects (file or database changes) need another observer, for
 example an audit log. There is no interface for them; that is future work. The
 `unwitnessed-enforcement` lint rule only checks that some test asks a witness
-(`Spawned`, `Dialed`, `NoSpawn`, `RequireNoSpawn`, `NoDial` or `RequireNoDial`),
+(`Spawned`, `Dialed`, or a harness check: `NoSpawn`, `RequireNoSpawn`,
+`CheckNoSpawn`, `WatchSpawns`, `NoDial`, `RequireNoDial` or `CheckNoDial`),
 so for other enforcement points review has to carry it.
 
 ## 5. Add provenance markers

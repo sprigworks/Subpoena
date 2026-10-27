@@ -28,6 +28,30 @@ process is Fail even with unhealthy capture; zero processes is Pass only when
 the optional `witness.HealthReporter` (`Health() error`) reports healthy capture.
 Unknown health, capture still running, or a known capture failure yields
 Inconclusive. `RequireNoSpawn` fails on both Fail and Inconclusive.
+`CheckNoSpawn` and `CheckNoDial` are the non-fatal forms: they report the
+failure and let the test go on, so one failing run can show every kind of
+evidence. Witness failures start with `witness:` and telemetry failures with
+`testimony:`.
+
+A test can stop before its witness assertion, for example on a failed exit
+status or audit check, and then nobody asks the witness what ran. Register the
+check when the witness starts instead:
+
+```go
+harness.WatchSpawns(t, w, traceID, harness.SpawnRule{
+	Allowed: []string{"sleep 0.6"},  // nil allows anything not in Never
+	Never:   []string{"sleep 1"},    // must not run, whatever Allowed says
+})
+```
+
+It runs at cleanup, even after an earlier `Fatal`. It stops the witness, fails
+on any process the rule refuses and on missing or bad capture health, and when
+the test has already failed it logs every process the witness saw. `Never`
+matches a command line equal to the entry or ending with it after a space, so
+it still fires when `timeout` or `env` wraps the command. `Allowed` matches the
+whole command line exactly, so `sh -c "x; sleep 0.6"` is not allowed by
+`"sleep 0.6"`. A process whose arguments the witness cannot read shows up under
+its bare name, which `Never` may not match; an `Allowed` list catches it.
 
 `ProcWitness.Health` retains the first scan error and number of failed scans,
 including the final poll. Permission/I/O errors and malformed process stat
