@@ -31,6 +31,10 @@ jobs:
         run: go run ./cmd/subpoena-cross ./examples/gateway
       - name: cross-examination over Subpoena's own guards
         run: make cross-self
+      # Evidence, not a pass bar: the runner's process count, full-scan and
+      # children-walk cost, and how many short processes ProcWitness caught.
+      - name: ProcWitness benchmarks (report only)
+        run: go test -run '^$' -bench 'Proc' -benchtime 50x ./pkg/witness
 
   # The Python port (python/): its own tests over the shared corpus, then the
   # evaluator through subpoena-conform, the protocol every port is checked by.

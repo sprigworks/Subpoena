@@ -469,3 +469,37 @@ func TestParallelScanMatchesSerialScan(t *testing.T) {
 		t.Fatalf("want the first fault in listing order (PID 1200), got %v", err)
 	}
 }
+
+// Coverage counts both pollers and reports the longest gap between full
+// scans: the window in which a process outside the children tree can slip by.
+func TestCoverageReportsFullScanGap(t *testing.T) {
+	w, _ := freshFake(t, nil)
+	before := w.Coverage()
+	if before.FullScans == 0 || before.ChildrenWalks == 0 {
+		t.Fatalf("Start and Stop poll with both pollers; got %+v", before)
+	}
+	w.Poll()
+	time.Sleep(30 * time.Millisecond)
+	w.Poll()
+	w.pollChildren()
+	got := w.Coverage()
+	if got.FullScans != before.FullScans+2 || got.ChildrenWalks != before.ChildrenWalks+1 {
+		t.Fatalf("want 2 more full scans and 1 more walk than %+v, got %+v", before, got)
+	}
+	if got.MaxFullScanGap < 30*time.Millisecond {
+		t.Fatalf("a 30ms pause between full scans must show in MaxFullScanGap, got %v", got.MaxFullScanGap)
+	}
+}
+
+// A new Start resets coverage.
+func TestCoverageResetsOnStart(t *testing.T) {
+	w, _ := freshFake(t, nil)
+	for i := 0; i < 100; i++ {
+		w.Poll()
+	}
+	must(t, w.Start())
+	w.Stop()
+	if c := w.Coverage(); c.FullScans >= 100 {
+		t.Fatalf("coverage carried over from the previous capture: %+v", c)
+	}
+}

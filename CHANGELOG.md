@@ -12,6 +12,10 @@
   witness.
 - **Tagged failure messages.** Harness witness failures start with `witness:`,
   telemetry assertion failures with `testimony:` (Go and Python).
+- **`ProcWitness.Coverage`.** The number of full scans and children walks, and
+  the longest gap between full scans. Absence of a process outside the root's
+  children tree rests on full scans, so a process shorter than that gap may
+  have been missed. CI now runs the `BenchmarkProc*` benchmarks (report only).
 
 ## Python 0.1.0a1 (2026-10-26)
 
