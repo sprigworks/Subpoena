@@ -38,8 +38,8 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   implementation. Read the code only after the test exists, and say so with the
   marker if you did not.
 - A function marked `//subpoena:enforcement_point` needs a test that asks a
-  Witness (`Spawned`) what actually happened. Before trusting zero processes,
-  stop the witness and check capture health. Prefer `harness.RequireNoSpawn`:
+  Witness (`Spawned`, or `Dialed` for network effects) what actually happened. Before trusting zero processes,
+  stop the witness and check capture health. Prefer `harness.RequireNoSpawn` (`RequireNoDial`):
   missing or failed `HealthReporter` health is Inconclusive and fails the test. The system's own spans are
   testimony, not proof.
 - `go run ./cmd/subpoena-cross ./examples/gateway` must report every mutant

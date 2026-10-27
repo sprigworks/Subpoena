@@ -36,7 +36,7 @@ const (
 )
 
 // witnessMethods are the method names that count as "calling a Witness".
-var witnessMethods = map[string]bool{"Spawned": true}
+var witnessMethods = map[string]bool{"Spawned": true, "Dialed": true}
 
 // harnessSuffix and witnessSuffix gate the name-matched rules: a Collect call
 // counts only in a file importing the harness, a Spawned call only in a file
