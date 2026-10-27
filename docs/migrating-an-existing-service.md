@@ -293,8 +293,8 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 | Lint finding | Fix |
 | --- | --- |
 | `unknown-telemetry` | Use a generated constant; if the name is new, add it to the registry (reviewed) |
-| `no-trace-assertion` | The file defines tests but never calls `Collect()`. If it holds only pure-logic tests, mark it `//subpoena:pure_logic` (see "What to delete") |
-| `unguarded-absence` | Call `Collect()` earlier in the same function |
+| `no-trace-assertion` | The file defines tests but never calls `Collect()`. If it holds only pure-logic tests, mark it `//subpoena:pure_logic` (see "What to delete"). A helper that wraps `Collect` counts only if every return hands back the trace from its own harness `Collect` call (`lint/README.md`) |
+| `unguarded-absence` | Call `Collect()`, or a verified wrapper, earlier in the same function |
 | `missing-provenance` | Add the marker (step 5) |
 | `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`, `Dialed`) what happened |
 | `orphan-invariant` | Load the query by name, or add `invariants/<name>.traceql` and regenerate |

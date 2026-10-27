@@ -152,3 +152,194 @@ func TestUntypedFilesAreReported(t *testing.T) {
 		t.Fatalf("a tree outside any module must say it fell back to names; got %q", warn.String())
 	}
 }
+
+// realHarness has the real Collect signature, (*Trace, error), and another
+// harness function that returns a trace without collecting.
+const realHarness = "package harness\n\ntype Harness struct{}\ntype Trace struct{}\n\n" +
+	"func (*Harness) Collect() (*Trace, error) { return &Trace{}, nil }\n" +
+	"func (*Harness) Snapshot() *Trace        { return &Trace{} }\n" +
+	"func (*Trace) Absent(q string) bool       { return true }\n"
+
+// lintTypedFiles is lintTyped with the real harness and several files.
+func lintTypedFiles(t *testing.T, files map[string]string) []Finding {
+	t.Helper()
+	all := map[string]string{}
+	for k, v := range typedModule {
+		all[k] = v
+	}
+	all["pkg/harness/harness.go"] = realHarness
+	all["fake/fake.go"] = "package fake\n\nimport \"example.com/svc/pkg/harness\"\n\nfunc Collect() (*harness.Trace, error) { return &harness.Trace{}, nil }\n"
+	for k, v := range files {
+		all[k] = v
+	}
+	dir := writeTree(t, all, t.TempDir())
+	fs, err := RunWith([]string{dir}, registry(t), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fs
+}
+
+// wrapperUser calls rig.Collect, then asserts an absence on what it returned.
+const wrapperUser = `//subpoena:impl_derived
+package svc
+
+import (
+	"testing"
+
+	"example.com/svc/pkg/witness"
+)
+
+func TestRun(t *testing.T) {
+	r := &rig{}
+	tr := r.Collect(t)
+	q := ""
+	_ = tr.Absent(q)
+	var w witness.Witness
+	_ = w.Spawned("x")
+}
+`
+
+func helperFile(body string) string {
+	return `//subpoena:impl_derived
+package svc
+
+import (
+	"example.com/svc/fake"
+	"example.com/svc/metrics"
+	"example.com/svc/pkg/harness"
+)
+
+var (
+	_ metrics.M
+	_ = fake.Collect
+)
+
+type rig struct {
+	h harness.Harness
+	m metrics.M
+	o *harness.Trace
+}
+
+func (r *rig) stop() {}
+
+` + body + "\n"
+}
+
+// A lifecycle helper in one file stops the system, then calls the harness
+// Collect and returns its trace; tests in another file call only the helper.
+// Both shapes of return count, and so does a helper that wraps a wrapper.
+func TestCollectWrapperCounts(t *testing.T) {
+	cases := map[string]string{
+		"variable": `func (r *rig) Collect(t interface{ Helper() }) *harness.Trace {
+	t.Helper()
+	r.stop()
+	tr, err := r.h.Collect()
+	if err != nil {
+		panic(err)
+	}
+	return tr
+}`,
+		"direct return": `func (r *rig) Collect(t interface{ Helper() }) (*harness.Trace, error) {
+	r.stop()
+	return r.h.Collect()
+}`,
+		// Declared before the wrapper it calls, so finding it takes a second pass.
+		"wrapper of a wrapper": `func (r *rig) Collect(t interface{ Helper() }) *harness.Trace {
+	var tr = r.inner()
+	return tr
+}
+
+func (r *rig) inner() *harness.Trace {
+	tr, _ := r.h.Collect()
+	return tr
+}`,
+	}
+	// The helper may also sit in a non-test file of the package, which
+	// go/packages loads in both the package and its test variant.
+	for _, helperName := range []string{"helpers_test.go", "helpers.go"} {
+		for name, helper := range cases {
+			t.Run(helperName+"/"+name, func(t *testing.T) {
+				user := wrapperUser
+				if name == "direct return" {
+					user = strings.Replace(user, "tr := r.Collect(t)", "tr, _ := r.Collect(t)", 1)
+				}
+				fs := lintTypedFiles(t, map[string]string{helperName: helperFile(helper), "svc_test.go": user})
+				if len(fs) != 0 {
+					t.Fatalf("calls to a verified Collect wrapper must count as Collect; got %v", fs)
+				}
+			})
+		}
+	}
+}
+
+// Lookalikes are not wrappers, whatever they are called.
+func TestCollectWrapperLookalikesDoNotCount(t *testing.T) {
+	cases := map[string]string{
+		"metrics Collect":             `func (r *rig) Collect(t any) *harness.Trace { r.m.Collect(); return &harness.Trace{} }`,
+		"other package's Collect":     `func (r *rig) Collect(t any) *harness.Trace { tr, _ := fake.Collect(); return tr }`,
+		"other harness function":      `func (r *rig) Collect(t any) *harness.Trace { tr := r.h.Snapshot(); return tr }`,
+		"no call":                     `func (r *rig) Collect(t any) *harness.Trace { return &harness.Trace{} }`,
+		"collects but returns nil":    `func (r *rig) Collect(t any) *harness.Trace { r.h.Collect(); return nil }`,
+		"returns another trace":       `func (r *rig) Collect(t any) *harness.Trace { _, _ = r.h.Collect(); return r.o }`,
+		"one return is not collected": `func (r *rig) Collect(t any) *harness.Trace { tr, err := r.h.Collect(); if err != nil { return r.o }; return tr }`,
+		"func literal": `func (r *rig) Collect(t any) *harness.Trace {
+	f := func() *harness.Trace { tr, _ := r.h.Collect(); return tr }
+	_ = f
+	return r.o
+}`,
+		"returns a package variable": `var other *harness.Trace
+
+func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); _ = tr; return other }`,
+		"never returns": `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); _ = tr; panic("unreachable") }`,
+		"assigned in a func literal": `func (r *rig) Collect(t any) *harness.Trace {
+	var tr *harness.Trace
+	f := func() { tr, _ = r.h.Collect() }
+	_ = f
+	return tr
+}`,
+		"defer": `func (r *rig) Collect(t any) *harness.Trace {
+	defer r.h.Collect()
+	return r.o
+}`,
+		"go statement": `func (r *rig) Collect(t any) *harness.Trace {
+	go r.h.Collect()
+	return r.o
+}`,
+		"no trace returned": `func (r *rig) Collect(t any) { _, _ = r.h.Collect() }`,
+	}
+	for name, helper := range cases {
+		t.Run(name, func(t *testing.T) {
+			fs := lintTypedFiles(t, map[string]string{"helpers_test.go": helperFile(helper), "svc_test.go": wrapperUser})
+			if name == "no trace returned" {
+				// tr := r.Collect(t) does not compile, so the file falls back
+				// to names; only no-trace-assertion is certain.
+				if got := byRule(fs, RuleNoTraceAssertion); len(got) != 1 {
+					t.Errorf("want 1 %s, got %v", RuleNoTraceAssertion, fs)
+				}
+				return
+			}
+			if got := byRule(fs, RuleUnguardedAbsence); len(got) != 1 {
+				t.Errorf("want 1 %s, got %v", RuleUnguardedAbsence, fs)
+			}
+			// helpers_test.go defines no tests, so only svc_test.go can be flagged.
+			if got := byRule(fs, RuleNoTraceAssertion); len(got) != 1 || !strings.Contains(got[0].Msg, "svc_test.go") {
+				t.Errorf("want 1 %s on svc_test.go, got %v", RuleNoTraceAssertion, fs)
+			}
+		})
+	}
+}
+
+// A file left out of type-checking (here by a build constraint) that calls a
+// wrapper is matched by name as before (it imports the harness, so Collect
+// counts by name), and must not crash the wrapper check.
+func TestWrapperCallFromUntypedFile(t *testing.T) {
+	fs := lintTypedFiles(t, map[string]string{
+		"helpers_test.go": helperFile(`func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); return tr }`),
+		"svc_test.go":     wrapperUser,
+		"ignored_test.go": "//go:build ignore\n\n//subpoena:impl_derived\npackage svc\n\nimport (\n\t\"testing\"\n\n\t\"example.com/svc/pkg/harness\"\n)\n\nvar _ harness.Trace\n\nfunc TestIgnored(t *testing.T) {\n\tr := &rig{}\n\ttr := r.Collect(t)\n\tq := \"\"\n\t_ = tr.Absent(q)\n}\n",
+	})
+	if len(fs) != 0 {
+		t.Fatalf("got %v", fs)
+	}
+}

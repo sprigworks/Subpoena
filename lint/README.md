@@ -104,6 +104,41 @@ in `/pkg/harness`. `Spawned` and `Dialed` count only if they resolve to
 `RequireNoDial` and `CheckNoDial` count only if they resolve to the harness. A renamed import still counts. A method of the same
 name on another type, such as a metrics `Collect`, does not.
 
+A test helper may wrap `Collect`, for example to close the system and stop
+the witness and check its health first. A call to the helper counts as
+`Collect` for rules 2 and 4 when lint can verify, in the type-checked helper,
+that every `return` hands back the trace from a harness `Collect` (or another
+verified wrapper) called in the helper's own body: either `return
+h.Collect(ctx)`, or a variable assigned from that call outside any function
+literal. Returning `nil`, a parameter, a field or another trace disqualifies
+the helper. Its name doesn't matter: a method called `Collect` that isn't
+verified, such as a metrics `Collect`, is not a wrapper. A wrapper can sit in
+any file in the targets.
+
+Limits: lint doesn't prove the `Collect` call runs on every path (an
+assignment under an `if` still counts); that is left to review. Some helpers
+that do collect are not recognised, and calls to them are reported as missing
+`Collect`: a `Collect` inside a closure (a retry loop or `t.Run`), a helper
+that stores the trace in a field or returns it inside a struct, a named result
+with a bare `return`, and a helper reached through an interface or a function
+value. Call the harness `Collect` directly in those tests.
+
+```go
+func (h *rig) Collect(t *testing.T) *harness.Trace {
+	t.Helper()
+	h.srv.Close()
+	h.wit.Stop()
+	if err := h.wit.Health(); err != nil {
+		t.Fatalf("witness capture unhealthy: %v", err)
+	}
+	tr, err := h.tel.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("capture incomplete: %v", err)
+	}
+	return tr
+}
+```
+
 Known imprecision: some files can't be type-checked. Examples are a target
 outside any module, a nested module, or a file excluded by build constraints.
 For those files the rules fall back to matching by name: `Collect`,
