@@ -69,6 +69,26 @@ func TestSpawnedCountsOnlyWithAWitnessImported(t *testing.T) {
 	}
 }
 
+// The harness absence checks ask the witness and check its health, so a test
+// that uses only them is witnessed; they count only with the harness imported.
+func TestHarnessAbsenceChecksCountAsWitnessed(t *testing.T) {
+	for _, call := range []string{"harness.RequireNoSpawn(t, w, id)", "harness.NoSpawn(w, id)",
+		"harness.RequireNoDial(t, w, id, nil)", "harness.NoDial(w, id, nil)", "w.Dialed(id)"} {
+		imp := `"x/pkg/harness"`
+		if strings.HasPrefix(call, "w.") {
+			imp = `"x/pkg/harness"; "x/pkg/witness"`
+		}
+		src := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; " + imp + ")\nfunc TestA(t *testing.T) { h.Collect(ctx); " + call + " }\n"
+		if fs := lintTree(t, map[string]string{"auth.go": enforced, "a_test.go": src}); len(fs) != 0 {
+			t.Errorf("%s: unexpected: %v", call, fs)
+		}
+	}
+	// Without the harness import, a RequireNoSpawn of some other package does not count.
+	src := "//subpoena:impl_derived\npackage p\nimport (\"testing\"; \"x/pkg/harness\")\nfunc TestA(t *testing.T) { h.Collect(ctx) }\n"
+	other := "//subpoena:impl_derived\n//subpoena:pure_logic\npackage p\nimport (\"testing\"; \"example.com/checks\")\nfunc TestB(t *testing.T) { checks.RequireNoSpawn(t) }\n"
+	only(t, lintTree(t, map[string]string{"auth.go": enforced, "a_test.go": src, "b_test.go": other}), RuleUnwitnessedEnforcement, 1)
+}
+
 // ---- dead-telemetry ----
 
 // emitAllBut is a non-test file emitting every registry entry except skip,

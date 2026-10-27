@@ -35,11 +35,30 @@ const (
 	MarkerEnforcementPoint = "subpoena:enforcement_point"
 )
 
-// witnessMethods are the method names that count as "calling a Witness".
-var witnessMethods = map[string]bool{"Spawned": true, "Dialed": true}
+// witnessCalls are the calls that count as "asking a Witness", each with the
+// import that must be present for the name to count: the raw witness methods,
+// and the harness absence checks that call them and check capture health.
+var witnessCalls = []struct{ name, importSuffix string }{
+	{"Spawned", witnessSuffix},
+	{"Dialed", witnessSuffix},
+	{"NoSpawn", harnessSuffix},
+	{"RequireNoSpawn", harnessSuffix},
+	{"NoDial", harnessSuffix},
+	{"RequireNoDial", harnessSuffix},
+}
+
+// asksWitness reports whether f calls one of witnessCalls with its import present.
+func asksWitness(f *ast.File) bool {
+	for _, c := range witnessCalls {
+		if importsSuffix(f, c.importSuffix) && callsMethod(f, map[string]bool{c.name: true}) {
+			return true
+		}
+	}
+	return false
+}
 
 // harnessSuffix and witnessSuffix gate the name-matched rules: a Collect call
-// counts only in a file importing the harness, a Spawned call only in a file
+// counts only in a file importing the harness, a Spawned or Dialed call only in a file
 // importing the witness package (or one under it, such as execbpf). Matched by
 // suffix, so a service that vendored them under its own path is covered.
 const (
@@ -420,7 +439,7 @@ func callsMethod(n ast.Node, names map[string]bool) bool {
 func checkUnwitnessedEnforcement(t *tree) []Finding {
 	witnessed := false
 	for _, f := range t.files {
-		if f.isTest && importsSuffix(f.ast, witnessSuffix) && callsMethod(f.ast, witnessMethods) {
+		if f.isTest && asksWitness(f.ast) {
 			witnessed = true
 			break
 		}
@@ -436,7 +455,7 @@ func checkUnwitnessedEnforcement(t *tree) []Finding {
 				continue
 			}
 			out = append(out, t.finding(RuleUnwitnessedEnforcement, fd.Pos(),
-				"enforcement point %s has no test that calls a Witness method (Spawned); span assertions alone are testimony, not proof", fd.Name.Name))
+				"enforcement point %s has no test that asks a Witness (Spawned, Dialed, or harness.RequireNoSpawn/RequireNoDial); span assertions alone are testimony, not proof", fd.Name.Name))
 		}
 	}
 	return out
