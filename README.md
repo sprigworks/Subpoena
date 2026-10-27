@@ -5,9 +5,9 @@ is the primary way tests observe it, and the same assertion, written once as a
 TraceQL string, runs in unit tests, in an integration environment and in
 production. The distinctive part: a system's spans are testimony, not proof.
 The code that enforces a policy is also the code that reports having enforced
-it, so enforcement is only proven by an independent witness, a process-exec
-observer the application does not control, and cross-examination checks that the
-suite can tell the difference.
+it, so enforcement is only proven by an independent witness, an observer of
+process execs and outbound connections that the application does not control,
+and cross-examination checks that the suite can tell the difference.
 
 **Status: alpha** (v0.1.0-alpha.1, see [CHANGELOG.md](CHANGELOG.md)). Go only
 so far. Python and TypeScript are next: the registry, invariants, witness
@@ -30,7 +30,8 @@ One invariant, `invariants/no_exec_after_deny.traceql`:
 Any matching trace is a violation. It is evaluated three times:
 
 1. Tier 1, unit tests. An in-memory exporter (`pkg/harness`) captures spans;
-   `Collect()` force-flushes and errors if a span was dropped or left unfinished.
+   `Collect()` force-flushes and errors if a span was dropped or left unfinished,
+   or lost attributes, events or links.
    Absence assertions return Pass, Fail or Inconclusive, and Inconclusive fails
    by default, because "we saw nothing" from an incomplete capture proves nothing.
 2. Tier 2, integration, via Grafana OATS: a real collector and Tempo, plus the
@@ -46,7 +47,7 @@ Details in [docs/architecture.md](docs/architecture.md).
 
 ```
 make test      # tier 1: harness, traceql, witness, lint, cross-examination and gateway tests
-make check     # test + vet + subpoena-lint + subpoena-cross over examples/gateway
+make check     # build + vet + test + subpoena-lint + subpoena-cross over examples/gateway, then cross-self
 make conformance  # subset vs a real Tempo in Docker (optional)
 make oats         # tier 2: OATS + the eBPF witness (rootful Docker, cgroup v2, BTF)
 make test-ebpf    # the eBPF witness against the real kernel, in a privileged container
@@ -61,11 +62,11 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | Piece | Status |
 | --- | --- |
 | Registry (`registry/`), Weaver check and Go generation | Runs. Weaver 0.28 checked the registry and generated `generated/go/semconv` |
-| `pkg/harness`, `pkg/traceql`, `pkg/witness` (`ProcWitness`), `pkg/cgroup` | Runs, in `make test`. Cgroup tests use a real cgroup v2 when the machine allows it and skip that part otherwise |
+| `pkg/harness`, `pkg/traceql`, `pkg/witness` (`ProcWitness`, `Sinkhole`), `pkg/cgroup` | Runs, in `make test`. Cgroup tests use a real cgroup v2 when the machine allows it and skip that part otherwise |
 | `examples/gateway` tier-1 tests | Runs, in `make test` |
-| `subpoena-lint`, `subpoena-cross` | Runs; cross-examination kills the gateway mutant |
+| `subpoena-lint`, `subpoena-cross` | Runs; cross-examination kills both gateway mutants (`Authorize` and `Fetch`) |
 | Tier 2: `examples/gateway/oats` (`make oats`) | Runs (needs rootful Docker, cgroup v2, BTF): both cases pass, cgroup-correlated and argument-correlated, and both fail against the enforcement mutant |
-| Kernel-side witness, `pkg/witness/execbpf`, `cmd/subpoena-witness` | Runs: unit tests in `make test`, kernel tests in `make test-ebpf` (privileged container); the tier-2 witness |
+| Kernel-side witnesses, `pkg/witness/execbpf`, `pkg/witness/netbpf`, `cmd/subpoena-witness` | Runs: unit tests in `make test`, kernel tests in `make test-ebpf` (privileged container); `execbpf` with `cmd/subpoena-witness` is the tier-2 witness |
 | Tetragon policy, `witnesses/tetragon` | Loads on Tetragon v1.7.1; kept for enforcement, not used. Not the witness: outside Kubernetes its events lack the session cgroup |
 | `pkg/production`: test-tier attributes kept out of production | Runs, in `make test`; the generated Collector config was validated and run on otelcol-contrib 0.116.1 |
 | Tier 3: `examples/gateway/alerts` (`make alerts`) | Runs (needs Docker): provisioned into Grafana 13.2 with Tempo 3.1 and driven through the scheduler. Quiet on silence and on clean traffic, fires on a violation. The first run found the unvalidated rule could never fire; see the rule file's header |
@@ -108,8 +109,9 @@ weaver-templates/     Weaver template that generates the Go constants
 generated/go/semconv/ generated constants
 pkg/harness/          in-memory exporter, Collect, Trace, Verdict
 pkg/traceql/          TraceQL subset evaluator
-pkg/witness/          Witness interface, ProcWitness
-pkg/witness/execbpf/  kernel-side witness (eBPF)
+pkg/witness/          Witness and NetworkWitness interfaces, ProcWitness, Sinkhole
+pkg/witness/execbpf/  kernel-side exec witness (eBPF)
+pkg/witness/netbpf/   kernel-side network witness (eBPF)
 pkg/cgroup/           one cgroup per session, named with the trace ID
 pkg/production/       drop test-tier attributes in production (exporter, Collector config)
 witnesses/            witness design notes, Tetragon policy (enforcement)
