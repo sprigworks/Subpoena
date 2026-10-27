@@ -1,68 +1,87 @@
-# Trace-Native Testing: Positioning, Decisions, and Next Steps
+# Subpoena: Decisions
 
 Oct 25, 2026 · Nick Henggeler
 
-> Exported from the decisions doc. Amendments made after it was written:
->
-> 1. **TraceQL engine.** The row below says "in Go, embed Tempo's TraceQL engine." That was withdrawn: Grafana Tempo is AGPL-3.0 and cannot be linked into this Apache-2.0 library. The documented subset in `pkg/traceql` plus the Tempo-over-HTTP conformance suite is the design. See `docs/traceql-subset.md`.
-> 2. **Petiole license.** The table below named a specific license for the Petiole layer; that was never decided. Petiole is source-available with its license not final. Subpoena is Apache-2.0 regardless.
-> 3. **The witness, tested (2026-10-25).** The "witness propagation" row assumes Tetragon events carry the session cgroup. Outside Kubernetes they do not: Tetragon v1.7.1 reports a container ID only when the leaf cgroup name looks like one. The cgroup-per-session decision stands; Subpoena now has its own kernel-side witness (`pkg/witness/execbpf`, eBPF), which reports each exec's cgroup ID and path, and Tetragon is kept for enforcement only. See `witnesses/README.md`. **Decided (2026-10-26):** the observe-only witnesses (`ProcWitness`, `execbpf`) stay in this Apache-2.0 repository. The table's "exec/session witnesses" in the Petiole layer means the integrated kind: mapping sessions to Petiole agents, writing witness events into Petiole's signed provenance chain, and enforcement. Petiole already records exec provenance its own way (audit netlink, Landlock/seccomp), so an open test witness does not compete with it. Petiole's licence is still not set (see amendment 2).
->
-> 4. **An exec backstop may live in the open core (2026-10-26).** Amendment 3 put all enforcement on the Petiole side. Two facts revise that: Petiole confines exec only for what it launches itself (`petiole run`, its recorder), so it cannot backstop processes on hosts it does not wrap; and many Subpoena users will never run Petiole, which would leave the open core with no backstop at all. Petiole's side was consulted and sees no undercut and no overlap. **The line:** Subpoena may hold generic, application-agnostic primitives: observing execs, and an optional per-session-cgroup exec backstop described as a test backstop or tripwire. Petiole keeps agent-aware policy (mapping routing tokens and agents to sessions), the signed chain, evidence reports, and confinement beyond exec (Landlock, seccomp, microVM). **Copy rule:** Subpoena never describes the backstop as an agent guardrail or runtime protection for AI agents; that is Petiole's lane. **Test rule:** in a test run, a backstop intervention is a failure (it means the application's own enforcement failed), never a pass; and cross-examination runs with the backstop observing only, so cross-examination measures the application, not the kernel. The exec witness and the backstop stay Apache-2.0 in Subpoena (the user's decision), which also lets Petiole use them later. **Status:** decided, not built. Petiole's license is not final (amendment 2).
->
-> 5. **Network witnesses are observe-only, and they are in this repo (2026-10-27).** Amendment 3 named `ProcWitness` and `execbpf` only. `witness.Sinkhole` (tier 1, no root) and `pkg/witness/netbpf` (kernel fentry on connect and sendmsg) also observe, and they stay in this Apache-2.0 repository. `cmd/subpoena-witness` still ships exec events only; it does not run `netbpf`. See `witnesses/README.md`.
->
-> Name and repo chosen after this doc: **Subpoena**, `github.com/sprigworks/subpoena`, `subpoena.dev` (with `subpena.dev` as a typo redirect).
+The decisions behind Subpoena, and why they were made. [design.md](design.md) explains the design these decisions shape. [architecture.md](architecture.md) describes what is built.
 
-Follow-up to the design doc: how to position the project, what is needed to start, and the answers to its open questions.
+## License and positioning
 
-## What you can do with it
+Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL evaluator, witnesses, lint and cross-examination. It is infrastructure, and developer-tool adoption runs on trust and contributions, which a restrictive license would kill. The agent-session registry could also be proposed upstream as an OpenTelemetry semantic convention.
 
-Open-source the core, keep the agent-security layer under Petiole's license, and use the open core as the consulting funnel. This is infrastructure, not a product: its value depends on adoption, and developer-tool adoption runs on trust and contributions, which a restrictive license on the core would kill.
+Petiole, a separate product, holds the agent-aware layer. Its license is not final.
 
-| Layer | What it holds | License | What it earns |
-| --- | --- | --- | --- |
-| Open core | Registry format, harness, linter, cross-examination, conformance suite | Apache 2.0 | Reputation, OTel-community credibility, inbound |
-| Petiole layer | Agent-session registry, exec/session witnesses, Tetragon policies | Source-available, license not final | Commercial users pay; nonprofits and noncommercial use free |
-| Services | Setting it up inside a client's agent infrastructure | SprigWorks engagement | Scoped implementation work |
-| Hosted (later) | Cross-examination as a service, registry hub | Decide in year two | Recurring revenue, if the core gets adoption |
-
-Two reasons reputation-first is the right call here specifically. The agent-session registry could plausibly be proposed upstream as an OpenTelemetry semantic convention, which is a larger reputation lever than repository stars. And nobody has packaged this combination yet, so being the canonical reference is available now.
-
-The license split is a judgment about incentives, not legal advice.
-
-## What is needed to start
-
-Four decisions, then a scaffolding session.
-
-- [ ] **Where it lives.** A separate repository with a neutral name is recommended, so Petiole is its first consumer rather than its owner.
-- [ ] **A target application.** The first cut needs a real service to instrument: a Petiole gateway or a toy equivalent.
-- [ ] **A name.** The registry's `name:` field needs one.
-- [ ] **Go/no-go on scaffolding.** Registry, Go harness, one witness, and the lint rules as a spec, built in a session for review.
-
-## Open questions, resolved
-
-Six of the seven open questions from the design doc now have a direction; cross-service registry migration stays open.
-
-| Question | Decision | Reasoning |
+| Layer | What it holds | License |
 | --- | --- | --- |
-| TraceQL in-process: is a subset the right standard? | The subset is legitimate only with a conformance suite. In Go, embed Tempo's TraceQL engine directly and skip the subset. | The conformance suite runs every invariant through both the in-process evaluator and a real Tempo and requires identical verdicts; that suite is the standard, the grammar is what it currently covers. Tempo's engine is an importable Go package, so Go needs no subset. Python and TypeScript get the subset plus the suite. |
-| Witness propagation: is `parent_exec_id` enough? | No. One cgroup per session, named with the trace ID; lineage as a secondary check. | Lineage says "a descendant of the gateway spawned X," not which session. A compromised child can fork past any environment-variable marker. Every process in the session lands in the cgroup regardless. The clause that Tetragon events carry that cgroup does not hold outside Kubernetes; amendment 3 withdraws it. |
-| Tracetest viability | OATS as the base; Tracetest as a reference only. | OATS is maintained by Grafana and uses TraceQL directly, which fits assertion promotion. The Tracetest repo has been quiet since mid-2025. |
-| Registry governance via CI/CD | Yes for the first cut: `weaver registry diff` on every PR to `registry/`; breaking changes require a version bump and CODEOWNERS approval; each service declares its `schema_url` version. | Cross-service migration policy is a team decision no tool can make; leave it open. |
-| Cardinality in tier 3 | Each registry attribute gets a `tier` annotation (`test` or `all`); the generated production exporter config drops `test`-tier attributes. | `session.id` on every span is fine in tests and a billing or rejection problem in production backends. |
-| Fresh-session rule via harness constraints | Mostly yes: access scoping plus a required marker. | The test-writing subagent gets the registry, the spec, and the harness API, with a deny rule on `src/`. Each test carries `@spec_derived` or `@impl_derived`; cross-examination and coverage metrics count only `@spec_derived`. An agent can still infer the implementation from a well-named registry, but that leak is smaller than reading the code. |
-| Language order | Go harness first, Python second, TypeScript third; registry language-neutral from day one. | The order stands. Go shipped the reference harness. Python has the harness, evaluator and witness reader, and not lint or cross-examination (`docs/ports.md`). TypeScript has generated names only (`generated/ts/semconv.ts`). The original reason cited embedding Tempo's TraceQL engine; amendment 1 withdrew that. |
+| Subpoena | Registry format, harness, evaluator, observe-only witnesses, lint, cross-examination, conformance suite, and an optional exec backstop | Apache-2.0 |
+| Petiole | Mapping agents and routing tokens to sessions, the signed provenance chain, evidence reports, confinement beyond exec (Landlock, seccomp, microVM) | Source-available, not final |
 
-## Own SDK or not
+**Where the line is.** Subpoena holds generic, application-agnostic primitives: observing execs and connections, and an optional exec backstop that kills processes in a session's cgroup. Petiole holds anything agent-aware. Subpoena's docs and site never describe the backstop as an agent guardrail or runtime protection for AI agents. That is Petiole's lane. Petiole's side was consulted and sees no overlap. Keeping the witnesses and backstop in Subpoena also lets Petiole use them.
 
-No. Build a distro on the upstream OpenTelemetry SDKs, not a replacement for them.
+## The TraceQL evaluator
 
-An own SDK would mean re-implementing context propagation, losing auto-instrumentation for HTTP, gRPC, and database clients, and giving up the upstream stability guarantees, in exchange for nothing the design needs. A distro is the OpenTelemetry-sanctioned way to ship an opinionated SDK configuration; Honeycomb and Splunk ship theirs this way, and it stays compatible with everything already instrumented.
+**Decision:** tier 1 evaluates a documented subset of TraceQL in Go (`pkg/traceql`). A conformance suite runs every case through both the subset and a real Tempo and requires identical verdicts.
 
-What the distro bundles:
+**Why:** Tempo is AGPL-3.0 and cannot be linked into an Apache-2.0 library. The suite is the standard; the grammar is whatever it currently covers ([traceql-subset.md](traceql-subset.md)). Where Tempo's behaviour is inconsistent, as with conditions on array attributes, the evaluator refuses the query instead of guessing.
 
-- The in-memory exporter with completeness tracking (the `collect()` guarantee)
-- The `@traced` decorators and typed attribute setters generated from the registry
-- The witness correlation hooks (trace ID into the session cgroup)
-- The lint rules and cross-examination
+## Witnesses
+
+**Decision:** one cgroup per session, named with the trace ID. Witnesses attribute what they see by that cgroup, with process lineage as a fallback. Subpoena ships its own observe-only witnesses:
+
+| Witness | Sees | Needs |
+| --- | --- | --- |
+| `ProcWitness` | Processes, by polling `/proc` | Nothing special; can miss very short processes on a busy host |
+| `execbpf` (run by `cmd/subpoena-witness`) | Every exec, in the kernel, with its cgroup | Root, cgroup v2, kernel BTF |
+| `Sinkhole` | Connections to an address it owns | Nothing special |
+| `netbpf` | Every connect and sendmsg, in the kernel | Root, kernel BTF |
+
+`cmd/subpoena-witness` ships exec events only; it does not run `netbpf` yet.
+
+**Why:** lineage only says "a descendant of the gateway ran X", not which session it ran for, and a compromised child can fork past any environment-variable marker. Every process in the session lands in its cgroup regardless. Tetragon was the first witness, but outside Kubernetes it does not report the session cgroup: v1.7.1 reports a container ID only when the cgroup name looks like one. Tetragon is kept for enforcement, not for witnessing ([witnesses/README.md](../witnesses/README.md)).
+
+## The exec backstop
+
+**Decision:** Subpoena may ship an optional backstop that kills an exec inside a denied session's cgroup. **Decided, not built.**
+
+**Why:** Petiole confines exec only for what it launches itself, so it cannot backstop processes on hosts it does not wrap, and many Subpoena users will never run Petiole.
+
+**Rules:** in a test run, a backstop intervention is a failure, because it means the application's own enforcement failed. Cross-examination runs with the backstop observing only, so it measures the application and not the kernel.
+
+## Integration tier
+
+**Decision:** tier 2 is built on Grafana OATS. Tracetest is a reference, not a dependency.
+
+**Why:** OATS is maintained and uses TraceQL directly, so an invariant moves to tier 2 unchanged. Tracetest has been quiet since mid-2025.
+
+## Registry governance
+
+**Decision:** every PR that touches `registry/` runs `weaver registry check` and `weaver registry diff` against main ([`.github/workflows/registry.yml`](../.github/workflows/registry.yml)) and needs a CODEOWNERS review. A diff that removes or obsoletes an entry also needs the `registry-breaking-approved` label. `subpoena-lint registry-drift` (`make lint-drift`) flags a registry change made together with a test that depends on it, for a human to look at. It does not run in CI yet.
+
+**Not built:** the original decision also asked for a version bump on every breaking change, and for each service to declare the registry version it uses (`schema_url`).
+
+**Open:** how services on different registry versions migrate together. That is a team decision, and no tool makes it.
+
+## Cardinality in production
+
+**Decision:** every registry attribute carries a `tier` annotation, `test` or `all`. Test-tier attributes such as `session.id` are dropped before export in production, by a Go exporter wrapper or a generated collector config (`pkg/production`).
+
+**Why:** `session.id` on every span is fine in tests, but in production backends it is a cost or a rejection.
+
+## Writing tests from the spec
+
+**Decision:** every test file is marked `//subpoena:spec_derived` (written from the registry and docs, before reading the implementation) or `//subpoena:impl_derived`. Lint requires the marker.
+
+**Why:** tests written after reading the implementation inherit its blind spots ([arXiv:2607.05139](https://arxiv.org/abs/2607.05139)). An agent can still infer the implementation from a well-named registry, but that leak is smaller than reading the code.
+
+**Intended, not built:** the test-writing agent gets the registry, the docs and the harness API, with no read access to the implementation, and coverage and cross-examination count only spec-derived tests. Today nothing checks that a marker is true, and nothing counts spec-derived tests separately.
+
+## Language order
+
+**Decision:** Go first, then Python, then TypeScript. The registry is language-neutral, so names are generated for every language.
+
+**Status:** Go has all three tiers, lint and cross-examination. Python has the harness, the evaluator and a witness reader, without lint or cross-examination ([ports.md](ports.md)). TypeScript has generated names only.
+
+## A distribution, not an SDK
+
+**Decision:** build on the upstream OpenTelemetry SDKs. Do not replace them.
+
+**Why:** a separate SDK would mean re-implementing context propagation and giving up auto-instrumentation for HTTP, gRPC and database clients, for nothing the design needs. Code under test takes its tracer provider from the harness, and lint (`provider-override`) refuses any other provider outside `main`.
