@@ -71,6 +71,13 @@ func (w *Witness) Start() error {
 			return fmt.Errorf("execbpf: set %s: %w", name, err)
 		}
 	}
+	if w.ringBytes != 0 {
+		m, ok := spec.Maps["events"]
+		if !ok {
+			return errors.New("execbpf: object has no events map")
+		}
+		m.MaxEntries = w.ringBytes
+	}
 	k := &kernel{done: make(chan struct{})}
 	if err := spec.LoadAndAssign(&k.objs, nil); err != nil {
 		var ve *ebpf.VerifierError
@@ -115,6 +122,9 @@ func (w *Witness) Start() error {
 
 func (w *Witness) read(k *kernel) {
 	defer close(k.done)
+	if w.holdReads != nil {
+		<-w.holdReads
+	}
 	for {
 		rec, err := k.rd.Read()
 		if err != nil {
