@@ -97,6 +97,9 @@ func TestStrongSuiteKillsMutant(t *testing.T) {
 	if len(rep.Results) != 1 || rep.Results[0].Outcome != Killed || rep.Failed() {
 		t.Fatalf("want killed, got %+v", rep.Results)
 	}
+	if rep.EnforcementPoints != 1 {
+		t.Fatalf("enforcement points = %d, want 1", rep.EnforcementPoints)
+	}
 	if got := rep.Results[0].Failing; len(got) != 1 || got[0] != "TestDeny" {
 		t.Fatalf("failing tests: %v", got)
 	}
@@ -195,6 +198,37 @@ func TestRedBaselineIsAnError(t *testing.T) {
 func TestNoMarkerIsAnError(t *testing.T) {
 	src := strings.Replace(authOK, " //subpoena:enforcement", "", 1)
 	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": strongTest})
+	if _, err := run(t, dir); err == nil || !strings.Contains(err.Error(), "Allow is marked //subpoena:enforcement_point but has no //subpoena:enforcement statement") {
+		t.Fatalf("want an error naming Allow, got %v", err)
+	}
+}
+
+// One covered enforcement point must not hide another that has no statement
+// marker: the run fails and names the forgotten function.
+func TestEveryEnforcementPointNeedsAStatementMarker(t *testing.T) {
+	forgotten := authOK + `
+// Forgotten also decides.
+//
+//subpoena:enforcement_point
+func Forgotten(admin bool) error {
+	if !admin {
+		return ErrDenied
+	}
+	return nil
+}
+`
+	dir := module(t, map[string]string{"auth.go": forgotten, "auth_test.go": strongTest})
+	if _, err := FindMutants(dir, dir); err == nil || !strings.Contains(err.Error(), "Forgotten") {
+		t.Fatalf("want an error naming Forgotten, got %v", err)
+	}
+	if _, err := run(t, dir); err == nil {
+		t.Fatal("cross-examination must fail when an enforcement point has no statement marker")
+	}
+}
+
+func TestNoEnforcementPointIsVacuous(t *testing.T) {
+	src := strings.Replace(authOK, "//\n//subpoena:enforcement_point\n", "", 1)
+	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": strongTest})
 	if _, err := run(t, dir); err == nil || !strings.Contains(err.Error(), "vacuous") {
 		t.Fatalf("want vacuous cross-examination error, got %v", err)
 	}
@@ -224,5 +258,65 @@ func TestMarkerRegexDoesNotMatchEnforcementPoint(t *testing.T) {
 	}
 	if !isEnforcementComment("//subpoena:enforcement") || !isEnforcementComment("// subpoena:enforcement because") {
 		t.Fatal("statement marker not recognised")
+	}
+}
+
+// The doc marker is matched as subpoena-lint matches it, so a function lint
+// treats as an enforcement point cannot slip past cross-examination.
+func TestPointMarkerMatchesLikeLint(t *testing.T) {
+	for _, doc := range []string{"//subpoena:enforcement_points", "// see subpoena:enforcement_point", "/* subpoena:enforcement_point */"} {
+		src := strings.Replace(authOK, "//subpoena:enforcement_point", doc, 1)
+		src = strings.Replace(src, " //subpoena:enforcement", "", 1)
+		dir := module(t, map[string]string{"auth.go": src})
+		if _, err := FindMutants(dir, dir); err == nil || !strings.Contains(err.Error(), "Allow") {
+			t.Fatalf("%s: want an error naming Allow, got %v", doc, err)
+		}
+	}
+}
+
+// Methods share a name across receivers; each is its own enforcement point.
+func TestMethodsWithTheSameNameCountSeparately(t *testing.T) {
+	src := `package mini
+
+import "errors"
+
+var ErrDenied = errors.New("denied")
+
+type A struct{}
+type B struct{}
+
+//subpoena:enforcement_point
+func (A) Allow(admin bool) error {
+	if !admin {
+		return ErrDenied //subpoena:enforcement
+	}
+	return nil
+}
+
+//subpoena:enforcement_point
+func (B) Allow(admin bool) error {
+	if !admin {
+		return ErrDenied //subpoena:enforcement
+	}
+	return nil
+}
+`
+	test := `package mini
+
+import "testing"
+
+func TestDeny(t *testing.T) {
+	if (A{}).Allow(false) == nil || (B{}).Allow(false) == nil {
+		t.Fatal("non-admin allowed")
+	}
+}
+`
+	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": test})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.EnforcementPoints != 2 || len(rep.Results) != 2 || rep.Failed() {
+		t.Fatalf("want 2 points, 2 killed; got %d points, %+v", rep.EnforcementPoints, rep.Results)
 	}
 }

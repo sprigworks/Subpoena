@@ -26,6 +26,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "subpoena-cross:", err)
 		os.Exit(2)
 	}
+	fmt.Printf("%d enforcement point(s), %d mutant(s)\n", rep.EnforcementPoints, len(rep.Results))
 	for _, r := range rep.Results {
 		fmt.Printf("%s %s\n", r.Outcome, r.Mutant.Func)
 		fmt.Printf("  at %s:%d, removed: %s\n", r.Mutant.File, r.Mutant.Line, strings.Join(strings.Fields(r.Mutant.Removed), " "))
