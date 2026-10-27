@@ -1,0 +1,4 @@
+file_format: definition_manifest/2.0
+name: platform
+description: Shared telemetry contract for the platform adoption example.
+schema_url: https://example.com/platform/schemas/0.1.0

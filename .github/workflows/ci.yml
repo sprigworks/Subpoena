@@ -84,3 +84,50 @@ jobs:
         run: go generate ./invariants && git diff --exit-code invariants/
       - name: test, lint, cross-examination
         run: make check
+
+  platform-contract:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/platform/shared
+    env:
+      WEAVER_VERSION: v0.28.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: examples/platform/shared/go.sum
+      - name: Install Weaver
+        run: |
+          curl -fsSL -o /tmp/weaver.tar.xz \
+            "https://github.com/open-telemetry/weaver/releases/download/${WEAVER_VERSION}/weaver-x86_64-unknown-linux-gnu.tar.xz"
+          tar -xf /tmp/weaver.tar.xz -C /tmp
+          sudo install /tmp/weaver-x86_64-unknown-linux-gnu/weaver /usr/local/bin/weaver
+      - name: Validate and regenerate the shared contract
+        run: |
+          weaver registry check -r registry --future
+          make check-generated
+      - name: Shared module tests and alert contract checks
+        run: make check
+
+  platform-service:
+    needs: platform-contract
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [build, deploy]
+    defaults:
+      run:
+        working-directory: examples/platform/services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: |
+            examples/platform/shared/go.sum
+            examples/platform/services/${{ matrix.service }}/go.sum
+      - name: Service race tests, shared registry lint, enforcement mutants
+        run: make check

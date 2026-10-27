@@ -1,0 +1,21 @@
+groups:
+  - id: registry.platform
+    type: attribute_group
+    display_name: Platform action attributes
+    brief: Shared authorization vocabulary across platform services.
+    stability: development
+    attributes:
+      - id: platform.action.id
+        type: string
+        stability: development
+        brief: Identifier of the requested action.
+        examples: ["action-42"]
+        annotations:
+          tier: test
+      - id: platform.authorization.allowed
+        type: boolean
+        stability: development
+        brief: Whether the service authorized this action.
+        examples: [true, false]
+        annotations:
+          tier: all
