@@ -15,6 +15,7 @@ import (
 func TestProcHealthPreservesFailedPolls(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "proc")
 	must(t, os.Mkdir(root, 0755))
+	fakeChildren(t, root, 0)
 	w := &ProcWitness{ProcRoot: root, Interval: time.Hour}
 	if err := w.Health(); err == nil {
 		t.Fatal("unstarted witness cannot certify absence")
@@ -26,10 +27,11 @@ func TestProcHealthPreservesFailedPolls(t *testing.T) {
 	w.Stop()
 	must(t, w.Health())
 	// Drive two failed polls, then recover. Recovery must not erase the gap.
-	must(t, os.Remove(root))
+	must(t, os.RemoveAll(root))
 	w.Poll()
 	w.Poll()
 	must(t, os.Mkdir(root, 0755))
+	fakeChildren(t, root, 0)
 	w.Poll()
 	err := w.Health()
 	if err == nil || !strings.Contains(err.Error(), "2 failed scan(s)") || !errors.Is(w.firstScanErr, os.ErrNotExist) {
@@ -79,5 +81,38 @@ func TestProcPartialScanCannotCertifyAbsence(t *testing.T) {
 	}
 	if got := w.Spawned(tid); len(got) != 1 || got[0].PID != 300 {
 		t.Fatalf("partial scan lost a positive observation: %+v", got)
+	}
+}
+
+// TestProcHealthFailsWithoutChildrenWalk: without CONFIG_PROC_CHILDREN the
+// root's children lists do not exist, and only full scans see its
+// descendants. A witness that blind must not certify absence.
+func TestProcHealthFailsWithoutChildrenWalk(t *testing.T) {
+	root := t.TempDir()
+	fakeProc(t, root, 100, 1, "10", "gateway", "0::/")
+	must(t, os.MkdirAll(filepath.Join(root, "100", "task", "100"), 0o755))
+	w := &ProcWitness{ProcRoot: root, RootPID: 100, Interval: time.Hour}
+	must(t, w.Start())
+	w.Stop()
+	if err := w.Health(); !errors.Is(err, ErrChildrenWalkUnavailable) {
+		t.Fatalf("health = %v, want ErrChildrenWalkUnavailable", err)
+	}
+
+	// The same witness with the children list present is healthy, and a
+	// fresh Start re-probes rather than keeping the old fault.
+	fakeChildren(t, root, 100)
+	must(t, w.Start())
+	w.Stop()
+	must(t, w.Health())
+}
+
+func TestProcHealthFailsWhenRootIsGone(t *testing.T) {
+	root := t.TempDir()
+	fakeProc(t, root, 100, 1, "10", "gateway", "0::/")
+	w := &ProcWitness{ProcRoot: root, RootPID: 999, Interval: time.Hour}
+	must(t, w.Start())
+	w.Stop()
+	if err := w.Health(); !errors.Is(err, ErrChildrenWalkUnavailable) {
+		t.Fatalf("health = %v, want ErrChildrenWalkUnavailable", err)
 	}
 }
