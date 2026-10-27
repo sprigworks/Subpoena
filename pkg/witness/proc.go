@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -198,14 +199,68 @@ func (w *ProcWitness) scan(baseline map[procKey]bool) (map[procKey]procInfo, err
 	if err != nil {
 		return nil, fmt.Errorf("witness: read %s: %w", w.root(), err)
 	}
-	out := map[procKey]procInfo{}
-	var scanErr error
+	pids := make([]int, 0, len(ents))
 	for _, e := range ents {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
+		if pid, err := strconv.Atoi(e.Name()); err == nil {
+			pids = append(pids, pid)
 		}
-		k, ppid, err := w.readStat(pid)
+	}
+	// The scan is almost all syscalls, so on a large /proc it is split into
+	// contiguous chunks read in parallel. Each chunk keeps its first error, and
+	// the earliest chunk's wins, so the reported fault is the one a serial scan
+	// would have hit first.
+	n := min(scanWorkers, runtime.GOMAXPROCS(0), (len(pids)+scanChunk-1)/scanChunk)
+	if n < 1 {
+		n = 1
+	}
+	type part struct {
+		found []procEntry
+		err   error
+	}
+	parts := make([]part, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		lo, hi := i*len(pids)/n, (i+1)*len(pids)/n
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			parts[i].found, parts[i].err = w.scanPIDs(pids[lo:hi], baseline)
+		}()
+	}
+	wg.Wait()
+	out := make(map[procKey]procInfo, len(pids))
+	var scanErr error
+	for _, p := range parts {
+		for _, f := range p.found {
+			out[f.k] = f.p
+		}
+		if scanErr == nil {
+			scanErr = p.err
+		}
+	}
+	return out, scanErr
+}
+
+// scanWorkers caps the parallel readers of one scan; scanChunk is the fewest
+// PIDs worth a reader of their own.
+const (
+	scanWorkers = 8
+	scanChunk   = 256
+)
+
+type procEntry struct {
+	k procKey
+	p procInfo
+}
+
+// scanPIDs reads the stat of each PID, and the details of each one not in
+// baseline right after its stat.
+func (w *ProcWitness) scanPIDs(pids []int, baseline map[procKey]bool) ([]procEntry, error) {
+	out := make([]procEntry, 0, len(pids))
+	var scanErr error
+	buf := make([]byte, 1024)
+	for _, pid := range pids {
+		k, ppid, err := w.readStatBuf(pid, &buf)
 		if err != nil {
 			// Exit races are an inherent polling gap. Permission, I/O and other
 			// failures are known capture faults, not evidence of absence.
@@ -218,7 +273,7 @@ func (w *ProcWitness) scan(baseline map[procKey]bool) (map[procKey]procInfo, err
 		if baseline != nil && !baseline[k] {
 			p.snap = w.readSnap(pid)
 		}
-		out[k] = p
+		out = append(out, procEntry{k, p})
 	}
 	return out, scanErr
 }
@@ -226,7 +281,13 @@ func (w *ProcWitness) scan(baseline map[procKey]bool) (map[procKey]procInfo, err
 // readStat reads pid's stat. An error that exited reports is the process
 // leaving between the listing and the read; any other error is a capture fault.
 func (w *ProcWitness) readStat(pid int) (k procKey, ppid int, err error) {
-	b, err := os.ReadFile(filepath.Join(w.root(), strconv.Itoa(pid), "stat"))
+	buf := make([]byte, 1024)
+	return w.readStatBuf(pid, &buf)
+}
+
+// readStatBuf is readStat reading into *buf, which it grows if needed.
+func (w *ProcWitness) readStatBuf(pid int, buf *[]byte) (k procKey, ppid int, err error) {
+	b, err := readProcFile(w.root()+"/"+strconv.Itoa(pid)+"/stat", buf)
 	if err != nil {
 		return procKey{}, 0, fmt.Errorf("witness: read process stat: %w", err)
 	}
@@ -235,6 +296,44 @@ func (w *ProcWitness) readStat(pid int) (k procKey, ppid int, err error) {
 		return procKey{}, 0, fmt.Errorf("witness: malformed stat for PID %d", pid)
 	}
 	return procKey{pid, start}, ppid, nil
+}
+
+// readProcFile reads a whole file into *buf with open, read and close.
+// os.ReadFile also stats the file to size its buffer, and procfs reports size
+// 0, so that call buys nothing here; on a busy /proc it is a fifth of a scan's
+// syscalls. Errors are *os.PathError, as from os.ReadFile.
+func readProcFile(path string, buf *[]byte) ([]byte, error) {
+	fd, err := ignoringEINTR(func() (int, error) {
+		return syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+	})
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	defer syscall.Close(fd)
+	b := (*buf)[:0]
+	for {
+		if len(b) == cap(b) {
+			b = append(b, 0)[:len(b)]
+		}
+		n, err := ignoringEINTR(func() (int, error) { return syscall.Read(fd, b[len(b):cap(b)]) })
+		if err != nil {
+			return nil, &os.PathError{Op: "read", Path: path, Err: err}
+		}
+		if n == 0 {
+			*buf = b
+			return b, nil
+		}
+		b = b[:len(b)+n]
+	}
+}
+
+func ignoringEINTR(f func() (int, error)) (int, error) {
+	for {
+		n, err := f()
+		if err != syscall.EINTR {
+			return n, err
+		}
+	}
 }
 
 // exited reports whether err from readStat means the process is gone.
