@@ -36,6 +36,16 @@ def test_spawned_returns_every_line_of_that_trace():
     assert log.spawned("c0de00000000000000000000000000ff") == []
 
 
+def test_command_source_says_line_or_name():
+    log = read_log(io.StringIO("\n".join([
+        line(pid=7, command="rm -rf /tmp/x"),
+        line(pid=8, comm="rm", command="", args=[]),
+        line(pid=9, comm="", command="", args=[]),
+    ]) + "\n"))
+    got = {e.pid: (e.command, e.command_source) for e in log.spawned(A)}
+    assert got == {7: ("rm -rf /tmp/x", "cmdline"), 8: ("rm", "comm"), 9: ("", "")}
+
+
 def test_spawned_does_not_filter_on_the_command():
     log = read_log(io.StringIO(line(comm="", exe="", command="", args=[]) + "\n"))
     assert len(log.spawned(A)) == 1

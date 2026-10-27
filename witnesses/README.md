@@ -61,9 +61,14 @@ program of a `Never` entry (its first word, without the directory). With an
 `Allowed` list it also fails as unidentified, unless `ExcuseNameOnly` is set
 and the name is the program of an `Allowed` entry; then it is logged. Set
 `ExcuseNameOnly` only when the test runs commands too short-lived to read, and
-keep refused probes long-lived so a refused one is always seen whole. The
-kernel witness (`execbpf`) reads arguments at exec, so it never reports a name
-only.
+keep refused probes long-lived so a refused one is always seen whole. A child
+first seen with its parent's command line (just forked) that is later seen
+with no arguments and a different name has exec'd since; its event falls back
+to the name and is name-only too. Never entries must start with the program
+(`rm -rf /tmp/x`, not `/tmp/x` or `env rm ...`) to match a name. The kernel
+witness (`execbpf`) reads arguments at exec; when that read fails it, and the
+witness-file reader, report the task name as name-only rather than an empty
+command.
 
 `ProcWitness.Health` retains the first scan error and number of failed scans,
 including the final poll. Permission/I/O errors and malformed process stat

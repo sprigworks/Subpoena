@@ -120,16 +120,21 @@ func (w *Witness) handle(e Event) {
 		}
 	}
 	if e.Kind == KindExec && e.Attribution != "" && !w.cfg.NoRetain {
-		var src witness.CommandSource
-		if len(e.Args) > 0 {
-			src = witness.CommandLine
+		// Without argv (the read failed), the task name stands in, marked as
+		// name-only, rather than an empty command no rule can match.
+		cmd, src := strings.Join(e.Args, " "), witness.CommandLine
+		if len(e.Args) == 0 {
+			cmd, src = e.Comm, witness.CommandName
+			if cmd == "" {
+				src = ""
+			}
 		}
 		w.events = append(w.events, witness.ProcessEvent{
 			CommandSource: src,
 			PID:           e.PID,
 			PPID:          e.PPID,
 			Exe:           e.Exe,
-			Command:       strings.Join(e.Args, " "),
+			Command:       cmd,
 			Cgroup:        e.Cgroup,
 			CgroupID:      e.CgroupID,
 			TraceID:       e.TraceID,

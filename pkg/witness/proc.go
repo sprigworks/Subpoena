@@ -65,6 +65,7 @@ type ProcWitness struct {
 	mu           sync.Mutex
 	baseline     map[procKey]bool
 	tracked      map[procKey]*ProcessEvent
+	lineComm     map[procKey]string // the task name when Command's command line was read
 	order        []procKey
 	stop         chan struct{}
 	done         chan struct{}
@@ -142,6 +143,7 @@ func (w *ProcWitness) Start() error {
 		w.baseline[k] = true
 	}
 	w.tracked = map[procKey]*ProcessEvent{}
+	w.lineComm = map[procKey]string{}
 	w.order = nil
 	w.stop, w.done = make(chan struct{}), make(chan struct{})
 	iv := w.Interval
@@ -355,10 +357,10 @@ func (w *ProcWitness) readSnap(pid int) *procSnap {
 	if b, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
 		s.cmdline = strings.Join(strings.Split(strings.TrimRight(string(b), "\x00"), "\x00"), " ")
 	}
-	if s.cmdline == "" {
-		if b, err := os.ReadFile(filepath.Join(dir, "comm")); err == nil {
-			s.comm = strings.TrimSpace(string(b))
-		}
+	// The name is read with every command line too, so a later sighting can
+	// tell that the process exec'd since (see refresh).
+	if b, err := os.ReadFile(filepath.Join(dir, "comm")); err == nil {
+		s.comm = strings.TrimSpace(string(b))
 	}
 	if exe, err := os.Readlink(filepath.Join(dir, "exe")); err == nil {
 		s.exe = exe
@@ -549,16 +551,29 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 		w.tracked[k] = ev
 		w.order = append(w.order, k)
 	}
-	w.refresh(ev, p.snap)
+	w.refresh(k, ev, p.snap)
 }
 
 // refresh updates an event from a later sighting. It is repeated while the
 // process is alive because a forked child briefly shows its parent's cmdline;
 // fields the sighting could not read (an exited process) keep what was seen.
-func (w *ProcWitness) refresh(ev *ProcessEvent, s *procSnap) {
-	if s.cmdline != "" {
+//
+// A forked child first shows its parent's command line. If a later sighting
+// reads no command line and a task name other than the one read with that
+// line, the process has exec'd (or renamed itself) since: the stored line is
+// not what ran, so the event falls back to the name, which WatchSpawns treats
+// as name-only.
+func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
+	switch {
+	case s.cmdline != "":
 		ev.Command, ev.CommandSource = s.cmdline, CommandLine
-	} else if ev.Command == "" && s.comm != "" {
+		if w.lineComm != nil {
+			w.lineComm[k] = s.comm
+		}
+	case s.comm == "":
+	case ev.Command == "":
+		ev.Command, ev.CommandSource = s.comm, CommandName
+	case ev.CommandSource == CommandLine && w.lineComm != nil && s.comm != w.lineComm[k]:
 		ev.Command, ev.CommandSource = s.comm, CommandName
 	}
 	if s.exe != "" {

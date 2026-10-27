@@ -68,16 +68,22 @@ class Log:
         trace ID matches nothing."""
         if not trace_id:
             return []
-        return [
-            ProcessEvent(
-                pid=l["pid"], ppid=l["ppid"], exe=l.get("exe", ""), command=l.get("command", ""),
-                cgroup=l.get("cgroup", ""), cgroup_id=l.get("cgroup_id", 0), trace_id=l["trace_id"],
-                attribution=l.get("attribution", ""), seen_at=_parse_time(l["time"]), args=list(l.get("args") or []),
-                command_source="cmdline" if l.get("command") else "",
-            )
-            for l in self._lines
-            if l.get("trace_id") == trace_id
-        ]
+        return [self._event(l) for l in self._lines if l.get("trace_id") == trace_id]
+
+    @staticmethod
+    def _event(l: dict) -> ProcessEvent:
+        # subpoena-witness writes argv as the command. Without it, the task
+        # name stands in, marked as name-only ("comm"), as in the Go reader.
+        command, source = l.get("command", ""), "cmdline"
+        if not command:
+            command = l.get("comm", "")
+            source = "comm" if command else ""
+        return ProcessEvent(
+            pid=l["pid"], ppid=l["ppid"], exe=l.get("exe", ""), command=command,
+            cgroup=l.get("cgroup", ""), cgroup_id=l.get("cgroup_id", 0), trace_id=l["trace_id"],
+            attribution=l.get("attribution", ""), seen_at=_parse_time(l["time"]), args=list(l.get("args") or []),
+            command_source=source,
+        )
 
 
 def read_log(f: IO[str]) -> Log:

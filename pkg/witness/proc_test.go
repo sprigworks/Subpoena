@@ -490,3 +490,37 @@ func TestCommFallbackIsMarkedNameOnly(t *testing.T) {
 		t.Fatalf("after the cmdline was read: got %+v", evs)
 	}
 }
+
+// A forked child is first seen with its parent's command line; it then execs
+// rm and is seen only as a zombie (no cmdline, comm "rm"). The stored line is
+// not what ran, so the event falls back to the name and is name-only.
+func TestForkThenExecFallsBackToName(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 920, 100, "220", "myservice\x00--serve\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "920", "comm"), []byte("myservice\n"), 0o644))
+	fakeChildren(t, root, 100, 920)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "920", "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(root, "920", "comm"), []byte("rm\n"), 0o644))
+	w.pollChildren()
+	evs := w.Events()
+	if len(evs) != 1 || evs[0].Command != "rm" || !evs[0].NameOnly() {
+		t.Fatalf("want a name-only rm event, got %+v", evs)
+	}
+}
+
+// A process that exits without exec'ing keeps the command line it was seen
+// with: the name read at exit is the one read with that line.
+func TestExitWithoutExecKeepsCommandLine(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 921, 100, "221", "sleep\x001\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "921", "comm"), []byte("sleep\n"), 0o644))
+	fakeChildren(t, root, 100, 921)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "921", "cmdline"), nil, 0o644))
+	w.pollChildren()
+	evs := w.Events()
+	if len(evs) != 1 || evs[0].Command != "sleep 1" || evs[0].NameOnly() {
+		t.Fatalf("want the command line kept, got %+v", evs)
+	}
+}
