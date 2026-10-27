@@ -69,6 +69,11 @@ for the same process. A later, different command line (`bash -c` replacing
 itself with its last command, or a process rewriting its own argv) likewise
 keeps the earlier line as an event of its own; only a child's first line that
 equals its parent's is replaced by its exec, since it was never the child's.
+`/proc` cannot tell that fork image from a child that exec'd its parent's exact
+command line, so such a child that later rewrites its argv loses the first
+line when its parent is not itself tracked (the root, or a process older than
+`Start`). One process can therefore give several events: count events, not
+processes.
 A fork that execs a program with the same name
 (`sh` running `sh -c ...`) is not caught this way: the parent's line stays.
 Keep refused commands distinguishable by program where that matters. With an

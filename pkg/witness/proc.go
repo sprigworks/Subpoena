@@ -690,7 +690,9 @@ func (w *ProcWitness) Events() []ProcessEvent {
 // cgroup is returned for that trace only. Otherwise it returns events whose
 // cgroup path merely carries traceID, plus lineage-only events (which cannot
 // be excluded; see the type comment). Events whose cgroup names a different
-// trace are excluded.
+// trace are excluded. These are events, not processes: one process that
+// showed several command lines, or a line and then another name, gives one
+// event for each, so do not count processes by them.
 func (w *ProcWitness) Spawned(traceID string) []ProcessEvent {
 	var out []ProcessEvent
 	for _, ev := range w.Events() {
