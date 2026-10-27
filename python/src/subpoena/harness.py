@@ -173,6 +173,15 @@ class Harness:
         self._rec = Recorder(capacity)
         self.tracer_provider = TracerProvider(
             sampler=ALWAYS_ON, resource=Resource.get_empty(), span_limits=_SPAN_LIMITS)
+        # OTEL_SDK_DISABLED=true makes the SDK hand out no-op tracers: nothing
+        # is recorded, and every absence would pass. The harness owns its
+        # provider, as with the span limits, so the variable is ignored; if
+        # the SDK still hands out a no-op tracer, refuse to start.
+        if hasattr(self.tracer_provider, "_disabled"):
+            self.tracer_provider._disabled = False
+        if isinstance(self.tracer_provider.get_tracer("subpoena.harness"), trace_api.NoOpTracer):
+            raise RuntimeError("subpoena: the TracerProvider is disabled (OTEL_SDK_DISABLED?) "
+                               "and would record nothing; refusing to run")
         self.tracer_provider.add_span_processor(self._rec)
 
     def tracer(self, name: str) -> trace_api.Tracer:

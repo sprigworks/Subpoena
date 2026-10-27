@@ -74,9 +74,11 @@ cases:
   # H1: the OTEL_* limit variables do not reach the harness. Under these an
   # SDK would keep 2 attributes and truncate "deny" to "de"; the harness sets
   # its own limits, so the decision is still captured, whole, and the capture
-  # is complete.
+  # is complete. OTEL_SDK_DISABLED would make an SDK record nothing, and every
+  # absence pass; the harness records anyway.
   - name: env_limits_ignored
     env:
+      OTEL_SDK_DISABLED: "true"
       OTEL_ATTRIBUTE_COUNT_LIMIT: "2"
       OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT: "2"
       OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT: "2"

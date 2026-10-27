@@ -1,9 +1,13 @@
 # subpoena:impl_derived (written after reading harness.py and pkg/harness/limits_test.go)
-"""H1 and H3 limits: the harness keeps every attribute whatever the OTEL_*
-variables say, and a span that lost data to span limits makes the capture
-incomplete, so an absence check on it is Inconclusive, not Pass."""
+"""H1 and H3 limits: the harness keeps every attribute, whole, whatever the
+OTEL_* variables say, and records under OTEL_SDK_DISABLED. A span that lost
+attributes, events or links to span limits makes the capture incomplete, so
+an absence check on it is Inconclusive, not Pass. A value truncated by a
+length limit is not counted by the SDK, so it cannot be detected; only the
+harness's own unlimited length guards against it."""
 
 import pytest
+from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import SpanLimits, TracerProvider
 
 from subpoena.harness import Harness, IncompleteError, Verdict
@@ -70,3 +74,19 @@ def test_event_that_lost_attributes_makes_capture_incomplete():
     with pytest.raises(IncompleteError) as e:
         h.collect()
     assert e.value.truncated == ["authorize"]
+
+
+def test_sdk_disabled_does_not_reach_the_harness(monkeypatch):
+    monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
+    h = Harness()
+    h.tracer("t").start_span("exec").end()
+    h.tracer_provider.get_tracer("u").start_span("spawn").end()
+    tr = h.collect()
+    assert tr.absent('{ name = "exec" }') == Verdict.FAIL
+    assert tr.absent('{ name = "spawn" }') == Verdict.FAIL
+
+
+def test_harness_refuses_a_provider_that_records_nothing(monkeypatch):
+    monkeypatch.setattr(TracerProvider, "get_tracer", lambda self, *a, **k: trace_api.NoOpTracer())
+    with pytest.raises(RuntimeError, match="record nothing"):
+        Harness()
