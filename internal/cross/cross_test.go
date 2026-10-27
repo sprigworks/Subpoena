@@ -4,6 +4,10 @@ package cross
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -319,5 +323,108 @@ func TestDeny(t *testing.T) {
 	}
 	if rep.EnforcementPoints != 2 || len(rep.Results) != 2 || rep.Failed() {
 		t.Fatalf("want 2 points, 2 killed; got %d points, %+v", rep.EnforcementPoints, rep.Results)
+	}
+}
+
+func TestChangedSourceAfterDiscoveryIsNotSliced(t *testing.T) {
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": strongTest})
+	ms, err := FindMutants(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 1 || len(ms[0].src) == 0 {
+		t.Fatalf("discovery did not keep snapshot bytes: %+v", ms)
+	}
+	drifted := append([]byte("// edited during the run\n"), ms[0].src...)
+	if err := os.WriteFile(filepath.Join(dir, "auth.go"), drifted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mutated, err := applyMutant(ms[0].src, ms[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "auth.go", mutated, 0); err != nil {
+		t.Fatalf("snapshot mutant does not parse: %v", err)
+	}
+	if _, err := applyMutant(drifted, ms[0]); err == nil || !strings.Contains(err.Error(), "source drift") {
+		t.Fatalf("changed bytes were accepted, err=%v", err)
+	}
+	// The live file is not what a later reread would have to slice.
+	live, err := os.ReadFile(filepath.Join(dir, "auth.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(live[ms[0].start:ms[0].end]) == ms[0].Removed {
+		t.Fatal("prepend did not shift the discovered statement")
+	}
+	// The previous reread applied those offsets to the changed bytes.
+	sliced := append(append(append([]byte{}, drifted[:ms[0].start]...), []byte("/* removed by subpoena-cross */")...), drifted[ms[0].end:]...)
+	if _, err := parser.ParseFile(token.NewFileSet(), "auth.go", sliced, 0); err == nil {
+		t.Fatal("stale-offset slice of the changed file still parsed; reproduction no longer shows an invalid mutant")
+	}
+}
+
+func TestRunUsesSnapshotWhenLiveSourceChangesAfterDiscovery(t *testing.T) {
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": strongTest})
+	orig, err := os.ReadFile(filepath.Join(dir, "auth.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(orig)
+	want := hex.EncodeToString(sum[:])
+	rep, err := Run(context.Background(), Options{
+		Target: dir,
+		afterDiscover: func(liveRoot string) {
+			b, err := os.ReadFile(filepath.Join(liveRoot, "auth.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			drifted := append([]byte("// edited during baseline\n"), b...)
+			if err := os.WriteFile(filepath.Join(liveRoot, "auth.go"), drifted, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Outcome != Killed || rep.Failed() {
+		t.Fatalf("live edit changed the mutant result: %+v err=%v", rep.Results, err)
+	}
+	var got string
+	for _, file := range rep.Snapshot {
+		if file.Path == "auth.go" {
+			got = file.SHA256
+		}
+	}
+	if got != want {
+		t.Fatalf("snapshot hash = %s, want pre-edit %s", got, want)
+	}
+	live, err := os.ReadFile(filepath.Join(dir, "auth.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(live) == string(orig) {
+		t.Fatal("baseline hook did not change the live file")
+	}
+}
+
+func TestRunRefusesCopyDriftBeforeMutation(t *testing.T) {
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": strongTest})
+	_, err := Run(context.Background(), Options{
+		Target: dir,
+		beforeMutate: func(tmpRoot string) {
+			p := filepath.Join(tmpRoot, "auth.go")
+			b, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, append([]byte("// copy drifted\n"), b...), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "snapshot drift") {
+		t.Fatalf("copy drift was not refused: %v", err)
 	}
 }

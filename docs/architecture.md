@@ -83,7 +83,8 @@ was dialed.
 
 Tests that look thorough can still be blind to the thing that matters. Cross-examination
 checks, per enforcement point, that the suite notices when enforcement is gone.
-It copies the module to a temp directory, removes the statement marked
+It copies the module to a temp directory, discovers enforcement points from
+that copy, and removes the statement marked
 `//subpoena:enforcement` inside each `//subpoena:enforcement_point` function,
 and runs the tests. A red suite kills the mutant. A green suite means the tests
 cannot tell enforced from unenforced behaviour, and subpoena-cross reports
@@ -92,6 +93,14 @@ mutant that does not compile is "invalid", never "killed". An enforcement point
 with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.
+
+Discovery, mutation and restoration use the same saved file bytes. Before each
+mutation, cross-examination checks that the copied file still matches discovery
+and refuses if it has changed. The CLI prints `snapshot <sha256> <path>` for
+each mutant-bearing file, so its reported offsets and removals can be tied to
+those bytes. These hashes cover only files containing mutants, not tests, the
+whole module or external dependencies. The initial module copy is not atomic,
+and relative module replacements still point to live directories.
 
 ## The registry
 
