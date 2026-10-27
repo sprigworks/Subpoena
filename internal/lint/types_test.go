@@ -291,6 +291,13 @@ func TestCollectWrapperLookalikesDoNotCount(t *testing.T) {
 		"returns a package variable": `var other *harness.Trace
 
 func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); _ = tr; return other }`,
+		// Another function can swap a package variable between the collect
+		// and the return.
+		"collects into a package variable": `var g *harness.Trace
+
+func (r *rig) swap() { g = r.o }
+
+func (r *rig) Collect(t any) *harness.Trace { g, _ = r.h.Collect(); r.swap(); return g }`,
 		"never returns": `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); _ = tr; panic("unreachable") }`,
 		"assigned in a func literal": `func (r *rig) Collect(t any) *harness.Trace {
 	var tr *harness.Trace

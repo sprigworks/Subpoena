@@ -417,7 +417,10 @@ func onlyReadUses(f file, sig *types.Signature, body *ast.BlockStmt, collected m
 		return true
 	})
 	for obj := range collected {
-		if params[obj] || collectAt[obj] == nil || bad[obj] {
+		// Only a local declared in this body: a package variable can be
+		// swapped by any other function between the collect and the return.
+		local := obj.Pos() >= body.Pos() && obj.Pos() < body.End()
+		if !local || params[obj] || collectAt[obj] == nil || bad[obj] {
 			delete(collected, obj)
 		}
 	}
