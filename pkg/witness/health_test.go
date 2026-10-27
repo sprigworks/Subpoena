@@ -116,3 +116,58 @@ func TestProcHealthFailsWhenRootIsGone(t *testing.T) {
 		t.Fatalf("health = %v, want ErrChildrenWalkUnavailable", err)
 	}
 }
+
+// TestProcHealthFailsWhenChildrenWalkLostMidCapture: the probe at Start is
+// not enough. If the root's children lists go away during the capture (the
+// root exited and its children were reparented), the rest of the window rests
+// on full scans, and Health must say so.
+func TestProcHealthFailsWhenChildrenWalkLostMidCapture(t *testing.T) {
+	root := t.TempDir()
+	fakeProc(t, root, 100, 1, "10", "gateway", "0::/")
+	fakeChildren(t, root, 100)
+	w := &ProcWitness{ProcRoot: root, RootPID: 100, Interval: time.Hour}
+	must(t, w.Start())
+	w.pollChildren()
+	must(t, os.RemoveAll(filepath.Join(root, "100", "task")))
+	w.pollChildren()
+	w.Stop()
+	if err := w.Health(); !errors.Is(err, ErrChildrenWalkUnavailable) {
+		t.Fatalf("health = %v, want ErrChildrenWalkUnavailable", err)
+	}
+}
+
+// TestProcChildrenWalkAcrossThreads: the root is multi-threaded, and each
+// thread has its own children list. One readable list is enough for the walk
+// (a thread can exit between the directory read and the file read); none
+// readable is a fault however many threads there are.
+func TestProcChildrenWalkAcrossThreads(t *testing.T) {
+	root := t.TempDir()
+	fakeProc(t, root, 100, 1, "10", "gateway", "0::/")
+	for _, tid := range []string{"100", "101", "102"} {
+		must(t, os.MkdirAll(filepath.Join(root, "100", "task", tid), 0o755))
+	}
+	w := &ProcWitness{ProcRoot: root, RootPID: 100, Interval: time.Hour}
+	must(t, w.Start())
+	w.Stop()
+	if err := w.Health(); !errors.Is(err, ErrChildrenWalkUnavailable) {
+		t.Fatalf("no thread readable: health = %v, want ErrChildrenWalkUnavailable", err)
+	}
+
+	// Only the last thread has a list, and later it names a child created
+	// after Start: the witness is healthy and the walk reaches that child.
+	list := filepath.Join(root, "100", "task", "102", "children")
+	must(t, os.WriteFile(list, nil, 0o644))
+	must(t, w.Start())
+	// The poll loops are running, so the child appears whole, by rename,
+	// rather than as a half-written stat.
+	staging := t.TempDir()
+	fakeProc(t, staging, 200, 100, "20", "child", "0::/")
+	must(t, os.Rename(filepath.Join(staging, "200"), filepath.Join(root, "200")))
+	must(t, os.WriteFile(list, []byte("200 "), 0o644))
+	w.pollChildren()
+	w.Stop()
+	must(t, w.Health())
+	if got := w.Spawned(""); len(got) != 1 || got[0].PID != 200 {
+		t.Fatalf("Spawned = %+v, want pid 200 via thread 102's list", got)
+	}
+}

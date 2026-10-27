@@ -31,8 +31,8 @@ import (
 //   - Polling can miss a process that starts and exits between two polls.
 //     Tests that rely on seeing a process should run one that lives a few
 //     polling intervals. For descendants the interval is the children walk's
-//     tick. The walk needs CONFIG_PROC_CHILDREN; when Start finds it cannot
-//     read the root's children lists, Health fails with
+//     tick. The walk needs CONFIG_PROC_CHILDREN; when Start or a later walk
+//     cannot read any of the root's children lists, Health fails with
 //     ErrChildrenWalkUnavailable rather than certify absence from full scans
 //     alone. Anything outside the root's children tree, such as a
 //     double-forked process or one reparented into a session cgroup, is seen
@@ -134,7 +134,9 @@ func (w *ProcWitness) Start() error {
 		w.scanErrors, w.firstScanErr = 1, err
 		return err
 	}
-	w.walkErr = w.probeChildren()
+	if _, err := w.children(w.RootPID); err != nil {
+		w.walkErr = err
+	}
 	w.baseline = map[procKey]bool{}
 	for k := range procs {
 		w.baseline[k] = true
@@ -456,12 +458,19 @@ func (w *ProcWitness) pollChildren() {
 		p procInfo
 	}
 	var news []found
+	var walkErr error
 	visited := map[int]bool{w.RootPID: true}
 	queue := []int{w.RootPID}
 	for len(queue) > 0 && len(visited) < maxWalk {
 		pid := queue[0]
 		queue = queue[1:]
-		for _, c := range w.children(pid) {
+		kids, err := w.children(pid)
+		if err != nil && pid == w.RootPID {
+			// The root's lists were readable at Start; losing them now (the
+			// root exited, say) leaves its descendants to full scans.
+			walkErr = err
+		}
+		for _, c := range kids {
 			if visited[c] {
 				continue
 			}
@@ -482,6 +491,9 @@ func (w *ProcWitness) pollChildren() {
 	if w.tracked == nil {
 		return
 	}
+	if walkErr != nil && w.walkErr == nil {
+		w.walkErr = walkErr
+	}
 	for _, f := range news {
 		w.record(f.k, f.p)
 	}
@@ -491,48 +503,42 @@ func (w *ProcWitness) pollChildren() {
 // root's /proc/<pid>/task/*/children lists cannot be read (a kernel without
 // CONFIG_PROC_CHILDREN, or the root process already gone). The witness then
 // sees the root's descendants only through full scans, which miss most
-// short-lived children on a busy machine.
+// short-lived children on a busy machine. Start probes for it, and every walk
+// re-checks, so a root that exits mid-capture is caught too.
 var ErrChildrenWalkUnavailable = errors.New("witness: children walk unavailable; descendants are seen by full scans only")
 
-// probeChildren reports why the children walk cannot run, or nil if at least
-// one of the root's threads has a readable children list.
-func (w *ProcWitness) probeChildren() error {
-	dir := filepath.Join(w.root(), strconv.Itoa(w.RootPID), "task")
-	tasks, err := os.ReadDir(dir)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrChildrenWalkUnavailable, err)
-	}
-	for _, t := range tasks {
-		if _, err = os.ReadFile(filepath.Join(dir, t.Name(), "children")); err == nil {
-			return nil
-		}
-	}
-	if err == nil {
-		err = fmt.Errorf("no threads under %s", dir)
-	}
-	return fmt.Errorf("%w: %w", ErrChildrenWalkUnavailable, err)
-}
-
-// children lists the child PIDs of every thread of pid.
-func (w *ProcWitness) children(pid int) []int {
+// children lists the child PIDs of every thread of pid. The error, wrapping
+// ErrChildrenWalkUnavailable, says no thread's children list was readable.
+// One readable list is enough: threads come and go between the directory
+// read and the file read.
+func (w *ProcWitness) children(pid int) ([]int, error) {
 	dir := filepath.Join(w.root(), strconv.Itoa(pid), "task")
 	tasks, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("%w: %w", ErrChildrenWalkUnavailable, err)
 	}
 	var out []int
+	readable := false
 	for _, t := range tasks {
-		b, err := os.ReadFile(filepath.Join(dir, t.Name(), "children"))
-		if err != nil {
+		b, rerr := os.ReadFile(filepath.Join(dir, t.Name(), "children"))
+		if rerr != nil {
+			err = rerr
 			continue
 		}
+		readable = true
 		for _, f := range strings.Fields(string(b)) {
 			if c, err := strconv.Atoi(f); err == nil {
 				out = append(out, c)
 			}
 		}
 	}
-	return out
+	if !readable {
+		if err == nil {
+			err = fmt.Errorf("no threads under %s", dir)
+		}
+		return nil, fmt.Errorf("%w: %w", ErrChildrenWalkUnavailable, err)
+	}
+	return out, nil
 }
 
 // record adds or updates the event for k. w.mu must be held.
