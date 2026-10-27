@@ -567,3 +567,34 @@ func TestNameEventTakesTheCurrentAttribution(t *testing.T) {
 		t.Fatalf("another session's process must not be returned for %s: %+v", tid, got)
 	}
 }
+
+// A process that rewrites its own argv (setproctitle) keeps its comm. The
+// line first read is still what ran, so it stays as an event of its own.
+func TestRewrittenArgvKeepsTheEarlierLine(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 930, 100, "230", "curl\x00evil.example\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "930", "comm"), []byte("curl\n"), 0o644))
+	fakeChildren(t, root, 100, 930)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "930", "cmdline"), []byte("worker: idle\x00"), 0o644))
+	w.pollChildren()
+	got := byCmd(w.Events())
+	if len(got) != 2 || got["curl evil.example"].PID != 930 || got["worker: idle"].PID != 930 ||
+		got["curl evil.example"].CommandSource != CommandLine {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// A forked child first shows exactly its parent's line, which was never its
+// own: its exec replaces it, and only what it ran is reported.
+func TestForkedChildsInheritedLineIsReplaced(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 931, 100, "231", "gateway", "0::/")
+	fakeChildren(t, root, 100, 931)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "931", "cmdline"), []byte("curl\x00x\x00"), 0o644))
+	w.pollChildren()
+	if got := byCmd(w.Events()); len(got) != 1 || got["curl x"].PID != 931 {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}

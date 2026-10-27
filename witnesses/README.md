@@ -65,7 +65,11 @@ keep refused probes long-lived so a refused one is always seen whole. A child
 first seen with its parent's command line (just forked) that is later seen
 with no arguments and a different name has exec'd (or renamed itself) since:
 its command line is kept, and the name is added as a second, name-only event
-for the same process. A fork that execs a program with the same name
+for the same process. A later, different command line (`bash -c` replacing
+itself with its last command, or a process rewriting its own argv) likewise
+keeps the earlier line as an event of its own; only a child's first line that
+equals its parent's is replaced by its exec, since it was never the child's.
+A fork that execs a program with the same name
 (`sh` running `sh -c ...`) is not caught this way: the parent's line stays.
 Keep refused commands distinguishable by program where that matters. With an
 `Allowed` list, a forked child seen before its exec and then only by name keeps

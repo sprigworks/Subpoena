@@ -66,6 +66,7 @@ type ProcWitness struct {
 	baseline     map[procKey]bool
 	tracked      map[procKey]*ProcessEvent
 	lineComm     map[procKey]string // the task name when Command's command line was read
+	inherited    map[procKey]bool   // Command is the parent's command line, seen before an exec
 	order        []procKey
 	stop         chan struct{}
 	done         chan struct{}
@@ -144,6 +145,7 @@ func (w *ProcWitness) Start() error {
 	}
 	w.tracked = map[procKey]*ProcessEvent{}
 	w.lineComm = map[procKey]string{}
+	w.inherited = map[procKey]bool{}
 	w.order = nil
 	w.stop, w.done = make(chan struct{}), make(chan struct{})
 	iv := w.Interval
@@ -551,6 +553,9 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 		ev = &ProcessEvent{PID: p.pid, PPID: p.ppid, SeenAt: time.Now()}
 		w.tracked[k] = ev
 		w.order = append(w.order, k)
+		if p.snap.cmdline != "" && w.inherited != nil && p.snap.cmdline == w.cmdlineOf(p.ppid) {
+			w.inherited[k] = true
+		}
 	}
 	w.refresh(k, ev, p.snap)
 }
@@ -564,13 +569,23 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 // line, the process has exec'd (or renamed itself) since, so the stored line
 // may not be what ran. The line is kept, and the name is added as a second,
 // name-only event for the same process, each judged on its own: a rename
-// after the line was read cannot erase it. A later readable command line
-// still replaces the stored one (a forked child shows its parent's line until
-// it execs). w.mu must be held.
+// after the line was read cannot erase it. A later, different command line
+// (an exec such as bash -c's last command, or a process rewriting its argv)
+// likewise keeps the earlier line as an event of its own. Only a forked
+// child's first line, when it equals its parent's, is replaced: that line
+// was never the child's. w.mu must be held.
+//
+//subpoena:enforcement_point
 func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
-	newName := ""
+	newName, oldLine := "", ""
 	switch {
 	case s.cmdline != "":
+		if ev.CommandSource == CommandLine && ev.Command != s.cmdline && w.inherited != nil {
+			if !w.inherited[k] {
+				oldLine = ev.Command //subpoena:enforcement
+			}
+			delete(w.inherited, k)
+		}
 		ev.Command, ev.CommandSource = s.cmdline, CommandLine
 		if w.lineComm != nil {
 			w.lineComm[k] = s.comm
@@ -591,23 +606,41 @@ func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 	if id, ok := cgroup.SessionTrace(ev.Cgroup, w.cgroupBase()); ok {
 		ev.Attribution, ev.TraceID = ByCgroup, id
 	}
+	// Copied after this sighting's updates, so they carry the current cgroup
+	// and attribution.
 	if newName != "" {
-		// Copied after this sighting's updates, so it carries the current
-		// cgroup and attribution.
-		nk := procKey{pid: k.pid, start: k.start + "/name:" + newName}
-		name, seen := w.tracked[nk]
-		if !seen {
-			name = &ProcessEvent{}
-			w.tracked[nk] = name
-			w.order = append(w.order, nk)
-		}
-		seenAt := name.SeenAt
-		*name = *ev
-		name.Command, name.CommandSource = newName, CommandName
-		if seen {
-			name.SeenAt = seenAt
-		}
+		w.keepAs(k, ev, "/name:"+newName, newName, CommandName)
 	}
+	if oldLine != "" {
+		w.keepAs(k, ev, "/line:"+oldLine, oldLine, CommandLine)
+	}
+}
+
+// keepAs records, as an event of its own, a command the process k showed
+// before this sighting. w.mu must be held.
+func (w *ProcWitness) keepAs(k procKey, ev *ProcessEvent, tag, command string, src CommandSource) {
+	nk := procKey{pid: k.pid, start: k.start + tag}
+	kept, seen := w.tracked[nk]
+	if !seen {
+		kept = &ProcessEvent{}
+		w.tracked[nk] = kept
+		w.order = append(w.order, nk)
+	}
+	seenAt := kept.SeenAt
+	*kept = *ev
+	kept.Command, kept.CommandSource = command, src
+	if seen {
+		kept.SeenAt = seenAt
+	}
+}
+
+// cmdlineOf reads pid's command line now, or "" if it cannot.
+func (w *ProcWitness) cmdlineOf(pid int) string {
+	b, err := os.ReadFile(filepath.Join(w.root(), strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return ""
+	}
+	return strings.Join(strings.Split(strings.TrimRight(string(b), "\x00"), "\x00"), " ")
 }
 
 // inSessionCgroup reports whether a cgroup file's content names a session cgroup.
