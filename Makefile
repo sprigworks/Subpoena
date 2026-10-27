@@ -170,4 +170,8 @@ tidy:
 # Multi-module platform adoption example (each service has its own CI gate).
 .PHONY: platform
 platform:
+ifeq ($(SANDBOX),1)
+	@echo "platform: skipped under SANDBOX=1 (go.work.sandbox covers only the root module; the example's modules need the module proxy)"
+else
 	$(MAKE) -C examples/platform check
+endif

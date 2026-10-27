@@ -8,7 +8,7 @@ generate:
 	go run ./cmd/platform-generate
 
 check-generated: generate
-	git diff --exit-code -- generated/ invariants/names.go alerts/rules.yaml
+	git add -N generated/ invariants/ alerts/ && git diff --exit-code -- generated/ invariants/names.go alerts/rules.yaml
 
 check:
 	go vet ./...
