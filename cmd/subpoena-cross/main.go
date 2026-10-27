@@ -29,15 +29,16 @@ func main() {
 	timeout := flag.Duration("timeout", 5*time.Minute, "bound on each go command, and so on each mutant's test run")
 	evidenceDir := flag.String("evidence-dir", "", "keep each mutant run's full go test -json output in this directory")
 	jobs := flag.Int("j", 1, "single mutants to run at once, each in its own copy of the module")
+	sel := flag.Bool("select", false, "run each mutant against only the tests that executed its line (per-test coverage pass first)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: subpoena-cross [-timeout 5m] [-j 1] [-evidence-dir dir] <dir>")
+		fmt.Fprintln(os.Stderr, "usage: subpoena-cross [-timeout 5m] [-j 1] [-select] [-evidence-dir dir] <dir>")
 	}
 	flag.Parse()
 	if flag.NArg() != 1 || *timeout <= 0 || *jobs < 1 {
 		flag.Usage()
 		os.Exit(2)
 	}
-	rep, err := cross.Run(context.Background(), cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr, EvidenceDir: *evidenceDir, Jobs: *jobs})
+	rep, err := cross.Run(context.Background(), cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr, EvidenceDir: *evidenceDir, Jobs: *jobs, Select: *sel})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-cross:", err)
 		os.Exit(2)

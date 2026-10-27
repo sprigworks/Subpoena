@@ -202,7 +202,11 @@ type Options struct {
 	// can fail under contention (a survivor becomes a kill). Gate on -j 1, or
 	// confirm kills there.
 	Jobs int
-	runs *atomic.Int64 // numbers the evidence files
+	// Select runs each mutant against only the tests that executed its line
+	// in a per-test coverage pass after the baseline (see select.go).
+	Select   bool
+	selected map[string][]string // Mutant.Name() -> tests, when Select
+	runs     *atomic.Int64       // numbers the evidence files
 	// afterDiscover, if set, runs after the snapshot is taken and before
 	// baseline. Tests use it to edit the live tree. Production leaves it nil.
 	afterDiscover func(liveRoot string)
@@ -318,6 +322,12 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		return nil, baselineErr //subpoena:enforcement
 	}
 
+	if o.Select {
+		fmt.Fprintf(o.Log, "select: running each test alone with coverage\n")
+		if o.selected, err = selectTests(ctx, o, primary, pkgs, mutants); err != nil {
+			return nil, err
+		}
+	}
 	single := map[string]int{} // Mutant.Name() -> index in rep.Results
 	results, err := runSingles(ctx, o, workers, pkgs, mutants)
 	if err != nil {
@@ -484,7 +494,12 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 	var testOut string
 	var testErr error
 	if err == nil {
-		testOut, testErr = goIn(ctx, o.Timeout, sb, "test", "-json", "-count=1", "-failfast", pkgs)
+		args := []string{"test", "-json", "-count=1", "-failfast"}
+		if f := runFilter(o.selected, ms); f != "" {
+			args = append(args, "-run", f)
+			fmt.Fprintf(o.Log, "  selected tests: %s\n", f)
+		}
+		testOut, testErr = goIn(ctx, o.Timeout, sb, append(args, pkgs)...)
 	}
 	if ctx.Err() != nil {
 		return res, fmt.Errorf("cross: run stopped: %w", ctx.Err()) //subpoena:enforcement

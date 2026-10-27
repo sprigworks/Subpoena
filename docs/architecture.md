@@ -109,7 +109,14 @@ sequential); on cross-self it cut 490 s to 135 s at `-j 8` with the same
 verdicts. Load can flip a verdict either way: a polling witness sees less on a
 busy host, turning a kill into a survivor (which fails the run), and a
 timing-sensitive test can fail under contention, turning a survivor into a
-kill. Gate releases on `-j 1`, or confirm kills there. An enforcement point
+kill. Gate releases on `-j 1`, or confirm kills there. `-select`
+first runs each test alone with coverage, then runs each mutant against only
+the tests that executed its line; a mutant no test executed runs the whole
+suite. A test that never runs the mutated line cannot change its result, so
+selection can only turn a kill into a survivor. The coverage pass costs about
+one extra suite run, so it pays off when each mutant's suite is long: on
+cross-self (short suites) `-j 8 -select` took 141 s against 135 s for `-j 8`,
+with the same verdicts. An enforcement point
 with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.

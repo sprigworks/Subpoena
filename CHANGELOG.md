@@ -11,6 +11,9 @@
 - **Cross: `-j N` parallel mutants.** Single mutants run N at a time, each in
   its own copy of the module. cross-self: 490 s at `-j 1`, 135 s at `-j 8`, same
   verdicts. Load can flip a verdict either way, so gate on `-j 1`.
+- **Cross: `-select` test selection.** Each mutant runs only the tests that
+  executed its line in a per-test coverage pass after the baseline. Opt-in: it
+  pays off on long suites, not on short ones.
 
 - **Guard and layered mutants in `subpoena-cross`.**
   `//subpoena:enforcement_guard true|false` on an `if` forces its condition to

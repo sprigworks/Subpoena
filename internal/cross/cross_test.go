@@ -961,3 +961,31 @@ func TestParallelJobsGiveTheSameVerdicts(t *testing.T) {
 		t.Fatalf("jobs=1 %v, jobs=3 %v, want %v", one, three, want)
 	}
 }
+
+// With selection each mutant runs only the tests that executed its line, and
+// the verdicts match a full run. B has no test, so it runs the whole suite and
+// survives as before.
+func TestSelectionRunsOnlyCoveringTests(t *testing.T) {
+	dir := module(t, map[string]string{"auth.go": threePoints, "auth_test.go": threeTests})
+	var log bytes.Buffer
+	rep, err := Run(context.Background(), Options{Target: dir, Select: true, Log: &log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range rep.Results {
+		got = append(got, r.Mutant.Func+" "+string(r.Outcome))
+	}
+	want := []string{"A " + string(Killed), "B " + string(Survived), "C " + string(Killed)}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for _, line := range []string{"selected tests: ^(TestA)$", "selected tests: ^(TestC)$"} {
+		if !strings.Contains(log.String(), line) {
+			t.Fatalf("log lacks %q:\n%s", line, log.String())
+		}
+	}
+	if strings.Count(log.String(), "selected tests:") != 2 {
+		t.Fatalf("B has no covering test and must run the whole suite:\n%s", log.String())
+	}
+}
