@@ -10,6 +10,15 @@ import (
 	"testing"
 )
 
+// TestMain turns off any workspace for the whole package. The fixtures are
+// standalone modules in temp dirs; under `make SANDBOX=1` GOWORK points at
+// go.work.sandbox, which doesn't list them, so they wouldn't type-check and
+// the typed rules would silently fall back to names.
+func TestMain(m *testing.M) {
+	os.Setenv("GOWORK", "off")
+	os.Exit(m.Run())
+}
+
 func registry(t *testing.T) *Registry {
 	t.Helper()
 	_, here, _, _ := runtime.Caller(0)
