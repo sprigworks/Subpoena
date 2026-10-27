@@ -1,7 +1,8 @@
 // Package gateway is a toy agent gateway used to demonstrate trace-native
-// testing. It has three operations: open a session, authorize an action, and
-// exec a command. Authorize is the enforcement point: when it denies, exec must
-// never run.
+// testing. It has four operations: open a session, authorize an action, exec a
+// command, and fetch from a named upstream. Authorize is the enforcement point:
+// when it denies, exec must never run. Fetch is a second one: when Authorize
+// denies its host, nothing may be sent to that host.
 package gateway
 
 import (
@@ -11,7 +12,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"os/exec"
 	"strings"
 	"sync"
@@ -34,6 +37,7 @@ type Gateway struct {
 	fallback string          // correlation recorded when no cgroup is available
 	log      *slog.Logger
 	logOnce  sync.Once
+	upstream map[string]string // host name -> address, for Fetch
 }
 
 // Option configures a Gateway.
@@ -55,6 +59,12 @@ func WithFallbackCorrelation(mode string) Option {
 			semconv.ValSubpoenaWitnessCorrelationLineage, semconv.ValSubpoenaWitnessCorrelationArgument))
 	}
 	return func(g *Gateway) { g.fallback = mode }
+}
+
+// WithUpstreams sets the hosts Fetch can reach, by name, and the address
+// ("ip:port") each name dials. A name not listed cannot be fetched.
+func WithUpstreams(hosts map[string]string) Option {
+	return func(g *Gateway) { g.upstream = hosts }
 }
 
 // WithLogger sets the logger for cgroup diagnostics, which are logged at debug
@@ -213,6 +223,35 @@ func (g *Gateway) Run(ctx context.Context, s *Session, host, command string, arg
 		return nil, err
 	}
 	return g.Exec(ctx, s, command, args...)
+}
+
+// ErrUnknownUpstream is returned by Fetch for a host with no configured address.
+var ErrUnknownUpstream = errors.New("gateway: unknown upstream")
+
+// Fetch asks the named upstream host for "/" on behalf of the session and
+// returns the raw response. The host is authorized first, with the same policy
+// as exec: a denied host must receive nothing, not even a connection.
+//
+//subpoena:enforcement_point
+func (g *Gateway) Fetch(ctx context.Context, s *Session, host string) ([]byte, error) {
+	ctx, err := g.Authorize(ctx, s, host)
+	if err != nil {
+		return nil, err //subpoena:enforcement
+	}
+	addr, ok := g.upstream[host]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrUnknownUpstream, host)
+	}
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: fetch %s: %w", host, err)
+	}
+	defer c.Close()
+	if _, err := fmt.Fprintf(c, "GET / HTTP/1.0\r\nHost: %s\r\n\r\n", host); err != nil {
+		return nil, fmt.Errorf("gateway: fetch %s: %w", host, err)
+	}
+	return io.ReadAll(io.LimitReader(c, 1<<16))
 }
 
 func newSessionID() string {

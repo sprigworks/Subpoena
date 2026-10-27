@@ -156,6 +156,24 @@ exits at once is seen, lineage follows a fork that never execs, and a burst
 of execs before `Stop` is not lost. In the OATS stack it is the witness for
 both cases (`examples/gateway/oats/README.md`).
 
+### Network, tier 1: `Sinkhole` (runs in `go test`)
+
+`witness.Sinkhole` is a loopback TCP listener the test points the code under
+test at, standing in for a destination it must never reach. Every connection
+that arrives is recorded and closed. It needs no root, and the application
+cannot unsay a connection the listener accepted. `Stop` drains connections the
+kernel completed but the accept loop has not taken yet, so a client that hung
+up at once still counts; a drain or accept failure fails `Health`.
+
+It certifies only "nothing reached this address". Arrivals carry no PID or
+cgroup, so `Dialed` returns every arrival for every trace (`ByDestination`):
+safe for an absence claim, exact when one trace is in flight. Pair it with a
+positive control, a test in which the destination is allowed and the sinkhole
+sees the connection, so an unreachable sinkhole cannot pass for the wrong
+reason. `examples/gateway/fetch_test.go` does both. Its cross-examination
+mutant removes `Fetch`'s deny return and leaves the "denied" authorize span
+standing; the sinkhole sees the connection and the test goes red.
+
 ### Network: `netbpf` (kernel-side)
 
 `pkg/witness/netbpf` is the network sibling of `execbpf`. It implements
@@ -252,7 +270,7 @@ outside Kubernetes, so off Kubernetes it is unproven as a backstop.
 
 ## Layout
 
-- `../pkg/witness/`: interface and `ProcWitness`.
+- `../pkg/witness/`: interfaces, `ProcWitness` and `Sinkhole`.
 - `../pkg/witness/execbpf/`: the kernel-side witness; `bpf/exec.c` is the eBPF
   program (dual MIT/GPL-2.0, as the kernel requires for its helpers).
 - `../pkg/witness/netbpf/`: the kernel-side network witness; `bpf/net.c` is
