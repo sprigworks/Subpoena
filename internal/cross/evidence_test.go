@@ -109,3 +109,46 @@ func TestFirstFailureReadsOnlyFailedTests(t *testing.T) {
 		t.Fatalf("testText lost lines: %q", got)
 	}
 }
+
+func TestFirstFailureCrashes(t *testing.T) {
+	j := func(lines ...string) string { return strings.Join(lines, "\n") }
+	cases := []struct {
+		name    string
+		raw     string
+		crashed bool
+		msg     string
+	}{
+		{"log then panic", j(
+			`{"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:3: witness: hello\n"}`,
+			`{"Action":"output","Package":"p","Test":"TestA","Output":"panic: runtime error: invalid memory address or nil pointer dereference\n"}`,
+			`{"Action":"fail","Package":"p","Test":"TestA"}`,
+			`{"Action":"fail","Package":"p"}`), true, ""},
+		{"os.Exit", j(
+			`{"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:4: x\n"}`,
+			`{"Action":"output","Package":"p","Output":"FAIL\tp\t0.006s\n"}`,
+			`{"Action":"fail","Package":"p"}`), true, ""},
+		{"fatal error in an unfinished test", j(
+			`{"Action":"output","Package":"p","Test":"TestA","Output":"fatal error: concurrent map writes\n"}`,
+			`{"Action":"fail","Package":"p"}`), true, ""},
+		{"failed with no message", j(
+			`{"Action":"fail","Package":"p","Test":"TestA"}`,
+			`{"Action":"fail","Package":"p"}`), true, ""},
+		{"passing test prints panic, another fails", j(
+			`{"Action":"output","Package":"p","Test":"TestP","Output":"panic: recovered and expected\n"}`,
+			`{"Action":"pass","Package":"p","Test":"TestP"}`,
+			`{"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:9: witness: spawned\n"}`,
+			`{"Action":"fail","Package":"p","Test":"TestA"}`), false, "witness: spawned"},
+		{"one package crashes, another kills", j(
+			`{"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:3: setup\n"}`,
+			`{"Action":"output","Package":"p","Test":"TestA","Output":"panic: boom\n"}`,
+			`{"Action":"fail","Package":"p","Test":"TestA"}`,
+			`{"Action":"output","Package":"q","Test":"TestB","Output":"    b_test.go:7: testimony: no span\n"}`,
+			`{"Action":"fail","Package":"q","Test":"TestB"}`), false, "testimony: no span"},
+	}
+	for _, c := range cases {
+		_, msg, crashed := firstFailure(c.raw)
+		if crashed != c.crashed || msg != c.msg {
+			t.Errorf("%s: got %q crashed=%v", c.name, msg, crashed)
+		}
+	}
+}

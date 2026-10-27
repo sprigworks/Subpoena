@@ -74,7 +74,7 @@ func main() {
 				fmt.Printf("  not listed in %s, so this fails the run. Prefer a test that catches this layer alone.\n", cross.MaskedFile)
 			}
 		case cross.Crashed:
-			fmt.Println("  suite went red only by a panic, before any assertion failed; a crash is not a kill:")
+			fmt.Println("  suite went red by a crash, with no clean failure message; a crash is not a kill:")
 			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
 		case cross.TimedOut:
 			fmt.Println("  suite did not finish within -timeout; a hang is not a kill. Make the test fail fast instead:")

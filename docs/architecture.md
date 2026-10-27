@@ -92,9 +92,11 @@ cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 mutant that does not compile is "invalid", never "killed". A mutant whose tests
 run past `-timeout` (5 minutes by default) is `enforcement-mutant-timeout`, also
 never "killed": a hang may be the host's, and no assertion caught it. A suite
-that goes red only by a panic, before any test's failure message, is
-`enforcement-mutant-crashed`, which fails the run too: a crash is not evidence
-that the enforcement is tested. Mutant runs use `go test -json -failfast`, so a
+that goes red with no clean failure message is `enforcement-mutant-crashed`,
+which fails the run too: a crash is not evidence that the enforcement is
+tested. A package whose test binary died (a panic, a runtime fatal error or
+`os.Exit`) gives no kills at all, since a test's log lines before its panic
+look like failure messages; a clean failure in another package still counts. Mutant runs use `go test -json -failfast`, so a
 package stops at its first red test. Each kill reports its first evidence, the
 first failure message of a failed test: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`

@@ -5,7 +5,8 @@
 - **Cross: evidence per kill, and crashes.** Each killed mutant reports its
   first evidence, from the first failure message of a failed test: `witness`,
   `testimony` (the harness tags) or `other`. A suite that goes red only by a
-  panic is `enforcement-mutant-crashed` and fails the run. `-evidence-dir` keeps
+  crash (a panic, a runtime fatal error, `os.Exit`, or a failure with no
+  message) is `enforcement-mutant-crashed` and fails the run. `-evidence-dir` keeps
   every mutant run's full `go test -json` output.
 
 - **Guard and layered mutants in `subpoena-cross`.**

@@ -317,8 +317,8 @@ suite is `enforcement-mutant-killed`. A green suite is
 Strengthen them. Never remove the marker to make it pass. A suite that runs
 past `-timeout` is `enforcement-mutant-timeout`, which fails the run too: make
 the test that should catch the mutant fail fast instead of hanging. A suite
-that goes red only by a panic is `enforcement-mutant-crashed` and fails the
-run: assert on the denial before anything can dereference what the mutant
+that goes red only by a crash (a panic, a runtime fatal error, `os.Exit`, or a
+failure with no message) is `enforcement-mutant-crashed` and fails the run: assert on the denial before anything can dereference what the mutant
 broke. Each kill prints its first evidence (`witness`, `testimony` or
 `other`). Where an enforcement point has a witness test, aim for `witness`; an
 `other` kill means an exit code or error check ended the test before the

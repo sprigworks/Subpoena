@@ -62,8 +62,9 @@ const (
 	// TimedOut means the suite did not finish within Options.Timeout. A hang
 	// may be the mutant's doing or the host's, so it is not a kill.
 	TimedOut Outcome = "enforcement-mutant-timeout"
-	// Crashed means the suite went red only by a panic: no assertion failed
-	// first. A crash is not evidence that the enforcement is tested, so it
+	// Crashed means the suite went red with no clean failure message: a test
+	// binary died (panic, runtime fatal error, os.Exit), or a test failed
+	// without saying why. A crash is not evidence that the enforcement is tested, so it
 	// fails the run like a survivor.
 	Crashed Outcome = "enforcement-mutant-crashed"
 	// Masked means the layer survived alone but its group's mutant was killed:
@@ -516,36 +517,51 @@ func testText(raw string) string {
 var failMsgRE = regexp.MustCompile(`^\s+[^\s:]+\.go:\d+: (.*)$`)
 
 // firstFailure reads go test -json output for the first failure message of
-// a test that failed (a skipped or passing test's log lines don't count), or
-// a panic. crashed is true when a panic came before any such message.
+// a test that failed (a skipped or passing test's log lines don't count).
+// crashed is true when no failed test gave one cleanly: the binary died by a
+// panic, a runtime fatal error or os.Exit, or failed without a message. A
+// package whose binary crashed (a crash line from a failed or unfinished
+// test, or outside any test) gives no kills at all, since a test's log lines
+// before its panic look just like failure messages. t.Log and t.Error print
+// the same way, so a failed test's tagged log line can still set ev.
+//
+//subpoena:enforcement_point
 func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
 	type event struct {
 		Action, Package, Test, Output string
 	}
+	type key [2]string
 	var evs []event
-	failed := map[[2]string]bool{}
+	failed, ended, crash := map[key]bool{}, map[key]bool{}, map[key]bool{}
 	for _, line := range strings.Split(raw, "\n") {
 		var e event
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
 			continue
 		}
 		evs = append(evs, e)
-		if e.Action == "fail" && e.Test != "" {
-			failed[[2]string{e.Package, e.Test}] = true
+		k := key{e.Package, e.Test}
+		switch e.Action {
+		case "fail":
+			failed[k], ended[k] = true, true
+		case "pass", "skip":
+			ended[k] = true
+		case "output":
+			if crashRE.MatchString(e.Output) {
+				crash[k] = true
+			}
+		}
+	}
+	dead := map[string]bool{}
+	for k := range crash {
+		if k[1] == "" || failed[k] || !ended[k] {
+			dead[k[0]] = true //subpoena:enforcement
 		}
 	}
 	for _, e := range evs {
-		if e.Action != "output" {
+		if e.Action != "output" || dead[e.Package] || !failed[key{e.Package, e.Test}] {
 			continue
 		}
-		text := strings.TrimRight(e.Output, "\n")
-		if strings.HasPrefix(text, "panic: ") {
-			return "", text, true
-		}
-		if !failed[[2]string{e.Package, e.Test}] {
-			continue
-		}
-		m := failMsgRE.FindStringSubmatch(text)
+		m := failMsgRE.FindStringSubmatch(strings.TrimRight(e.Output, "\n"))
 		if m == nil {
 			continue
 		}
@@ -558,8 +574,11 @@ func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
 			return EvidenceOther, m[1], false
 		}
 	}
-	return EvidenceOther, "", false
+	return "", "", true
 }
+
+// crashRE matches the first line of a panic or a runtime fatal error.
+var crashRE = regexp.MustCompile(`^(panic|fatal error): `)
 
 // keepEvidence writes raw to Options.EvidenceDir, if set, and returns the path.
 func keepEvidence(o Options, ms []Mutant, raw string) (string, error) {
