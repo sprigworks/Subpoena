@@ -218,9 +218,12 @@ func collector(f file, c *ast.CallExpr, wrappers map[token.Pos]bool) types.Type 
 
 // isWrapper reports whether fn, with body, is a Collect wrapper: it has at
 // least one return, and every return outside function literals hands back, in
-// fn's first result of the trace type, either a direct Collect (or wrapper)
+// fn's only result of the trace type, either a direct Collect (or wrapper)
 // call or a variable assigned from one in fn's own body. A return of nil, of a
-// parameter, or of anything else disqualifies it.
+// parameter, or of anything else disqualifies it. A returned variable must be
+// a local written exactly once, by that assignment, with its address never
+// taken: a later write (reassignment, range, a closure, a defer, *p = ...)
+// could replace the collected trace.
 func isWrapper(f file, fn *types.Func, body *ast.BlockStmt, wrappers map[token.Pos]bool) bool {
 	var trace types.Type
 	collected := map[types.Object]bool{}
@@ -258,7 +261,67 @@ func isWrapper(f file, fn *types.Func, body *ast.BlockStmt, wrappers map[token.P
 		}
 		return true
 	})
-	res := fn.Type().(*types.Signature).Results()
+	// Every write to each variable in body, closures included, and whether its
+	// address is taken.
+	writes := map[types.Object]int{}
+	addr := map[types.Object]bool{}
+	wrote := func(e ast.Expr) {
+		if st, ok := e.(*ast.StarExpr); ok {
+			e = st.X
+		}
+		if id, ok := e.(*ast.Ident); ok {
+			if obj := f.info.ObjectOf(id); obj != nil {
+				writes[obj]++
+			}
+		}
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			for _, l := range n.Lhs {
+				wrote(l)
+			}
+		case *ast.IncDecStmt:
+			wrote(n.X)
+		case *ast.RangeStmt:
+			if n.Key != nil {
+				wrote(n.Key)
+			}
+			if n.Value != nil {
+				wrote(n.Value)
+			}
+		case *ast.ValueSpec:
+			if len(n.Values) > 0 {
+				for _, id := range n.Names {
+					wrote(id)
+				}
+			}
+		case *ast.UnaryExpr:
+			if id, ok := n.X.(*ast.Ident); ok && n.Op == token.AND {
+				if obj := f.info.ObjectOf(id); obj != nil {
+					addr[obj] = true
+				}
+			}
+		}
+		return true
+	})
+	sig := fn.Type().(*types.Signature)
+	local := func(obj types.Object) bool {
+		for _, tup := range []*types.Tuple{sig.Params(), sig.Results()} {
+			for i := 0; i < tup.Len(); i++ {
+				if tup.At(i) == obj {
+					return false
+				}
+			}
+		}
+		return obj.Pos() >= body.Pos() && obj.Pos() < body.End()
+	}
+	for obj := range collected {
+		if !local(obj) || writes[obj] != 1 || addr[obj] {
+			delete(collected, obj)
+		}
+	}
+	res := sig.Results()
 	idx := -1
 	for _, r := range rets {
 		// return h.Collect(): the call's results are fn's results.
@@ -276,8 +339,10 @@ func isWrapper(f file, fn *types.Func, body *ast.BlockStmt, wrappers map[token.P
 		if idx < 0 {
 			for i := 0; i < res.Len(); i++ {
 				if types.Identical(res.At(i).Type(), trace) {
+					if idx >= 0 {
+						return false // two trace results: a caller could use the other one
+					}
 					idx = i
-					break
 				}
 			}
 		}

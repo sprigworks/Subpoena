@@ -307,6 +307,25 @@ func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); _ = tr; re
 	return r.o
 }`,
 		"no trace returned": `func (r *rig) Collect(t any) { _, _ = r.h.Collect() }`,
+		// A collected variable written again could hand back another trace.
+		"reassigned after collect":    `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); tr = r.o; return tr }`,
+		"reassigned by another call":  `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); tr, _ = fake.Collect(); return tr }`,
+		"swapped":                     `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); o := r.o; tr, o = o, tr; _ = o; return tr }`,
+		"reassigned in a switch":      `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); switch { default: tr = r.o }; return tr }`,
+		"range reassigns":             `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); for _, tr = range []*harness.Trace{r.o} {}; return tr }`,
+		"var then nil":                `func (r *rig) Collect(t any) *harness.Trace { var tr, _ = r.h.Collect(); tr = nil; return tr }`,
+		"named result reassigned":     `func (r *rig) Collect(t any) (tr *harness.Trace) { tr, _ = r.h.Collect(); tr = r.o; return tr }`,
+		"named result set in a defer": `func (r *rig) Collect(t any) (tr *harness.Trace) { defer func() { tr = r.o }(); tr, _ = r.h.Collect(); return tr }`,
+		"closure reassigns":           `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); func() { tr = r.o }(); return tr }`,
+		"pointer alias":               `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); p := &tr; *p = r.o; return tr }`,
+		"address passed on": `func set(p **harness.Trace, v *harness.Trace) { *p = v }
+
+func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); set(&tr, r.o); return tr }`,
+		"parameter returned first": `func (r *rig) Collect(t any) *harness.Trace { return r.c(r.o, t != nil) }
+
+func (r *rig) c(tr *harness.Trace, early bool) *harness.Trace { if early { return tr }; tr, _ = r.h.Collect(); return tr }`,
+		"local returned first": `func (r *rig) Collect(t any) *harness.Trace { tr := r.o; if t != nil { return tr }; tr, _ = r.h.Collect(); return tr }`,
+		"deref overwrite":      `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); *tr = *r.o; return tr }`,
 	}
 	for name, helper := range cases {
 		t.Run(name, func(t *testing.T) {
