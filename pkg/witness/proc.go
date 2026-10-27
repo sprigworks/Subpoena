@@ -15,7 +15,10 @@ import (
 )
 
 // ProcWitness is the tier-1 witness. It polls /proc and notices processes that
-// appear after Start. It prefers cgroup correlation: a process whose
+// appear after Start. Two pollers feed the same record: every tick it walks the
+// root's descendants through /proc/<pid>/task/*/children, which costs a few
+// reads however busy the machine is; and it scans all of /proc, which is slow
+// on a busy machine but finds processes the walk cannot. It prefers cgroup correlation: a process whose
 // /proc/<pid>/cgroup path contains a session cgroup (<root base>/<trace ID>,
 // see pkg/cgroup) is attributed to that trace, and is noticed even if it is not
 // a descendant of the root process (a double-forked or reparented child). A
@@ -24,9 +27,12 @@ import (
 // Limitations, deliberately visible:
 //   - Polling can miss a process that starts and exits between two polls.
 //     Tests that rely on seeing a process should run one that lives a few
-//     polling intervals. A poll is no shorter than one scan of /proc, which on
-//     a busy machine under the race detector can take 100ms or more. The
-//     kernel-side witness (pkg/witness/execbpf) does not have this gap.
+//     polling intervals. For descendants the interval is the children walk's
+//     tick (it needs CONFIG_PROC_CHILDREN; without it the walk finds nothing).
+//     Anything else, such as a process reparented into a session cgroup, waits
+//     for a full scan, which on a busy machine under the race detector can
+//     take 100ms or more. The kernel-side witness (pkg/witness/execbpf) does
+//     not have this gap.
 //   - A Go program's first os/exec call forks a throwaway pidfd probe; Start
 //     absorbs it with a warm-up. A process that never ran Start before its first
 //     exec could still see that probe as an extra event.
@@ -122,11 +128,16 @@ func (w *ProcWitness) Start() error {
 	if iv <= 0 {
 		iv = 2 * time.Millisecond
 	}
-	go w.loop(iv, w.stop, w.done)
+	stop, done := w.stop, w.done
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); w.loop(iv, stop, w.Poll) }()
+	go func() { defer wg.Done(); w.loop(iv, stop, w.pollChildren) }()
+	go func() { wg.Wait(); close(done) }()
 	return nil
 }
 
-// Stop ends polling after one final poll.
+// Stop ends polling after one final poll of each kind.
 func (w *ProcWitness) Stop() {
 	w.mu.Lock()
 	stop, done := w.stop, w.done
@@ -139,15 +150,14 @@ func (w *ProcWitness) Stop() {
 	<-done
 }
 
-func (w *ProcWitness) loop(iv time.Duration, stop, done chan struct{}) {
-	defer close(done)
+func (w *ProcWitness) loop(iv time.Duration, stop chan struct{}, poll func()) {
 	t := time.NewTicker(iv)
 	defer t.Stop()
 	for {
-		w.Poll()
+		poll()
 		select {
 		case <-stop:
-			w.Poll()
+			poll()
 			return
 		case <-t.C:
 		}
@@ -179,15 +189,10 @@ func (w *ProcWitness) scan(baseline map[procKey]bool) (map[procKey]procInfo, err
 		if err != nil {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(w.root(), e.Name(), "stat"))
-		if err != nil {
+		k, ppid, ok := w.readStat(pid)
+		if !ok {
 			continue // exited
 		}
-		ppid, start, ok := parseStat(string(b))
-		if !ok {
-			continue
-		}
-		k := procKey{pid, start}
 		p := procInfo{pid: pid, ppid: ppid}
 		if baseline != nil && !baseline[k] {
 			p.snap = w.readSnap(pid)
@@ -195,6 +200,15 @@ func (w *ProcWitness) scan(baseline map[procKey]bool) (map[procKey]procInfo, err
 		out[k] = p
 	}
 	return out, nil
+}
+
+func (w *ProcWitness) readStat(pid int) (k procKey, ppid int, ok bool) {
+	b, err := os.ReadFile(filepath.Join(w.root(), strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return procKey{}, 0, false
+	}
+	ppid, start, ok := parseStat(string(b))
+	return procKey{pid, start}, ppid, ok
 }
 
 func (w *ProcWitness) readSnap(pid int) *procSnap {
@@ -276,14 +290,90 @@ func (w *ProcWitness) Poll() {
 		if !w.inSessionCgroup(p.snap.cgroup) && !descends(p.pid, w.RootPID, byPID) {
 			continue
 		}
-		ev, seen := w.tracked[k]
-		if !seen {
-			ev = &ProcessEvent{PID: p.pid, PPID: p.ppid, SeenAt: time.Now()}
-			w.tracked[k] = ev
-			w.order = append(w.order, k)
-		}
-		w.refresh(ev, p.snap)
+		w.record(k, p)
 	}
+}
+
+// maxWalk bounds the children walk, as descends bounds lineage hops.
+const maxWalk = 4096
+
+// pollChildren walks the root's descendants through
+// /proc/<pid>/task/*/children and records the new ones. Its cost grows with
+// the root's threads and descendants, not with the whole machine, so it can
+// run every tick while a full scan is still reading /proc. A process that
+// existed at Start is not recorded, but its children are walked.
+func (w *ProcWitness) pollChildren() {
+	w.mu.Lock()
+	baseline := w.baseline // never mutated after Start
+	w.mu.Unlock()
+	if baseline == nil {
+		return
+	}
+	type found struct {
+		k procKey
+		p procInfo
+	}
+	var news []found
+	visited := map[int]bool{w.RootPID: true}
+	queue := []int{w.RootPID}
+	for len(queue) > 0 && len(visited) < maxWalk {
+		pid := queue[0]
+		queue = queue[1:]
+		for _, c := range w.children(pid) {
+			if visited[c] {
+				continue
+			}
+			visited[c] = true
+			queue = append(queue, c)
+			k, ppid, ok := w.readStat(c)
+			if !ok || baseline[k] {
+				continue
+			}
+			// Details right after the stat, as in scan.
+			news = append(news, found{k, procInfo{pid: c, ppid: ppid, snap: w.readSnap(c)}})
+		}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.tracked == nil {
+		return
+	}
+	for _, f := range news {
+		w.record(f.k, f.p)
+	}
+}
+
+// children lists the child PIDs of every thread of pid.
+func (w *ProcWitness) children(pid int) []int {
+	dir := filepath.Join(w.root(), strconv.Itoa(pid), "task")
+	tasks, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []int
+	for _, t := range tasks {
+		b, err := os.ReadFile(filepath.Join(dir, t.Name(), "children"))
+		if err != nil {
+			continue
+		}
+		for _, f := range strings.Fields(string(b)) {
+			if c, err := strconv.Atoi(f); err == nil {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
+// record adds or updates the event for k. w.mu must be held.
+func (w *ProcWitness) record(k procKey, p procInfo) {
+	ev, seen := w.tracked[k]
+	if !seen {
+		ev = &ProcessEvent{PID: p.pid, PPID: p.ppid, SeenAt: time.Now()}
+		w.tracked[k] = ev
+		w.order = append(w.order, k)
+	}
+	w.refresh(ev, p.snap)
 }
 
 // refresh updates an event from a later sighting. It is repeated while the

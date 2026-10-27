@@ -358,3 +358,84 @@ func TestForkChildIsUpdatedOnExec(t *testing.T) {
 		t.Fatalf("exec not recorded, or erased by the exit: %s", brief(evs))
 	}
 }
+
+// ---- the children fast path ----
+
+// fakeChildren writes /proc/<pid>/task/<pid>/children.
+func fakeChildren(t *testing.T, root string, pid int, kids ...int) {
+	t.Helper()
+	d := filepath.Join(root, strconv.Itoa(pid), "task", strconv.Itoa(pid))
+	must(t, os.MkdirAll(d, 0o755))
+	var b strings.Builder
+	for _, k := range kids {
+		fmt.Fprintf(&b, "%d ", k)
+	}
+	must(t, os.WriteFile(filepath.Join(d, "children"), []byte(b.String()), 0o644))
+}
+
+// TestChildSeenWhileFullScanStalls: on a busy machine one scan of /proc can
+// take longer than a short-lived child lives, so the child starts and is
+// reaped between two scans. The root's children must still be noticed every
+// tick, independently of the full scan.
+func TestChildSeenWhileFullScanStalls(t *testing.T) {
+	root := t.TempDir()
+	fakeProc(t, root, 1, 0, "1", "init", "0::/")
+	fakeProc(t, root, 100, 1, "10", "gateway", "0::/")
+	fakeChildren(t, root, 100)
+	scanning := make(chan struct{}, 1)
+	release := make(chan struct{})
+	w := &ProcWitness{ProcRoot: root, RootPID: 100, Interval: time.Millisecond}
+	w.afterScan = func() {
+		select {
+		case scanning <- struct{}{}:
+		default:
+		}
+		<-release
+	}
+	must(t, w.Start())
+	<-scanning // the first scan saw no child and is now stalled
+
+	fakeProc(t, root, 900, 100, "200", "/bin/sleep\x000.15\x00", "0::/")
+	must(t, os.Symlink("/bin/sleep", filepath.Join(root, "900", "exe")))
+	fakeProc(t, root, 901, 900, "201", "grandchild\x00", "0::/")
+	fakeChildren(t, root, 900, 901)
+	fakeChildren(t, root, 100, 900)
+	deadline := time.Now().Add(2 * time.Second)
+	for len(w.Events()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	// Reaped before the stalled scan ends.
+	fakeChildren(t, root, 100)
+	must(t, os.RemoveAll(filepath.Join(root, "900")))
+	must(t, os.RemoveAll(filepath.Join(root, "901")))
+	close(release)
+	w.Stop()
+
+	got := byCmd(w.Spawned(tid))
+	if e, ok := got["/bin/sleep 0.15"]; !ok || e.PPID != 100 || e.Exe != "/bin/sleep" {
+		t.Fatalf("child missed while the full scan stalled: %s", brief(w.Events()))
+	}
+	if e, ok := got["grandchild"]; !ok || e.PPID != 900 {
+		t.Fatalf("grandchild missed: %s", brief(w.Events()))
+	}
+	if len(got) != 2 {
+		t.Fatalf("want child and grandchild only: %s", brief(w.Events()))
+	}
+}
+
+// TestChildrenPathSkipsBaselineButWalksThroughIt: a process that existed at
+// Start is never reported, but a new child of it is.
+func TestChildrenPathSkipsBaselineButWalksThroughIt(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 910, 100, "5", "old\x00", "0::/") // start time before Start's baseline
+	w.mu.Lock()
+	w.baseline[procKey{910, "5"}] = true
+	w.mu.Unlock()
+	fakeProc(t, root, 911, 910, "210", "new\x00", "0::/")
+	fakeChildren(t, root, 100, 910)
+	fakeChildren(t, root, 910, 911)
+	w.pollChildren()
+	if got := byCmd(w.Events()); len(got) != 1 || got["new"].PID != 911 {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
