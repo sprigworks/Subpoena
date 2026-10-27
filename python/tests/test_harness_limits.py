@@ -47,7 +47,9 @@ def test_env_limits_do_not_reach_the_harness(monkeypatch, var):
     assert tr.exists('{ span.allowed = false && span.decision = "deny" }') == Verdict.PASS
 
 
-def test_span_that_lost_attributes_makes_capture_incomplete():
+def test_span_that_lost_attributes_makes_capture_incomplete(monkeypatch):
+    # The limited provider is the SDK's own, which honours OTEL_SDK_DISABLED.
+    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
     # Code under test that ignores H1 and records through a limited provider
     # into the same recorder: the loss must surface, not pass silently.
     h = Harness()
@@ -64,7 +66,9 @@ def test_span_that_lost_attributes_makes_capture_incomplete():
     assert e.value.trace.absent("{ span.allowed = false }") == Verdict.INCONCLUSIVE
 
 
-def test_event_that_lost_attributes_makes_capture_incomplete():
+def test_event_that_lost_attributes_makes_capture_incomplete(monkeypatch):
+    # The limited provider is the SDK's own, which honours OTEL_SDK_DISABLED.
+    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
     h = Harness()
     limited = TracerProvider(span_limits=SpanLimits(max_event_attributes=1))
     limited.add_span_processor(h._rec)
