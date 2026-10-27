@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **`harness.WatchSpawns`.** A witness check registered when the witness
+  starts that runs at test cleanup, even after an earlier `Fatal`: it stops the
+  witness, fails on commands the `SpawnRule` refuses (`Allowed`, `Never`) and on
+  missing or bad capture health, and logs every process seen when the test had
+  already failed. Moved from GhostGate's test helpers.
+- **`harness.CheckNoSpawn`, `CheckNoDial`.** Non-fatal forms of the witness
+  absence checks. `subpoena-lint` counts them, and `WatchSpawns`, as asking a
+  witness.
+- **Tagged failure messages.** Harness witness failures start with `witness:`,
+  telemetry assertion failures with `testimony:` (Go and Python).
+
 ## Python 0.1.0a1 (2026-10-26)
 
 First PyPI release of the Python port: `pip install subpoena`. The harness,
