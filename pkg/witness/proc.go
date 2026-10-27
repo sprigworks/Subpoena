@@ -1,6 +1,7 @@
 package witness
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sprigworks/subpoena/pkg/cgroup"
@@ -47,12 +49,16 @@ type ProcWitness struct {
 	// empty, $SUBPOENA_CGROUP_ROOT or the default is used.
 	CgroupRoot string
 
-	mu       sync.Mutex
-	baseline map[procKey]bool
-	tracked  map[procKey]*ProcessEvent
-	order    []procKey
-	stop     chan struct{}
-	done     chan struct{}
+	lifecycle    sync.Mutex // serializes Start and Stop
+	mu           sync.Mutex
+	baseline     map[procKey]bool
+	tracked      map[procKey]*ProcessEvent
+	order        []procKey
+	stop         chan struct{}
+	done         chan struct{}
+	finished     bool
+	scanErrors   uint64
+	firstScanErr error
 }
 
 type procKey struct {
@@ -99,14 +105,18 @@ func warmUp() {
 // Start takes a baseline of existing processes and begins polling. Processes
 // that already exist are never reported.
 func (w *ProcWitness) Start() error {
+	w.lifecycle.Lock()
+	defer w.lifecycle.Unlock()
 	warmUp()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.stop != nil {
 		return fmt.Errorf("witness: already started")
 	}
+	w.finished, w.scanErrors, w.firstScanErr = false, 0, nil
 	procs, err := w.scan()
 	if err != nil {
+		w.scanErrors, w.firstScanErr = 1, err
 		return err
 	}
 	w.baseline = map[procKey]bool{}
@@ -114,6 +124,7 @@ func (w *ProcWitness) Start() error {
 		w.baseline[k] = true
 	}
 	w.tracked = map[procKey]*ProcessEvent{}
+	w.order = nil
 	w.stop, w.done = make(chan struct{}), make(chan struct{})
 	iv := w.Interval
 	if iv <= 0 {
@@ -125,15 +136,19 @@ func (w *ProcWitness) Start() error {
 
 // Stop ends polling after one final poll.
 func (w *ProcWitness) Stop() {
+	w.lifecycle.Lock()
+	defer w.lifecycle.Unlock()
 	w.mu.Lock()
 	stop, done := w.stop, w.done
-	w.stop = nil
 	w.mu.Unlock()
 	if stop == nil {
 		return
 	}
 	close(stop)
 	<-done
+	w.mu.Lock()
+	w.stop, w.finished = nil, true
+	w.mu.Unlock()
 }
 
 func (w *ProcWitness) loop(iv time.Duration, stop, done chan struct{}) {
@@ -162,6 +177,7 @@ func (w *ProcWitness) scan() (map[procKey]procInfo, error) {
 		return nil, fmt.Errorf("witness: read %s: %w", w.root(), err)
 	}
 	out := map[procKey]procInfo{}
+	var scanErr error
 	for _, e := range ents {
 		pid, err := strconv.Atoi(e.Name())
 		if err != nil {
@@ -169,15 +185,23 @@ func (w *ProcWitness) scan() (map[procKey]procInfo, error) {
 		}
 		b, err := os.ReadFile(filepath.Join(w.root(), e.Name(), "stat"))
 		if err != nil {
-			continue // exited
+			// Exit races are an inherent polling gap. Permission, I/O and other
+			// failures are known capture faults, not evidence of absence.
+			if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ESRCH) && scanErr == nil {
+				scanErr = fmt.Errorf("witness: read process stat: %w", err)
+			}
+			continue
 		}
 		ppid, start, ok := parseStat(string(b))
 		if !ok {
+			if scanErr == nil {
+				scanErr = fmt.Errorf("witness: malformed stat for PID %d", pid)
+			}
 			continue
 		}
 		out[procKey{pid, start}] = procInfo{pid: pid, ppid: ppid}
 	}
-	return out, nil
+	return out, scanErr
 }
 
 // parseStat extracts ppid (field 4) and starttime (field 22). The comm field
@@ -204,7 +228,13 @@ func parseStat(s string) (ppid int, start string, ok bool) {
 func (w *ProcWitness) Poll() {
 	procs, err := w.scan()
 	if err != nil {
-		return
+		w.mu.Lock()
+		w.scanErrors++
+		if w.firstScanErr == nil {
+			w.firstScanErr = err
+		}
+		w.mu.Unlock()
+		// Keep positive observations from the readable part of a partial scan.
 	}
 	byPID := map[int]procInfo{}
 	for _, p := range procs {
@@ -358,3 +388,19 @@ func isHex(s string) bool {
 }
 
 var _ Witness = (*ProcWitness)(nil)
+
+// Health reports failed scans, including the final poll. Recovery on a later
+// poll does not erase a gap. Stop must complete before absence is certified.
+func (w *ProcWitness) Health() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.firstScanErr != nil {
+		return fmt.Errorf("witness: %d failed scan(s), first: %w", w.scanErrors, w.firstScanErr)
+	}
+	if !w.finished {
+		return fmt.Errorf("witness: capture has not stopped")
+	}
+	return nil
+}
+
+var _ HealthReporter = (*ProcWitness)(nil)

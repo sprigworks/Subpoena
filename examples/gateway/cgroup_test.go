@@ -76,6 +76,9 @@ func TestSessionCgroupHoldsTheExecAndTheSpanSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.w.Stop()
+	if err := r.w.Health(); err != nil {
+		t.Fatalf("witness capture incomplete: %v", err)
+	}
 
 	tr, err := r.h.Collect(context.Background())
 	if err != nil {
@@ -117,6 +120,9 @@ func TestDeniedSessionCgroupStaysEmpty(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	r.w.Stop()
+	if err := r.w.Health(); err != nil {
+		t.Fatalf("witness capture incomplete: %v", err)
+	}
 	tr, err := r.h.Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -125,9 +131,7 @@ func TestDeniedSessionCgroupStaysEmpty(t *testing.T) {
 	if procs := procsOf(t, root, traceOf(ctx)); len(procs) != 0 {
 		t.Fatalf("cgroup.procs of a denied session = %v", procs)
 	}
-	if n := len(r.w.Spawned(traceOf(ctx))); n != 0 {
-		t.Fatalf("witness saw %d processes", n)
-	}
+	harness.RequireNoSpawn(t, r.w, traceOf(ctx))
 }
 
 type captured struct {
@@ -320,6 +324,9 @@ func TestRealCgroupSessionIsWitnessedByCgroup(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	w.Stop()
+	if err := w.Health(); err != nil {
+		t.Fatalf("witness capture incomplete: %v", err)
+	}
 
 	tr, err := h.Collect(context.Background())
 	if err != nil {

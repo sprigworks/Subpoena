@@ -14,6 +14,7 @@
 package execbpf
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -78,11 +79,14 @@ type Witness struct {
 	cfg  Config
 	base string
 
-	mu     sync.Mutex
-	events []witness.ProcessEvent
-	desc   map[int]bool // RootPID and its descendants, from fork and exec events
+	lifecycle sync.Mutex // serializes Start and Stop
+	mu        sync.Mutex
+	events    []witness.ProcessEvent
+	desc      map[int]bool // RootPID and its descendants, from fork and exec events
 
-	k *kernel // loaded program; nil until Start
+	k         *kernel // loaded program; guarded by lifecycle
+	healthErr error
+	finished  bool
 }
 
 var _ witness.Witness = (*Witness)(nil)
@@ -179,3 +183,35 @@ func cgroupPath(leafFirst []string) string {
 	}
 	return strings.Join(parts, "/")
 }
+
+// Health reports known loss or reader failures from this capture. Stop must
+// finish draining the ring buffer and reading the loss counter first.
+func (w *Witness) Health() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.healthLocked()
+}
+
+func (w *Witness) healthLocked() error {
+	if w.healthErr != nil {
+		return w.healthErr
+	}
+	if !w.finished {
+		return fmt.Errorf("execbpf: capture has not stopped")
+	}
+	if w.cfg.NoRetain {
+		return fmt.Errorf("execbpf: capture not retained; use the event sink's health and records")
+	}
+	return nil
+}
+
+func (w *Witness) recordError(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// Preserve the first failure; repeated decode errors must not grow memory.
+	if w.healthErr == nil {
+		w.healthErr = err
+	}
+}
+
+var _ witness.HealthReporter = (*Witness)(nil)

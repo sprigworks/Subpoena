@@ -82,6 +82,7 @@ type execProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type execMapSpecs struct {
 	Events *ebpf.MapSpec `ebpf:"events"`
+	Lost   *ebpf.MapSpec `ebpf:"lost"`
 }
 
 // execVariableSpecs contains global variables before they are loaded into the kernel.
@@ -114,11 +115,13 @@ func (o *execObjects) Close() error {
 // It can be passed to loadExecObjects or ebpf.CollectionSpec.LoadAndAssign.
 type execMaps struct {
 	Events *ebpf.Map `ebpf:"events"`
+	Lost   *ebpf.Map `ebpf:"lost"`
 }
 
 func (m *execMaps) Close() error {
 	return _ExecClose(
 		m.Events,
+		m.Lost,
 	)
 }
 

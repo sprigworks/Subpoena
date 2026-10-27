@@ -14,6 +14,41 @@ The Go interface is `pkg/witness.Witness`:
 Spawned(traceID string) []ProcessEvent
 ```
 
+## Capture health and absence
+
+`Spawned` remains a raw observation API. Zero observations alone cannot certify
+absence. Stop the witness, call the harness's `Collect()`, then use:
+
+```go
+harness.RequireNoSpawn(t, w, traceID)
+```
+
+`harness.NoSpawn(w, traceID)` returns a verdict and diagnostic error. An observed
+process is Fail even with unhealthy capture; zero processes is Pass only when
+the optional `witness.HealthReporter` (`Health() error`) reports healthy capture.
+Unknown health, capture still running, or a known capture failure yields
+Inconclusive. `RequireNoSpawn` fails on both Fail and Inconclusive.
+
+`ProcWitness.Health` retains the first scan error and number of failed scans,
+including the final poll. Permission/I/O errors and malformed process stat
+entries invalidate capture; processes disappearing during a scan remain a
+known polling limitation. A later successful scan does not erase a failure.
+`Stop` retains its existing signature; check `Health` after it.
+
+The eBPF witness counts failed ring-buffer reservations for both exec and fork
+hooks in a per-CPU map. `Stop` detaches, drains, sums the counters and returns
+capture failures; `Health` retains them. Any host-wide drop invalidates the
+window because a lost event's session is unknown. Read/decode errors, failed
+counter reads and failed Flush also invalidate it. Closing after a failed Flush
+may discard an unknown number of samples; this is an error even if the kernel
+counter is zero. `NoRetain` is for streaming: its empty `Spawned` cannot certify
+absence. The daemon propagates capture errors when it stops; this is not a
+continuous health signal in Loki or an automatic production witness join.
+
+Health reports known capture faults. It does not remove polling or attribution
+gaps documented below, nor certify completeness of an imported witness log.
+A log's caller must also verify the producer completed successfully.
+
 ## Correlation: cgroup first, lineage second
 
 Which process belongs to which trace is the hard part. Three modes exist, and

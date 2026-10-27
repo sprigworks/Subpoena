@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
+
 	"github.com/sprigworks/subpoena/pkg/cgroup"
 	"github.com/sprigworks/subpoena/pkg/witness"
 )
@@ -203,5 +205,28 @@ func TestDecode(t *testing.T) {
 func copy8(dst []int8, s string) {
 	for i := 0; i < len(s) && i < len(dst); i++ {
 		dst[i] = int8(s[i])
+	}
+}
+
+// Exercise the real per-CPU map ABI and Stop's final read on a privileged host.
+func TestKernelLossCounterInvalidatesCapture(t *testing.T) {
+	w := start(t, Config{})
+	cpus, err := ebpf.PossibleCPU()
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := make([]uint64, cpus)
+	counts[0] = 3
+	if cpus > 1 {
+		counts[cpus-1] = 4
+	}
+	if err := w.k.objs.Lost.Put(uint32(0), counts); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Stop(); err == nil {
+		t.Fatal("kernel loss must fail Stop")
+	}
+	if err := w.Health(); err == nil {
+		t.Fatal("kernel loss must persist in Health")
 	}
 }
