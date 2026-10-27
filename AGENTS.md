@@ -62,9 +62,10 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   sandboxes), say the target was not run; never claim it passes. Run OATS only
   through `make oats`: run directly from an agent session, gcx's agent mode
   makes `absent` and `count` assertions meaningless (oats/README.md).
-- `make test-ebpf` (the eBPF witness against the real kernel) needs Docker
+- `make test-ebpf` (the eBPF witnesses against the real kernel) needs Docker
   and runs privileged; elsewhere its kernel tests skip, so do not claim they
-  passed. After editing `pkg/witness/execbpf/bpf/exec.c`, run
-  `make generate-bpf` (clang) and commit the regenerated object.
+  passed. After editing `pkg/witness/execbpf/bpf/exec.c` or
+  `pkg/witness/netbpf/bpf/net.c`, run `make generate-bpf` (clang) and commit
+  the regenerated objects.
 - Weaver is a Rust binary, not installed by default. See the Makefile header.
 - Never commit to main. Work on a branch; do not open PRs unless asked.

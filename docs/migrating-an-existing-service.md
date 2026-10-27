@@ -2,12 +2,16 @@
 
 How to take a Go service that has conventional tests and OpenTelemetry
 instrumentation and move it to Subpoena, one step at a time. The worked example
-is the toy gateway in `examples/gateway`: three operations (open a session,
-authorize, exec), one policy rule (a non-admin may not act on `prod-*`), and one
-invariant (a denied session never execs). Every step leaves the build green, so
+is the toy gateway in `examples/gateway`: open a session, authorize, exec, and
+fetch. One policy rule (a non-admin may not act on `prod-*`). A denied session
+never execs (`invariants/no_exec_after_deny.traceql`) and never reaches a
+forbidden address (`examples/gateway/fetch_test.go`, a witness check, not a
+second invariant file). Every step leaves the build green, so
 you can stop after any of them and keep what you have.
 
-Subpoena is alpha and Go-only; the registry is language-neutral. The order
+Subpoena is alpha. This guide is for a Go service. The reference implementation
+is Go; Python has a partial port (`docs/ports.md`). The registry is
+language-neutral. The order
 matters: registry first, tests once names are stable, witnesses before you trust
 any absence claim.
 

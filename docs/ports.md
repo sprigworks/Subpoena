@@ -12,7 +12,7 @@ progress, and it says so.
 | Port | Status |
 | --- | --- |
 | Python ([python/](../python/README.md), `pip install subpoena`) | H, Q and W pass: harness cases, 139 evaluator cases, witness reader. L and G not yet |
-| TypeScript | not started |
+| TypeScript | generated names only (`generated/ts/semconv.ts`: `SPAN_AGENT_SESSION_EXEC`, `ATTR_SESSION_ID`, `ATTRIBUTE_TIERS`). Harness not started |
 
 ## What a port is, and what it reuses
 
