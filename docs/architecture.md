@@ -97,6 +97,22 @@ with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.
 
+Enforcement that is a condition, not a statement, is marked on the `if` line
+with `//subpoena:enforcement_guard true` (or `false`). The value is the one that
+lets the action through, and the mutant forces the condition to it. Enforcement
+in layers, where an early refusal and a later check each stop the action alone,
+is declared with `group=<name>` on each layer's marker (2 to 8 layers, across
+functions and files). Cross also runs the whole group as one mutant. A layer
+that survives alone, but goes red together with other layers that also
+survived alone, is `enforcement-layer-masked`, and the report names the layer
+whose removal together with it turned the suite red. A layer killed on its own
+never masks another: a run that includes it is red because of it. A masked
+layer fails the run unless it is listed, with a reason, in `cross-masked.txt`
+in the target directory (`<file> | <func> | <removed text> | <reason>`). That
+file is a reviewed claim; an entry that no longer matches a masked layer fails
+the run too. Markers take no free text: an unknown argument, a guard marker
+without its value or off an `if` line, and a group of one are errors.
+
 Discovery, mutation and restoration use the same saved file bytes. Before each
 mutation, cross-examination checks that the copied file still matches discovery
 and refuses if it has changed. The CLI prints `snapshot <sha256> <path>` for

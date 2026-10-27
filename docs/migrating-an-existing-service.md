@@ -204,6 +204,14 @@ the enforcing. Cross-examination (step 6) deletes that statement and requires th
 to fail. A function with the first marker but not the second makes
 cross-examination exit with an error naming it.
 
+Two more shapes are common in real services. A guard such as
+`if ctx.Err() == nil { runner.Run(cmd) }` gets
+`//subpoena:enforcement_guard true` on the `if` line: cross forces the
+condition to the value that lets the command run. Layered enforcement, such as an
+early refusal plus the runner's own check, gets `group=<name>` on each layer's
+marker, so cross also removes the layers together and tells you which layer
+masks which.
+
 Then ask who can observe the side effect without trusting your code. For the
 gateway the effects are a process exec and an outbound connection, and the
 witnesses are a process observer and a network observer.
@@ -308,7 +316,11 @@ suite is `enforcement-mutant-killed`. A green suite is
 `enforcement-mutant-survived`: your tests cannot tell enforced from unenforced.
 Strengthen them. Never remove the marker to make it pass. A suite that runs
 past `-timeout` is `enforcement-mutant-timeout`, which fails the run too: make
-the test that should catch the mutant fail fast instead of hanging.
+the test that should catch the mutant fail fast instead of hanging. A layer
+reported as `enforcement-layer-masked` is caught only with another layer of its
+group removed too. It fails the run. Prefer a test that catches it alone; if
+the layer cannot be isolated, list it in `cross-masked.txt` with the reason, for
+review.
 
 On a first run cross-examination will often report a survivor, because the legacy tests
 assert on return values and mocks. That is the finding, not a failure of the

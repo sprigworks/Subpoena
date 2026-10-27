@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Guard and layered mutants in `subpoena-cross`.**
+  `//subpoena:enforcement_guard true|false` on an `if` forces its condition to
+  the bypass value. `group=<name>` on enforcement markers declares layers of one
+  guarantee: cross also mutates the whole group, and a layer that survives alone
+  but is caught with its group is `enforcement-layer-masked`, naming the masking
+  layer. A masked layer fails the run unless `cross-masked.txt` lists it with a
+  reason; a stale entry fails too.
+- **Breaking:** enforcement markers no longer accept trailing text.
+  `//subpoena:enforcement because ...` is now a discovery error; only
+  `group=<name>` may follow the marker.
+
 - **`harness.WatchSpawns`.** A witness check registered when the witness
   starts that runs at test cleanup, even after an earlier `Fatal`: it stops the
   witness, fails on commands the `SpawnRule` refuses (`Allowed`, `Never`) and on

@@ -6,6 +6,12 @@
 // v0 locates the statement to remove with a second marker: a comment
 // //subpoena:enforcement on the statement's first line, inside a function
 // marked //subpoena:enforcement_point.
+//
+// A guard is marked on its if line with //subpoena:enforcement_guard true (or
+// false): the mutant forces the condition to that bypass value. Either marker
+// may name a group (group=<name>) of layers that together make one guarantee;
+// cross also mutates the whole group, and a layer that survives alone but is
+// caught with the group is reported as masked, naming the layer that masks it.
 package cross
 
 import (
@@ -34,7 +40,12 @@ import (
 const (
 	MarkerEnforcementPoint = "subpoena:enforcement_point"
 	MarkerEnforcement      = "subpoena:enforcement"
+	MarkerGuard            = "subpoena:enforcement_guard"
 )
+
+// maxGroup bounds a layer group, so the search for masking layers (one run per
+// pair of members) stays small.
+const maxGroup = 8
 
 // Outcome of one mutant.
 type Outcome string
@@ -49,26 +60,53 @@ const (
 	// TimedOut means the suite did not finish within Options.Timeout. A hang
 	// may be the mutant's doing or the host's, so it is not a kill.
 	TimedOut Outcome = "enforcement-mutant-timeout"
+	// Masked means the layer survived alone but its group's mutant was killed:
+	// another declared layer catches the bypass. MaskedBy names it.
+	Masked Outcome = "enforcement-layer-masked"
 )
 
-// Mutant is one planned removal.
+// Mutant is one planned removal, or for a guard, one forced condition.
 type Mutant struct {
 	Func    string // enclosing function name
 	File    string // path relative to the module root
 	Line    int
-	Removed string // the source text removed
-	start   int    // byte offsets of the statement in File
+	Removed string // the source text removed; for a guard, the condition
+	Bypass  string // "true" or "false" for a guard; empty for a removal
+	Group   string // layer group from group=<name>; empty if none
+	start   int    // byte offsets of the statement (guard: condition) in File
 	end     int
 	point   int    // byte offset of the enclosing function declaration in File
 	src     []byte // file bytes the offsets were computed from; not a later reread
 }
 
+// Name identifies the mutant in reports: function, file and line.
+func (m Mutant) Name() string { return fmt.Sprintf("%s (%s:%d)", m.Func, m.File, m.Line) }
+
+// replacement is the text the mutant puts in place of Removed. A forced
+// condition keeps the original expression, so variables it uses stay used.
+func (m Mutant) replacement() string {
+	switch m.Bypass {
+	case "true":
+		return "(" + m.Removed + ") || true /* forced by subpoena-cross */"
+	case "false":
+		return "(" + m.Removed + ") && false /* forced by subpoena-cross */"
+	}
+	return "/* removed by subpoena-cross */"
+}
+
 // Result is the outcome of running one mutant.
 type Result struct {
 	Mutant  Mutant
+	With    []Mutant // further layers applied together with Mutant (group runs)
+	Group   string   // set on a whole-group run
 	Outcome Outcome
 	Failing []string // names of failing tests, for Killed
 	Output  string   // tail of go output, for Survived/Invalid
+	// MaskedBy names, for Masked, each layer whose removal together with this
+	// one turned the suite red. Empty when only the layers together did.
+	MaskedBy []string
+	// Accepted is the reason from MaskedFile when a masked layer is listed.
+	Accepted string
 }
 
 // Report is the outcome of a whole cross-examination.
@@ -81,7 +119,18 @@ type Report struct {
 	// external module replacements.
 	Snapshot []SourceFile
 	Results  []Result
+	// StaleAccepted lists entries of the masked-layer file (MaskedFile) that
+	// matched no masked layer. They fail the run, so the file cannot go stale.
+	StaleAccepted []string
 }
+
+// MaskedFile, in the target directory, lists masked layers accepted as
+// covered only together with their group, one per line, each with a reason:
+//
+//	<file> | <func> | <removed text or condition> | <reason>
+//
+// It is a reviewed claim, like a marker. Lines starting with # are comments.
+const MaskedFile = "cross-masked.txt"
 
 // SourceFile is one mutant-bearing file frozen at discovery. Offsets are valid
 // only for these bytes. Files with no mutant, and modules pulled in by replace,
@@ -91,14 +140,21 @@ type SourceFile struct {
 	SHA256 string
 }
 
-// Failed reports whether any mutant survived or was invalid.
+// Failed reports whether any mutant survived, was invalid or timed out, any
+// masked layer is not accepted in MaskedFile, or an entry there is stale.
 //
 //subpoena:enforcement_point
 func (r *Report) Failed() bool {
 	for _, x := range r.Results {
+		if x.Outcome == Masked && x.Accepted != "" {
+			continue
+		}
 		if x.Outcome != Killed {
 			return true //subpoena:enforcement
 		}
+	}
+	if len(r.StaleAccepted) > 0 {
+		return true //subpoena:enforcement
 	}
 	return false
 }
@@ -161,6 +217,10 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	}
 	rep.EnforcementPoints = len(points)
 	rep.Snapshot = snapshotOf(mutants)
+	groups, err := groupsOf(mutants)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := absoluteReplaces(ctx, root, tmp); err != nil {
 		return nil, err
@@ -197,79 +257,236 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		return nil, baselineErr //subpoena:enforcement
 	}
 
+	single := map[string]int{} // Mutant.Name() -> index in rep.Results
 	for _, m := range mutants {
-		path := filepath.Join(tmp, filepath.FromSlash(m.File))
-		if o.beforeMutate != nil {
-			o.beforeMutate(tmp)
-		}
-		onDisk, err := os.ReadFile(path)
+		res, err := runCase(ctx, o, tmp, pkgs, []Mutant{m})
 		if err != nil {
 			return nil, err
 		}
-		if !bytes.Equal(onDisk, m.src) {
-			return nil, fmt.Errorf("cross: %s: snapshot drift: copy no longer matches discovery bytes", m.File) //subpoena:enforcement
-		}
-		mutated, err := applyMutant(m.src, m)
-		if err != nil {
-			return nil, fmt.Errorf("cross: %s: %w", m.File, err)
-		}
-		if err := os.WriteFile(path, mutated, 0o644); err != nil {
-			return nil, err
-		}
-		fmt.Fprintf(o.Log, "mutant: %s (%s:%d) removed %q\n", m.Func, m.File, m.Line, oneLine(m.Removed))
-
-		res := Result{Mutant: m}
-		out, err := goCmd(ctx, o.Timeout, tmp, "build", pkgs)
-		if err != nil {
-			// Removing the statement may leave an import unused (the removed
-			// line was its only use); drop those imports and build again.
-			if pruned, ok := pruneUnusedImports(mutated, m.File, out); ok {
-				if err := os.WriteFile(path, pruned, 0o644); err != nil {
-					return nil, err
-				}
-				out, err = goCmd(ctx, o.Timeout, tmp, "build", pkgs)
-			}
-		}
-		if err != nil {
-			res.Outcome, res.Output = Invalid, tail(out, 20) //subpoena:enforcement
-		} else if out, err := goCmd(ctx, o.Timeout, tmp, "test", "-count=1", "-failfast", pkgs); err != nil {
-			// -failfast: one red test is a kill, so the rest of a package's
-			// tests need not run. Other packages still run to the end.
-			switch {
-			case timedOut(out, err):
-				res.Outcome, res.Output = TimedOut, tail(out, 20) //subpoena:enforcement
-			case buildFailed(out):
-				res.Outcome, res.Output = Invalid, tail(out, 20)
-			default:
-				res.Outcome, res.Failing = Killed, failingTests(out)
-			}
-		} else {
-			res.Outcome, res.Output = Survived, tail(out, 20)
-		}
+		single[m.Name()] = len(rep.Results)
 		rep.Results = append(rep.Results, res)
+	}
 
-		if err := os.WriteFile(path, m.src, 0o644); err != nil { // restore the snapshot, not a later reread
+	// Layer groups. The whole group runs as one mutant. A layer that survived
+	// alone can only be masked by other layers that also survived alone: a
+	// run that includes a layer killed on its own is red because of that
+	// layer, and says nothing about the rest. So the layers that survived
+	// alone run together, and then in pairs, to name what masks what.
+	names := make([]string, 0, len(groups))
+	for g := range groups {
+		names = append(names, g)
+	}
+	sort.Strings(names)
+	for _, g := range names {
+		members := groups[g]
+		res, err := runCase(ctx, o, tmp, pkgs, members)
+		if err != nil {
 			return nil, err
 		}
+		res.Group = g
+		rep.Results = append(rep.Results, res)
+		var alone []Mutant
+		for _, m := range members {
+			if rep.Results[single[m.Name()]].Outcome == Survived {
+				alone = append(alone, m)
+			}
+		}
+		if len(alone) < 2 {
+			continue
+		}
+		if len(alone) < len(members) {
+			if res, err = runCase(ctx, o, tmp, pkgs, alone); err != nil {
+				return nil, err
+			}
+			res.Group = g
+			rep.Results = append(rep.Results, res)
+		}
+		if res.Outcome != Killed {
+			continue // survived together: they stay survivors; anything else fails as it is
+		}
+		pairs := map[[2]string]Outcome{}
+		for _, m := range alone {
+			var by []string
+			for _, other := range alone {
+				if other.Name() == m.Name() {
+					continue
+				}
+				key := [2]string{m.Name(), other.Name()}
+				if key[0] > key[1] {
+					key[0], key[1] = key[1], key[0]
+				}
+				out, seen := pairs[key]
+				if !seen {
+					pair, err := runCase(ctx, o, tmp, pkgs, []Mutant{m, other})
+					if err != nil {
+						return nil, err
+					}
+					out, pairs[key] = pair.Outcome, pair.Outcome
+					if out != Killed && out != Survived {
+						// A pair that did not build or timed out decides
+						// nothing; report it, and it fails the run.
+						pair.Group = g
+						rep.Results = append(rep.Results, pair)
+					}
+				}
+				if out == Killed {
+					by = append(by, other.Name())
+				}
+			}
+			rep.Results[single[m.Name()]].Outcome, rep.Results[single[m.Name()]].MaskedBy = Masked, by
+		}
+	}
+	if err := acceptMasked(rep, filepath.Join(tmp, rel, MaskedFile)); err != nil {
+		return nil, err
 	}
 	return rep, nil
 }
 
-// applyMutant removes the marked statement from the snapshot bytes. Run does
-// not use this to detect copy drift: it compares the copy to m.src and refuses
-// before calling here. This check remains so a direct caller cannot slice
-// different bytes silently.
+// runCase applies the mutants together to the snapshot copy, builds, runs the
+// suite and restores the snapshot. The first mutant is the Result's Mutant;
+// the rest are With.
+func runCase(ctx context.Context, o Options, tmp, pkgs string, ms []Mutant) (res Result, err error) {
+	res = Result{Mutant: ms[0], With: ms[1:]}
+	byFile := map[string][]Mutant{}
+	var files []string
+	for _, m := range ms {
+		if _, ok := byFile[m.File]; !ok {
+			files = append(files, m.File)
+		}
+		byFile[m.File] = append(byFile[m.File], m)
+	}
+	if o.beforeMutate != nil {
+		o.beforeMutate(tmp)
+	}
+	mutated := map[string][]byte{}
+	for _, file := range files {
+		path := filepath.Join(tmp, filepath.FromSlash(file))
+		onDisk, err := os.ReadFile(path)
+		if err != nil {
+			return res, err
+		}
+		if !bytes.Equal(onDisk, byFile[file][0].src) {
+			return res, fmt.Errorf("cross: %s: snapshot drift: copy no longer matches discovery bytes", file) //subpoena:enforcement
+		}
+		b, err := applyMutants(byFile[file][0].src, byFile[file])
+		if err != nil {
+			return res, fmt.Errorf("cross: %s: %w", file, err)
+		}
+		mutated[file] = b
+	}
+	// Restore every touched file to the snapshot, not a later reread, however
+	// this case ends.
+	defer func() {
+		for _, file := range files {
+			if werr := os.WriteFile(filepath.Join(tmp, filepath.FromSlash(file)), byFile[file][0].src, 0o644); werr != nil && err == nil {
+				err = fmt.Errorf("cross: restore %s: %w", file, werr)
+			}
+		}
+	}()
+	for _, file := range files {
+		if err := os.WriteFile(filepath.Join(tmp, filepath.FromSlash(file)), mutated[file], 0o644); err != nil {
+			return res, err
+		}
+	}
+	for _, m := range ms {
+		if m.Bypass != "" {
+			fmt.Fprintf(o.Log, "mutant: %s forced %q to %s\n", m.Name(), oneLine(m.Removed), m.Bypass)
+		} else {
+			fmt.Fprintf(o.Log, "mutant: %s removed %q\n", m.Name(), oneLine(m.Removed))
+		}
+	}
+	if len(ms) > 1 {
+		fmt.Fprintf(o.Log, "  (%d layers together)\n", len(ms))
+	}
+
+	out, err := goCmd(ctx, o.Timeout, tmp, "build", pkgs)
+	if err != nil {
+		// Removing a statement may leave an import unused (the removed line
+		// was its only use); drop those imports and build again.
+		pruned := false
+		for _, file := range files {
+			if b, ok := pruneUnusedImports(mutated[file], file, out); ok {
+				if err := os.WriteFile(filepath.Join(tmp, filepath.FromSlash(file)), b, 0o644); err != nil {
+					return res, err
+				}
+				pruned = true
+			}
+		}
+		if pruned {
+			out, err = goCmd(ctx, o.Timeout, tmp, "build", pkgs)
+		}
+	}
+	if err != nil {
+		res.Outcome, res.Output = Invalid, tail(out, 20) //subpoena:enforcement
+	} else if out, err := goCmd(ctx, o.Timeout, tmp, "test", "-count=1", "-failfast", pkgs); err != nil {
+		// -failfast: one red test is a kill, so the rest of a package's
+		// tests need not run. Other packages still run to the end.
+		switch {
+		case timedOut(out, err):
+			res.Outcome, res.Output = TimedOut, tail(out, 20) //subpoena:enforcement
+		case buildFailed(out):
+			res.Outcome, res.Output = Invalid, tail(out, 20)
+		default:
+			res.Outcome, res.Failing = Killed, failingTests(out)
+		}
+	} else {
+		res.Outcome, res.Output = Survived, tail(out, 20)
+	}
+	return res, nil
+}
+
+// groupsOf collects the layer groups. A group needs at least two layers (one
+// is a typo that would silently drop the group run) and at most maxGroup.
+//
+//subpoena:enforcement_point
+func groupsOf(mutants []Mutant) (map[string][]Mutant, error) {
+	groups := map[string][]Mutant{}
+	for _, m := range mutants {
+		if m.Group != "" {
+			groups[m.Group] = append(groups[m.Group], m)
+		}
+	}
+	for g, ms := range groups {
+		if len(ms) < 2 {
+			return nil, fmt.Errorf("cross: group=%s has one layer (%s); a group needs at least two", g, ms[0].Name()) //subpoena:enforcement
+		}
+		if len(ms) > maxGroup {
+			return nil, fmt.Errorf("cross: group=%s has %d layers; at most %d", g, len(ms), maxGroup) //subpoena:enforcement
+		}
+	}
+	return groups, nil
+}
+
+// applyMutant applies one mutant to the snapshot bytes. Run does not use this
+// to detect copy drift: it compares the copy to m.src and refuses before
+// calling here. This check remains so a direct caller cannot slice different
+// bytes silently.
 func applyMutant(src []byte, m Mutant) ([]byte, error) {
-	if m.src != nil && !bytes.Equal(src, m.src) {
-		return nil, fmt.Errorf("source drift: bytes are not the discovery snapshot")
+	return applyMutants(src, []Mutant{m})
+}
+
+// applyMutants applies several mutants of one file, from the end backwards so
+// earlier offsets stay valid. Overlapping mutants are refused.
+func applyMutants(src []byte, ms []Mutant) ([]byte, error) {
+	sorted := append([]Mutant(nil), ms...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].start > sorted[j].start })
+	out := append([]byte{}, src...)
+	for i, m := range sorted {
+		if m.src != nil && !bytes.Equal(src, m.src) {
+			return nil, fmt.Errorf("source drift: bytes are not the discovery snapshot")
+		}
+		if m.start < 0 || m.end < m.start || m.end > len(src) {
+			return nil, fmt.Errorf("source drift: offsets %d:%d outside %d-byte snapshot", m.start, m.end, len(src))
+		}
+		if string(src[m.start:m.end]) != m.Removed {
+			return nil, fmt.Errorf("source drift: offsets no longer match %q", oneLine(m.Removed))
+		}
+		if i > 0 && m.end > sorted[i-1].start {
+			return nil, fmt.Errorf("mutants overlap: %s and %s", m.Name(), sorted[i-1].Name())
+		}
+		out = append(append(append([]byte{}, out[:m.start]...), []byte(m.replacement())...), out[m.end:]...)
 	}
-	if m.start < 0 || m.end < m.start || m.end > len(src) {
-		return nil, fmt.Errorf("source drift: offsets %d:%d outside %d-byte snapshot", m.start, m.end, len(src))
-	}
-	if string(src[m.start:m.end]) != m.Removed {
-		return nil, fmt.Errorf("source drift: offsets no longer match %q", oneLine(m.Removed))
-	}
-	return append(append(append([]byte{}, src[:m.start]...), []byte("/* removed by subpoena-cross */")...), src[m.end:]...), nil
+	return out, nil
 }
 
 func snapshotOf(mutants []Mutant) []SourceFile {
@@ -342,13 +559,20 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 			continue
 		}
 		found := 0
-		// Marker lines inside this function. Both markers share a prefix, so
-		// match the exact comment word.
-		lines := map[int]bool{}
+		// Marker lines inside this function. The markers share a prefix, so
+		// parseMarker matches the exact comment word.
+		lines := map[int]marker{}
 		for _, g := range f.Comments {
 			for _, c := range g.List {
-				if c.Pos() > fd.Body.Lbrace && c.End() < fd.Body.Rbrace && isEnforcementComment(c.Text) {
-					lines[fset.Position(c.Pos()).Line] = true
+				if c.Pos() <= fd.Body.Lbrace || c.End() >= fd.Body.Rbrace {
+					continue
+				}
+				mk, ok, err := parseMarker(c.Text)
+				if err != nil {
+					return nil, fmt.Errorf("cross: %s:%d: %w", rel, fset.Position(c.Pos()).Line, err) //subpoena:enforcement
+				}
+				if ok {
+					lines[fset.Position(c.Pos()).Line] = mk
 				}
 			}
 		}
@@ -361,29 +585,45 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 				return true
 			}
 			line := fset.Position(st.Pos()).Line
-			if !lines[line] {
+			mk, marked := lines[line]
+			if !marked {
 				return true
 			}
-			// Take the outermost statement that starts on the marked line; for
-			// `if cond { return x } //marker` that would remove the whole if,
-			// so only simple statements are accepted.
-			switch st.(type) {
-			case *ast.ReturnStmt, *ast.ExprStmt, *ast.AssignStmt, *ast.BranchStmt, *ast.IncDecStmt:
-			default:
-				return true
+			// Take the outermost statement that starts on the marked line. A
+			// guard marker takes the if and forces its condition. A statement
+			// marker on `if cond { return x }` would remove the whole if, so
+			// only simple statements are accepted.
+			var node ast.Node = st
+			if mk.guard {
+				ifs, isIf := st.(*ast.IfStmt)
+				if !isIf {
+					return true
+				}
+				node = ifs.Cond
+			} else {
+				switch st.(type) {
+				case *ast.ReturnStmt, *ast.ExprStmt, *ast.AssignStmt, *ast.BranchStmt, *ast.IncDecStmt:
+				default:
+					return true
+				}
 			}
 			delete(lines, line)
 			found++
-			s, e := fset.Position(st.Pos()).Offset, fset.Position(st.End()).Offset
+			s, e := fset.Position(node.Pos()).Offset, fset.Position(node.End()).Offset
 			out = append(out, Mutant{
 				Func: fd.Name.Name, File: filepath.ToSlash(rel), Line: line,
-				Removed: string(src[s:e]), start: s, end: e,
-				point: fset.Position(fd.Pos()).Offset, src: src,
+				Removed: string(src[s:e]), Bypass: mk.bypass, Group: mk.group,
+				start: s, end: e, point: fset.Position(fd.Pos()).Offset, src: src,
 			})
 			return true
 		})
 		if len(lines) > 0 {
-			return nil, fmt.Errorf("cross: %s: //%s in %s is not on a simple statement line", rel, MarkerEnforcement, fd.Name.Name) //subpoena:enforcement
+			left := make([]int, 0, len(lines))
+			for line := range lines {
+				left = append(left, line)
+			}
+			sort.Ints(left)
+			return nil, fmt.Errorf("cross: %s:%d: %s", rel, left[0], misplaced(lines[left[0]], fd.Name.Name)) //subpoena:enforcement
 		}
 		// An enforcement point with nothing to remove would never be
 		// cross-examined, and the run would still go green.
@@ -394,9 +634,58 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 	return out, nil
 }
 
-var enforcementRE = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcement) + `(\s|$)`)
+// misplaced says why a marker matched no statement.
+func misplaced(mk marker, fn string) string {
+	if mk.guard {
+		return fmt.Sprintf("//%s in %s is not on an if line", MarkerGuard, fn)
+	}
+	return fmt.Sprintf("//%s in %s is not on a simple statement line", MarkerEnforcement, fn)
+}
+
+// marker is a parsed //subpoena:enforcement or //subpoena:enforcement_guard.
+type marker struct {
+	guard  bool
+	bypass string // guard only: "true" or "false"
+	group  string
+}
+
+var (
+	enforcementRE = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcement) + `(\s|$)`)
+	guardRE       = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerGuard) + `(\s|$)`)
+	groupRE       = regexp.MustCompile(`^group=([A-Za-z0-9_.-]+)$`)
+)
 
 func isEnforcementComment(text string) bool { return enforcementRE.MatchString(text) }
+
+// parseMarker reads a statement or guard marker. ok is false for any other
+// comment. Arguments it does not understand are an error, not ignored: a
+// misspelt group would otherwise drop the layer from its group silently.
+//
+//subpoena:enforcement_point
+func parseMarker(text string) (mk marker, ok bool, err error) {
+	var args []string
+	switch {
+	case guardRE.MatchString(text):
+		args = strings.Fields(strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(text, "//")), MarkerGuard))
+		mk.guard = true
+		if len(args) == 0 || (args[0] != "true" && args[0] != "false") {
+			return mk, false, fmt.Errorf("//%s needs the bypass value first: true or false", MarkerGuard) //subpoena:enforcement
+		}
+		mk.bypass, args = args[0], args[1:]
+	case enforcementRE.MatchString(text):
+		args = strings.Fields(strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(text, "//")), MarkerEnforcement))
+	default:
+		return mk, false, nil
+	}
+	for _, a := range args {
+		g := groupRE.FindStringSubmatch(a)
+		if g == nil || mk.group != "" {
+			return mk, false, fmt.Errorf("marker argument %q: want at most one group=<name>", a) //subpoena:enforcement
+		}
+		mk.group = g[1]
+	}
+	return mk, true, nil
+}
 
 // hasPointMarker reports whether a doc comment mentions the enforcement-point
 // marker anywhere, as subpoena-lint does (internal/lint commentHas). Matching
@@ -571,3 +860,59 @@ func tail(s string, n int) string {
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// acceptMasked marks masked layers listed in the masked-layer file as
+// accepted, and records entries that match no masked layer as stale. A
+// missing file accepts nothing.
+//
+//subpoena:enforcement_point
+func acceptMasked(rep *Report, path string) error {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	reasons := map[string]string{}
+	var order []string
+	bad := 0 // first malformed line; the verdict is kept apart from the return, as in Run
+	for i, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		f := strings.SplitN(line, " | ", 4)
+		if len(f) != 4 || strings.TrimSpace(f[3]) == "" {
+			bad = i + 1
+			break
+		}
+		key := maskedKey(strings.TrimSpace(f[0]), strings.TrimSpace(f[1]), f[2])
+		reasons[key] = strings.TrimSpace(f[3])
+		order = append(order, key)
+	}
+	if bad > 0 {
+		return fmt.Errorf("cross: %s:%d: want <file> | <func> | <removed text> | <reason>", MaskedFile, bad) //subpoena:enforcement
+	}
+	used := map[string]bool{}
+	for i, r := range rep.Results {
+		if r.Outcome != Masked {
+			continue
+		}
+		key := maskedKey(r.Mutant.File, r.Mutant.Func, r.Mutant.Removed)
+		if reason, ok := reasons[key]; ok {
+			rep.Results[i].Accepted = reason
+			used[key] = true
+		}
+	}
+	for _, key := range order {
+		if !used[key] {
+			rep.StaleAccepted = append(rep.StaleAccepted, key)
+		}
+	}
+	return nil
+}
+
+func maskedKey(file, fn, removed string) string {
+	return file + " | " + fn + " | " + oneLine(removed)
+}

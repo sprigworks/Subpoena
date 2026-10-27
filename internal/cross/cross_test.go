@@ -502,3 +502,323 @@ func TestTestBinaryTimeoutPanicIsATimeout(t *testing.T) {
 		t.Fatal("a failing test is not a timeout")
 	}
 }
+
+const guardSrc = `package mini
+
+var Ran bool
+
+// Exec runs only when not revoked.
+//
+//subpoena:enforcement_point
+func Exec(revoked bool) {
+	if !revoked { //subpoena:enforcement_guard true
+		Ran = true
+	}
+}
+`
+
+const guardStrongTest = `package mini
+
+import "testing"
+
+func TestRevokedDoesNotRun(t *testing.T) {
+	Ran = false
+	Exec(true)
+	if Ran {
+		t.Fatal("revoked session ran")
+	}
+}
+`
+
+const guardWeakTest = `package mini
+
+import "testing"
+
+func TestRuns(t *testing.T) {
+	Exec(false)
+	if !Ran {
+		t.Fatal("did not run")
+	}
+}
+`
+
+func TestGuardMarkerFindsTheCondition(t *testing.T) {
+	dir := module(t, map[string]string{"exec.go": guardSrc, "exec_test.go": guardStrongTest})
+	ms, err := FindMutants(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 1 || ms[0].Removed != "!revoked" || ms[0].Bypass != "true" || ms[0].Line != 9 {
+		t.Fatalf("unexpected mutants: %+v", ms)
+	}
+	got, err := applyMutant(ms[0].src, ms[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "if (!revoked) || true /* forced by subpoena-cross */ {") {
+		t.Fatalf("condition not forced:\n%s", got)
+	}
+}
+
+func TestForcedGuardIsKilledByAStrongSuite(t *testing.T) {
+	dir := module(t, map[string]string{"exec.go": guardSrc, "exec_test.go": guardStrongTest})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Outcome != Killed || rep.Failed() {
+		t.Fatalf("want killed, got %+v", rep.Results)
+	}
+}
+
+func TestForcedGuardSurvivesAWeakSuite(t *testing.T) {
+	dir := module(t, map[string]string{"exec.go": guardSrc, "exec_test.go": guardWeakTest})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Outcome != Survived || !rep.Failed() {
+		t.Fatalf("want survived, got %+v", rep.Results)
+	}
+}
+
+func TestBadMarkersAreRefused(t *testing.T) {
+	for name, tc := range map[string]struct{ line, want string }{
+		"guard without value": {"if !revoked { //subpoena:enforcement_guard", "needs the bypass value"},
+		"guard bad value":     {"if !revoked { //subpoena:enforcement_guard yes", "needs the bypass value"},
+		"unknown argument":    {"if !revoked { //subpoena:enforcement_guard true grop=x", "want at most one group"},
+		"two groups":          {"if !revoked { //subpoena:enforcement_guard true group=a group=b", "want at most one group"},
+		"guard not on an if":  {"if !revoked {\n\t\tRan = true //subpoena:enforcement_guard true\n\t\t_ = 0", "is not on an if line"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := strings.Replace(guardSrc, "if !revoked { //subpoena:enforcement_guard true", tc.line, 1)
+			dir := module(t, map[string]string{"exec.go": src})
+			if _, err := FindMutants(dir, dir); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+	dir := module(t, map[string]string{"auth.go": strings.Replace(authOK, "ErrDenied //subpoena:enforcement", "ErrDenied //subpoena:enforcement because", 1)})
+	if _, err := FindMutants(dir, dir); err == nil || !strings.Contains(err.Error(), "want at most one group") {
+		t.Fatalf("statement marker with a stray argument: %v", err)
+	}
+}
+
+// Two layers of one guarantee: an early refusal, and a guard in the runner.
+// Either alone stops the run, so each single mutant survives.
+const layeredSrc = `package mini
+
+import "errors"
+
+var ErrRevoked = errors.New("revoked")
+
+var Ran int
+
+// Exec refuses a revoked session.
+//
+//subpoena:enforcement_point
+func Exec(revoked bool) error {
+	if revoked {
+		return ErrRevoked //subpoena:enforcement group=revoke
+	}
+	run(revoked)
+	return nil
+}
+
+// run checks again before running.
+//
+//subpoena:enforcement_point
+func run(revoked bool) {
+	if !revoked { //subpoena:enforcement_guard true group=revoke
+		Ran++
+	}
+}
+`
+
+const layeredTest = `package mini
+
+import "testing"
+
+func TestRevokedNeverRuns(t *testing.T) {
+	Ran = 0
+	Exec(true)
+	if Ran != 0 {
+		t.Fatal("revoked session ran")
+	}
+}
+`
+
+func TestMaskedLayersNameEachOther(t *testing.T) {
+	dir := module(t, map[string]string{"exec.go": layeredSrc, "exec_test.go": layeredTest})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) != 3 {
+		t.Fatalf("want 2 layers and 1 group run, got %+v", rep.Results)
+	}
+	ret, guard, group := rep.Results[0], rep.Results[1], rep.Results[2]
+	if ret.Outcome != Masked || len(ret.MaskedBy) != 1 || ret.MaskedBy[0] != guard.Mutant.Name() {
+		t.Fatalf("return layer: %+v", ret)
+	}
+	if guard.Outcome != Masked || len(guard.MaskedBy) != 1 || guard.MaskedBy[0] != ret.Mutant.Name() {
+		t.Fatalf("guard layer: %+v", guard)
+	}
+	if group.Group != "revoke" || group.Outcome != Killed || len(group.With) != 1 {
+		t.Fatalf("group run: %+v", group)
+	}
+	if !rep.Failed() {
+		t.Fatal("a masked layer not listed in cross-masked.txt must fail the run")
+	}
+}
+
+const maskedList = `# accepted masked layers
+exec.go | Exec | return ErrRevoked | the runner re-checks; tested together
+exec.go | run | !revoked | the early refusal covers this; tested together
+`
+
+func TestListedMaskedLayersAreAccepted(t *testing.T) {
+	dir := module(t, map[string]string{"exec.go": layeredSrc, "exec_test.go": layeredTest, MaskedFile: maskedList})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Failed() || len(rep.StaleAccepted) != 0 {
+		t.Fatalf("listed masked layers must pass: %+v stale=%v", rep.Results, rep.StaleAccepted)
+	}
+	if rep.Results[0].Accepted != "the runner re-checks; tested together" {
+		t.Fatalf("reason not recorded: %+v", rep.Results[0])
+	}
+	// One layer listed, the other not: still fails.
+	one := strings.Join(strings.Split(maskedList, "\n")[:2], "\n") + "\n"
+	dir = module(t, map[string]string{"exec.go": layeredSrc, "exec_test.go": layeredTest, MaskedFile: one})
+	if rep, err = run(t, dir); err != nil || !rep.Failed() {
+		t.Fatalf("an unlisted masked layer must fail: %v %+v", err, rep)
+	}
+}
+
+func TestStaleMaskedEntryFails(t *testing.T) {
+	list := maskedList + "exec.go | Exec | return nil | no such masked layer\n"
+	dir := module(t, map[string]string{"exec.go": layeredSrc, "exec_test.go": layeredTest, MaskedFile: list})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.StaleAccepted) != 1 || !rep.Failed() {
+		t.Fatalf("want one stale entry failing the run, got %v", rep.StaleAccepted)
+	}
+}
+
+func TestMalformedMaskedFileIsAnError(t *testing.T) {
+	dir := module(t, map[string]string{"exec.go": layeredSrc, "exec_test.go": layeredTest, MaskedFile: "exec.go | Exec | return ErrRevoked |\n"})
+	if _, err := run(t, dir); err == nil || !strings.Contains(err.Error(), "want <file>") {
+		t.Fatalf("missing reason: %v", err)
+	}
+}
+
+// A layer killed on its own makes every run that includes it red. That must
+// not excuse a sibling nothing tests.
+func TestKilledLayerDoesNotMaskAnUntestedSibling(t *testing.T) {
+	onlyErr := strings.Replace(layeredTest, "if Ran != 0 {", "if Exec(true) == nil {", 1)
+	dir := module(t, map[string]string{"exec.go": layeredSrc, "exec_test.go": onlyErr})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Results[0].Outcome != Killed || rep.Results[1].Outcome != Survived || !rep.Failed() {
+		t.Fatalf("want return killed, guard survived, run failed: %+v", rep.Results)
+	}
+}
+
+func TestSurvivingGroupFailsAndLayersStaySurvived(t *testing.T) {
+	weak := strings.Replace(layeredTest, "if Ran != 0 {", "if false {", 1)
+	dir := module(t, map[string]string{"exec.go": layeredSrc, "exec_test.go": weak})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rep.Results {
+		if r.Outcome != Survived {
+			t.Fatalf("want every run survived, got %+v", rep.Results)
+		}
+	}
+	if !rep.Failed() {
+		t.Fatal("a surviving group must fail")
+	}
+}
+
+func TestGroupSizeIsChecked(t *testing.T) {
+	one := strings.Replace(layeredSrc, " group=revoke\n\t\tRan++", "\n\t\tRan++", 1)
+	dir := module(t, map[string]string{"exec.go": one, "exec_test.go": layeredTest})
+	if _, err := run(t, dir); err == nil || !strings.Contains(err.Error(), "needs at least two") {
+		t.Fatalf("group of one: %v", err)
+	}
+	ms := make([]Mutant, maxGroup+1)
+	for i := range ms {
+		ms[i] = Mutant{Func: "F", File: "f.go", Line: i + 1, Group: "big"}
+	}
+	if _, err := groupsOf(ms); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("group of %d: %v", len(ms), err)
+	}
+	if g, err := groupsOf(ms[:maxGroup]); err != nil || len(g["big"]) != maxGroup {
+		t.Fatalf("group of %d: %v %v", maxGroup, g, err)
+	}
+}
+
+func TestOverlappingMutantsAreRefused(t *testing.T) {
+	src := []byte("abcdef")
+	a := Mutant{Removed: "bcd", start: 1, end: 4, src: src}
+	b := Mutant{Removed: "de", start: 3, end: 5, src: src}
+	if _, err := applyMutants(src, []Mutant{a, b}); err == nil || !strings.Contains(err.Error(), "overlap") {
+		t.Fatalf("want overlap error, got %v", err)
+	}
+}
+
+// A cancel in a watcher goroutine is an ordinary statement mutant.
+const watcherSrc = `package mini
+
+import "context"
+
+// Watch cancels the session's context when it is revoked.
+//
+//subpoena:enforcement_point
+func Watch(cancel context.CancelFunc, revoked <-chan struct{}) {
+	go func() {
+		<-revoked
+		cancel() //subpoena:enforcement
+	}()
+}
+`
+
+const watcherTest = `package mini
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+func TestRevokeCancels(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	revoked := make(chan struct{})
+	Watch(cancel, revoked)
+	close(revoked)
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("revocation did not cancel the session")
+	}
+}
+`
+
+func TestCancelInAWatcherGoroutineIsAMutant(t *testing.T) {
+	dir := module(t, map[string]string{"watch.go": watcherSrc, "watch_test.go": watcherTest})
+	rep, err := run(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Mutant.Removed != "cancel()" || rep.Results[0].Outcome != Killed {
+		t.Fatalf("want cancel() killed, got %+v", rep.Results)
+	}
+}
