@@ -78,7 +78,7 @@ type ProcWitness struct {
 	firstScanErr error
 	walkErr      error // why the children walk cannot run; set by Start
 	coverage     Coverage
-	lastScan     time.Time // when the latest full scan finished
+	lastScan     time.Time // when the latest successful full scan started
 
 	afterScan func() // test hook: runs in Poll between the scan and recording
 }
@@ -137,12 +137,13 @@ func (w *ProcWitness) Start() error {
 	}
 	w.finished, w.scanErrors, w.firstScanErr, w.walkErr = false, 0, nil, nil
 	w.coverage = Coverage{}
+	baselineStart := time.Now()
 	procs, err := w.scan(nil)
 	if err != nil {
 		w.scanErrors, w.firstScanErr = 1, err
 		return err
 	}
-	w.lastScan = time.Now()
+	w.lastScan = baselineStart
 	if _, err := w.children(w.RootPID); err != nil {
 		w.walkErr = err
 	}
@@ -406,14 +407,20 @@ func (w *ProcWitness) Poll() {
 	if baseline == nil {
 		return
 	}
+	start := time.Now()
 	procs, err := w.scan(baseline)
 	w.mu.Lock()
-	now := time.Now()
-	w.coverage.FullScans++
-	if gap := now.Sub(w.lastScan); gap > w.coverage.MaxFullScanGap {
-		w.coverage.MaxFullScanGap = gap
+	// A process can be born just after a scan listed /proc and be gone before
+	// the next scan read it: the window runs from one scan's start to the
+	// next one's end. A failed scan covers nothing, so it neither counts nor
+	// closes the window.
+	if err == nil {
+		w.coverage.FullScans++
+		if gap := time.Since(w.lastScan); gap > w.coverage.MaxFullScanGap {
+			w.coverage.MaxFullScanGap = gap
+		}
+		w.lastScan = start
 	}
-	w.lastScan = now
 	if err != nil {
 		w.scanErrors++
 		if w.firstScanErr == nil {
@@ -628,9 +635,9 @@ func cgroupHasTrace(cgroup, traceID string) bool {
 // have been missed. Log it next to an absence claim, or compare it with how
 // long the refused process would have run.
 type Coverage struct {
-	FullScans      int           // full /proc scans after the baseline
+	FullScans      int           // successful full /proc scans after the baseline
 	ChildrenWalks  int           // walks of the root's children lists
-	MaxFullScanGap time.Duration // longest time between two full scans finishing (the baseline counts)
+	MaxFullScanGap time.Duration // longest time from one successful scan's start (the baseline's included) to the next one's end
 }
 
 // Coverage returns the polling coverage so far.
