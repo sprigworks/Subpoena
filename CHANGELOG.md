@@ -12,6 +12,14 @@
   witness.
 - **Tagged failure messages.** Harness witness failures start with `witness:`,
   telemetry assertion failures with `testimony:` (Go and Python).
+- **Python harness: span limits (fix).** The Python harness now sets its own
+  span limits, all unlimited, so `OTEL_*_LIMIT` variables no longer drop or
+  truncate attributes (H1). `collect()` raises `IncompleteError` (`.truncated`)
+  when a span lost attributes, events or links (H3). In 0.1.0a1, a span with
+  more than 128 attributes silently lost its oldest ones, and
+  `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT` truncated values. Both still reported a
+  complete capture. `conformance/harness.yaml` gains an `env` field and an
+  `env_limits_ignored` case, and the Python runner now applies `filler`.
 
 ## Python 0.1.0a1 (2026-10-26)
 
