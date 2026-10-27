@@ -152,3 +152,12 @@ func TestFirstFailureCrashes(t *testing.T) {
 		}
 	}
 }
+
+func TestRunSinglesRefusesACancelledRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res, err := runSingles(ctx, Options{}, []sandbox{{}, {}}, "./...", []Mutant{{}, {}, {}})
+	if err == nil {
+		t.Fatalf("want an error for unrun mutants, got %d results", len(res))
+	}
+}

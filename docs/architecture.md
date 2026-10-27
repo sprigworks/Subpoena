@@ -106,8 +106,10 @@ can tag their own messages the same way. `-evidence-dir` keeps every mutant
 run's full `go test -json` output, killed ones included. `-j N` runs N single
 mutants at once, each in its own copy of the module (group runs stay
 sequential); on cross-self it cut 490 s to 135 s at `-j 8` with the same
-verdicts. A polling witness sees less on a busy host, so a higher `-j` can turn
-a kill into a survivor, which fails the run, never the reverse. An enforcement point
+verdicts. Load can flip a verdict either way: a polling witness sees less on a
+busy host, turning a kill into a survivor (which fails the run), and a
+timing-sensitive test can fail under contention, turning a survivor into a
+kill. Gate releases on `-j 1`, or confirm kills there. An enforcement point
 with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.

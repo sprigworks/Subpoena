@@ -196,9 +196,11 @@ type Options struct {
 	// mutant run there, killed ones included, one file per run.
 	EvidenceDir string
 	// Jobs is how many single mutants run at once, each in its own copy of
-	// the module; 1 if zero. Group runs stay sequential. A polling witness
-	// sees less on a busy host, so a higher value can turn a kill into a
-	// survivor (which fails the run), never the reverse.
+	// the module; 1 if zero. Group runs stay sequential. Load can flip a
+	// verdict either way: a polling witness sees less on a busy host (a kill
+	// becomes a survivor, which fails the run), and a timing-sensitive test
+	// can fail under contention (a survivor becomes a kill). Gate on -j 1, or
+	// confirm kills there.
 	Jobs int
 	runs *atomic.Int64 // numbers the evidence files
 	// afterDiscover, if set, runs after the snapshot is taken and before
@@ -286,7 +288,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	// Further workers get copies of the discovery copy, made after the
 	// replaces were rewritten: the same bytes, so the drift check holds.
 	workers := []sandbox{primary}
-	for i := 1; i < o.Jobs; i++ {
+	for i := 1; i < min(o.Jobs, len(mutants)); i++ {
 		dir, err := os.MkdirTemp("", "subpoena-cross-")
 		if err != nil {
 			return nil, err
@@ -1034,6 +1036,8 @@ type sandbox struct {
 
 // runSingles runs each mutant alone, on as many copies as there are workers,
 // and returns the results in mutants' order. The first error stops the rest.
+//
+//subpoena:enforcement_point
 func runSingles(ctx context.Context, o Options, workers []sandbox, pkgs string, mutants []Mutant) ([]Result, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -1047,6 +1051,9 @@ func runSingles(ctx context.Context, o Options, workers []sandbox, pkgs string, 
 		go func(sb sandbox) {
 			defer wg.Done()
 			for i := range next {
+				if ctx.Err() != nil {
+					continue
+				}
 				res, err := runCase(ctx, o, sb, pkgs, []Mutant{mutants[i]})
 				if err != nil {
 					once.Do(func() { firstErr = err; cancel(err) })
@@ -1068,6 +1075,11 @@ feed:
 	wg.Wait()
 	if firstErr != nil {
 		return nil, firstErr
+	}
+	// A cancel can stop the feed between two runs, with no run left to
+	// report it: unrun mutants must not come back as zero results.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("cross: run stopped: %w", err) //subpoena:enforcement
 	}
 	return results, nil
 }

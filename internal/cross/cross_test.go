@@ -10,6 +10,7 @@ import (
 	"errors"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,6 +284,22 @@ func TestCanceledRunIsAnErrorNotAKill(t *testing.T) {
 	rep, err := Run(ctx, Options{Target: dir, beforeMutate: func(string) { cancel() }})
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("want a canceled error, got %v %+v", err, rep)
+	}
+}
+
+// runCase itself refuses a canceled run, whoever called it: a group run has
+// no runSingles around it.
+func TestRunCaseRefusesACanceledRun(t *testing.T) {
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": strongTest})
+	ms, err := FindMutants(dir, dir)
+	if err != nil || len(ms) != 1 {
+		t.Fatalf("FindMutants: %v %v", ms, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res, err := runCase(ctx, Options{Log: io.Discard}, sandbox{dir: dir}, "./...", ms)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("want a canceled error, got %v %+v", err, res)
 	}
 }
 

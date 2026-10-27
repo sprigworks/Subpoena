@@ -10,7 +10,7 @@
   every mutant run's full `go test -json` output.
 - **Cross: `-j N` parallel mutants.** Single mutants run N at a time, each in
   its own copy of the module. cross-self: 490 s at `-j 1`, 135 s at `-j 8`, same
-  verdicts.
+  verdicts. Load can flip a verdict either way, so gate on `-j 1`.
 
 - **Guard and layered mutants in `subpoena-cross`.**
   `//subpoena:enforcement_guard true|false` on an `if` forces its condition to
