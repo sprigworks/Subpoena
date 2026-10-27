@@ -111,9 +111,12 @@ that every `return` hands back the trace from a harness `Collect` (or another
 verified wrapper) called in the helper's own body: either `return
 h.Collect(ctx)`, or a variable assigned from that call outside any function
 literal. Returning `nil`, a parameter, a field or another trace disqualifies
-the helper. So does any second write to the returned variable (a
-reassignment, a `range`, a write in a closure or a `defer`, `*p = ...`), taking
-its address, returning it as a named result, and returning two values of the
+the helper. The returned variable must be a local collected by a top-level
+statement of the helper (not under an `if`, loop or `switch`), before the
+return, in a helper with no `goto`. Apart from that assignment it may only be
+returned, compared, or have a method called on it: any other use (another
+assignment, an alias, an argument, its address, a write in a closure or
+`defer`) disqualifies the helper, as do a named result and two results of the
 trace type. Its name doesn't matter: a method called `Collect` that isn't
 verified, such as a metrics `Collect`, is not a wrapper. A wrapper can sit in
 any file in the targets.

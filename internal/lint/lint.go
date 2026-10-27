@@ -261,65 +261,9 @@ func isWrapper(f file, fn *types.Func, body *ast.BlockStmt, wrappers map[token.P
 		}
 		return true
 	})
-	// Every write to each variable in body, closures included, and whether its
-	// address is taken.
-	writes := map[types.Object]int{}
-	addr := map[types.Object]bool{}
-	wrote := func(e ast.Expr) {
-		if st, ok := e.(*ast.StarExpr); ok {
-			e = st.X
-		}
-		if id, ok := e.(*ast.Ident); ok {
-			if obj := f.info.ObjectOf(id); obj != nil {
-				writes[obj]++
-			}
-		}
-	}
-	ast.Inspect(body, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.AssignStmt:
-			for _, l := range n.Lhs {
-				wrote(l)
-			}
-		case *ast.IncDecStmt:
-			wrote(n.X)
-		case *ast.RangeStmt:
-			if n.Key != nil {
-				wrote(n.Key)
-			}
-			if n.Value != nil {
-				wrote(n.Value)
-			}
-		case *ast.ValueSpec:
-			if len(n.Values) > 0 {
-				for _, id := range n.Names {
-					wrote(id)
-				}
-			}
-		case *ast.UnaryExpr:
-			if id, ok := n.X.(*ast.Ident); ok && n.Op == token.AND {
-				if obj := f.info.ObjectOf(id); obj != nil {
-					addr[obj] = true
-				}
-			}
-		}
-		return true
-	})
 	sig := fn.Type().(*types.Signature)
-	local := func(obj types.Object) bool {
-		for _, tup := range []*types.Tuple{sig.Params(), sig.Results()} {
-			for i := 0; i < tup.Len(); i++ {
-				if tup.At(i) == obj {
-					return false
-				}
-			}
-		}
-		return obj.Pos() >= body.Pos() && obj.Pos() < body.End()
-	}
-	for obj := range collected {
-		if !local(obj) || writes[obj] != 1 || addr[obj] {
-			delete(collected, obj)
-		}
+	if !onlyReadUses(f, sig, body, collected) {
+		return false
 	}
 	res := sig.Results()
 	idx := -1
@@ -349,12 +293,147 @@ func isWrapper(f file, fn *types.Func, body *ast.BlockStmt, wrappers map[token.P
 		if idx < 0 || idx >= len(r.Results) {
 			return false
 		}
-		id, ok := r.Results[idx].(*ast.Ident)
+		id, ok := ast.Unparen(r.Results[idx]).(*ast.Ident)
 		if !ok || !collected[f.info.ObjectOf(id)] {
 			return false
 		}
 	}
 	return len(rets) > 0 && trace != nil
+}
+
+// onlyReadUses keeps in collected only the variables a wrapper may return:
+// locals (not parameters or named results) whose Collect assignment is a
+// top-level statement of body, not under an if, loop or switch, and whose
+// every other use only reads the trace: a return, a method call on it, or a
+// comparison. Any other use (another assignment, an argument, an alias, its
+// address, a write in a closure) could replace or overwrite what was
+// collected. A goto in body disqualifies the helper: it can jump past the
+// Collect.
+func onlyReadUses(f file, sig *types.Signature, body *ast.BlockStmt, collected map[types.Object]bool) bool {
+	jumps := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if br, ok := n.(*ast.BranchStmt); ok && br.Tok == token.GOTO {
+			jumps = true
+		}
+		if _, ok := n.(*ast.LabeledStmt); ok {
+			jumps = true
+		}
+		return true
+	})
+	if jumps {
+		return false
+	}
+	params := map[types.Object]bool{}
+	for _, tup := range []*types.Tuple{sig.Params(), sig.Results()} {
+		for i := 0; i < tup.Len(); i++ {
+			params[tup.At(i)] = true
+		}
+	}
+	// The top-level statement that collects into each variable.
+	collectAt := map[types.Object]ast.Node{}
+	for _, st := range body.List {
+		var ids []*ast.Ident
+		switch st := st.(type) {
+		case *ast.AssignStmt:
+			if len(st.Rhs) == 1 && len(st.Lhs) > 0 {
+				if id, ok := st.Lhs[0].(*ast.Ident); ok {
+					ids = append(ids, id)
+				}
+			}
+		case *ast.DeclStmt:
+			if gd, ok := st.Decl.(*ast.GenDecl); ok {
+				for _, sp := range gd.Specs {
+					if vs, ok := sp.(*ast.ValueSpec); ok && len(vs.Values) == 1 && len(vs.Names) > 0 {
+						ids = append(ids, vs.Names[0])
+					}
+				}
+			}
+		}
+		for _, id := range ids {
+			if obj := f.info.ObjectOf(id); collected[obj] && collectAt[obj] == nil {
+				collectAt[obj] = st
+			}
+		}
+	}
+	bad := map[types.Object]bool{}
+	var stack []ast.Node
+	ast.Inspect(body, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		defer func() { stack = append(stack, n) }()
+		id, ok := n.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		obj := f.info.ObjectOf(id)
+		if !collected[obj] {
+			return true
+		}
+		if f.info.Defs[id] != nil && !isAssignLHS(stack, id) {
+			return true // a declaration: var tr *Trace, or the Collect's own :=/var
+		}
+		at := collectAt[obj]
+		// Skip parentheses to see what the use really is.
+		i := len(stack) - 1
+		var child ast.Node = id
+		for i >= 0 {
+			if _, ok := stack[i].(*ast.ParenExpr); !ok {
+				break
+			}
+			child, i = stack[i], i-1
+		}
+		if i < 0 {
+			bad[obj] = true
+			return true
+		}
+		switch p := stack[i].(type) {
+		case *ast.ReturnStmt:
+			if at == nil || p.Pos() < at.End() {
+				bad[obj] = true // returned before it was collected
+			}
+		case *ast.BinaryExpr:
+		case *ast.SelectorExpr:
+			sel := f.info.Selections[p]
+			if sel == nil || sel.Kind() != types.MethodVal || i == 0 {
+				bad[obj] = true
+			} else if c, ok := stack[i-1].(*ast.CallExpr); !ok || c.Fun != p {
+				bad[obj] = true // a method value can be called later, from anywhere
+			}
+		case *ast.AssignStmt:
+			if ast.Node(p) != at || child != ast.Node(id) || p.Lhs[0] != child {
+				bad[obj] = true
+			}
+		default: // an alias (var p = tr), an argument, &tr, *tr, a field, ...
+			bad[obj] = true
+		}
+		return true
+	})
+	for obj := range collected {
+		if params[obj] || collectAt[obj] == nil || bad[obj] {
+			delete(collected, obj)
+		}
+	}
+	return true
+}
+
+// isAssignLHS reports whether id is on the left of the assignment directly
+// above it in stack.
+func isAssignLHS(stack []ast.Node, id *ast.Ident) bool {
+	if len(stack) == 0 {
+		return false
+	}
+	as, ok := stack[len(stack)-1].(*ast.AssignStmt)
+	if !ok {
+		return false
+	}
+	for _, l := range as.Lhs {
+		if l == ast.Expr(id) {
+			return true
+		}
+	}
+	return false
 }
 
 func sameName(c *ast.CallExpr, name string) bool {

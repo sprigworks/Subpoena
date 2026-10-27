@@ -362,3 +362,69 @@ func TestWrapperCallFromUntypedFile(t *testing.T) {
 		t.Fatalf("got %v", fs)
 	}
 }
+
+// Second review of the wrapper check: writes and aliases the single-write
+// count missed, and a Collect that may not run.
+func TestCollectWrapperLookalikesDoNotCount2(t *testing.T) {
+	cases := map[string]string{
+		"parenthesised write": `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); (tr) = r.o; return tr }`,
+		"parenthesised deref": `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); *(tr) = *r.o; return tr }`,
+		"collect under an if": `func (r *rig) Collect(t any) *harness.Trace { var tr *harness.Trace; if t == nil { tr, _ = r.h.Collect() }; return tr }`,
+		"goto past the collect": `func (r *rig) Collect(t any) *harness.Trace {
+	var tr *harness.Trace
+	goto end
+	tr, _ = r.h.Collect()
+end:
+	return tr
+}`,
+		"collect in a loop": `func (r *rig) Collect(t any) *harness.Trace { var tr *harness.Trace; for i := 0; i < 0; i++ { tr, _ = r.h.Collect() }; return tr }`,
+		"alias overwritten": `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); p := tr; *p = *r.o; return tr }`,
+		"alias zeroed":      `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); p := tr; *p = harness.Trace{}; return tr }`,
+		"var alias":         `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); var p = tr; *p = *r.o; return tr }`,
+		"package alias": `var pp *harness.Trace
+
+func clobber(o *harness.Trace) { *pp = *o }
+
+func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); pp = tr; clobber(r.o); return tr }`,
+		"method value": `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); f := tr.Absent; _ = f; return tr }`,
+	}
+	for name, helper := range cases {
+		t.Run(name, func(t *testing.T) {
+			fs := lintTypedFiles(t, map[string]string{"helpers_test.go": helperFile(helper), "svc_test.go": wrapperUser})
+			if got := byRule(fs, RuleUnguardedAbsence); len(got) != 1 {
+				t.Errorf("want 1 %s, got %v", RuleUnguardedAbsence, fs)
+			}
+		})
+	}
+}
+
+// Honest shapes still count after the stricter check.
+func TestCollectWrapperHonestShapesCount(t *testing.T) {
+	cases := map[string]string{
+		"check err, then return": `func (r *rig) Collect(t interface{ Fatal(...any) }) *harness.Trace {
+	tr, err := r.h.Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tr
+}`,
+		"declared, then collected": `func (r *rig) Collect(t any) *harness.Trace { var tr *harness.Trace; tr, _ = r.h.Collect(); return tr }`,
+		"nil check and a method call": `func (r *rig) Collect(t any) *harness.Trace {
+	tr, _ := r.h.Collect()
+	if tr == nil {
+		panic("no trace")
+	}
+	q := ""
+	_ = tr.Absent(q)
+	return (tr)
+}`,
+	}
+	for name, helper := range cases {
+		t.Run(name, func(t *testing.T) {
+			fs := lintTypedFiles(t, map[string]string{"helpers_test.go": helperFile(helper), "svc_test.go": wrapperUser})
+			if len(fs) != 0 {
+				t.Fatalf("an honest wrapper must count: %v", fs)
+			}
+		})
+	}
+}
