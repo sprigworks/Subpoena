@@ -35,6 +35,14 @@ entries invalidate capture; processes disappearing during a scan remain a
 known polling limitation. A later successful scan does not erase a failure.
 `Stop` retains its existing signature; check `Health` after it.
 
+`ProcWitness` sees the root's descendants every tick by walking
+`/proc/<pid>/task/*/children`, which needs `CONFIG_PROC_CHILDREN`. If `Start`
+cannot read the root's children lists, `Health` fails with
+`witness.ErrChildrenWalkUnavailable`: full scans alone miss most short-lived
+children on a busy host. Processes outside the root's children tree
+(double-forked, reparented, moved into a session cgroup) are seen only by full
+scans even when `Health` is nil. Use the eBPF witness where that gap matters.
+
 The eBPF witness counts failed ring-buffer reservations for both exec and fork
 hooks in a per-CPU map. `Stop` detaches, drains, sums the counters and returns
 capture failures; `Health` retains them. Any host-wide drop invalidates the

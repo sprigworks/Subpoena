@@ -31,10 +31,14 @@ import (
 //   - Polling can miss a process that starts and exits between two polls.
 //     Tests that rely on seeing a process should run one that lives a few
 //     polling intervals. For descendants the interval is the children walk's
-//     tick (it needs CONFIG_PROC_CHILDREN; without it the walk finds nothing).
-//     Anything else, such as a process reparented into a session cgroup, waits
-//     for a full scan, which on a busy machine under the race detector can
-//     take 100ms or more. The kernel-side witness (pkg/witness/execbpf) does
+//     tick. The walk needs CONFIG_PROC_CHILDREN; when Start or a later walk
+//     cannot read any of the root's children lists, Health fails with
+//     ErrChildrenWalkUnavailable rather than certify absence from full scans
+//     alone. Anything outside the root's children tree, such as a
+//     double-forked process or one reparented into a session cgroup, is seen
+//     only by a full scan, which on a busy machine under the race detector can
+//     take 100ms or more; absence of such processes rests on full scans even
+//     when Health is nil. The kernel-side witness (pkg/witness/execbpf) does
 //     not have this gap.
 //   - A Go program's first os/exec call forks a throwaway pidfd probe; Start
 //     absorbs it with a warm-up. A process that never ran Start before its first
@@ -67,6 +71,7 @@ type ProcWitness struct {
 	finished     bool
 	scanErrors   uint64
 	firstScanErr error
+	walkErr      error // why the children walk cannot run; set by Start
 
 	afterScan func() // test hook: runs in Poll between the scan and recording
 }
@@ -123,11 +128,14 @@ func (w *ProcWitness) Start() error {
 	if w.stop != nil {
 		return fmt.Errorf("witness: already started")
 	}
-	w.finished, w.scanErrors, w.firstScanErr = false, 0, nil
+	w.finished, w.scanErrors, w.firstScanErr, w.walkErr = false, 0, nil, nil
 	procs, err := w.scan(nil)
 	if err != nil {
 		w.scanErrors, w.firstScanErr = 1, err
 		return err
+	}
+	if _, err := w.children(w.RootPID); err != nil {
+		w.walkErr = err
 	}
 	w.baseline = map[procKey]bool{}
 	for k := range procs {
@@ -450,12 +458,19 @@ func (w *ProcWitness) pollChildren() {
 		p procInfo
 	}
 	var news []found
+	var walkErr error
 	visited := map[int]bool{w.RootPID: true}
 	queue := []int{w.RootPID}
 	for len(queue) > 0 && len(visited) < maxWalk {
 		pid := queue[0]
 		queue = queue[1:]
-		for _, c := range w.children(pid) {
+		kids, err := w.children(pid)
+		if err != nil && pid == w.RootPID {
+			// The root's lists were readable at Start; losing them now (the
+			// root exited, say) leaves its descendants to full scans.
+			walkErr = err
+		}
+		for _, c := range kids {
 			if visited[c] {
 				continue
 			}
@@ -476,31 +491,54 @@ func (w *ProcWitness) pollChildren() {
 	if w.tracked == nil {
 		return
 	}
+	if walkErr != nil && w.walkErr == nil {
+		w.walkErr = walkErr
+	}
 	for _, f := range news {
 		w.record(f.k, f.p)
 	}
 }
 
-// children lists the child PIDs of every thread of pid.
-func (w *ProcWitness) children(pid int) []int {
+// ErrChildrenWalkUnavailable is the capture fault Health reports when the
+// root's /proc/<pid>/task/*/children lists cannot be read (a kernel without
+// CONFIG_PROC_CHILDREN, or the root process already gone). The witness then
+// sees the root's descendants only through full scans, which miss most
+// short-lived children on a busy machine. Start probes for it, and every walk
+// re-checks, so a root that exits mid-capture is caught too.
+var ErrChildrenWalkUnavailable = errors.New("witness: children walk unavailable; descendants are seen by full scans only")
+
+// children lists the child PIDs of every thread of pid. The error, wrapping
+// ErrChildrenWalkUnavailable, says no thread's children list was readable.
+// One readable list is enough: threads come and go between the directory
+// read and the file read.
+func (w *ProcWitness) children(pid int) ([]int, error) {
 	dir := filepath.Join(w.root(), strconv.Itoa(pid), "task")
 	tasks, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("%w: %w", ErrChildrenWalkUnavailable, err)
 	}
 	var out []int
+	readable := false
 	for _, t := range tasks {
-		b, err := os.ReadFile(filepath.Join(dir, t.Name(), "children"))
-		if err != nil {
+		b, rerr := os.ReadFile(filepath.Join(dir, t.Name(), "children"))
+		if rerr != nil {
+			err = rerr
 			continue
 		}
+		readable = true
 		for _, f := range strings.Fields(string(b)) {
 			if c, err := strconv.Atoi(f); err == nil {
 				out = append(out, c)
 			}
 		}
 	}
-	return out
+	if !readable {
+		if err == nil {
+			err = fmt.Errorf("no threads under %s", dir)
+		}
+		return nil, fmt.Errorf("%w: %w", ErrChildrenWalkUnavailable, err)
+	}
+	return out, nil
 }
 
 // record adds or updates the event for k. w.mu must be held.
@@ -627,8 +665,9 @@ func isHex(s string) bool {
 
 var _ Witness = (*ProcWitness)(nil)
 
-// Health reports failed scans, including the final poll. Recovery on a later
-// poll does not erase a gap. Stop must complete before absence is certified.
+// Health reports failed scans, including the final poll, and a children walk
+// that could not run (ErrChildrenWalkUnavailable). Recovery on a later poll
+// does not erase a gap. Stop must complete before absence is certified.
 //
 //subpoena:enforcement_point
 func (w *ProcWitness) Health() error {
@@ -636,6 +675,9 @@ func (w *ProcWitness) Health() error {
 	defer w.mu.Unlock()
 	if w.firstScanErr != nil {
 		return fmt.Errorf("witness: %d failed scan(s), first: %w", w.scanErrors, w.firstScanErr) //subpoena:enforcement
+	}
+	if w.walkErr != nil {
+		return w.walkErr //subpoena:enforcement
 	}
 	if !w.finished {
 		return fmt.Errorf("witness: capture has not stopped") //subpoena:enforcement
