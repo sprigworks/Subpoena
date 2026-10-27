@@ -91,8 +91,17 @@ cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
 mutant that does not compile is "invalid", never "killed". A mutant whose tests
 run past `-timeout` (5 minutes by default) is `enforcement-mutant-timeout`, also
-never "killed": a hang may be the host's, and no assertion caught it. Mutant
-runs use `go test -failfast`, so a package stops at its first red test. An enforcement point
+never "killed": a hang may be the host's, and no assertion caught it. A suite
+that goes red only by a panic, before any test's failure message, is
+`enforcement-mutant-crashed`, which fails the run too: a crash is not evidence
+that the enforcement is tested. Mutant runs use `go test -json -failfast`, so a
+package stops at its first red test. Each kill reports its first evidence, the
+first failure message of a failed test: `witness` or `testimony` when the
+message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
+(an error return, exit code, audit row or output). A kill whose first evidence
+is not `witness` rested on the system's own account or its side effects. Tests
+can tag their own messages the same way. `-evidence-dir` keeps every mutant
+run's full `go test -json` output, killed ones included. An enforcement point
 with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.

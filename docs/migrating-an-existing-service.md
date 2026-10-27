@@ -316,7 +316,13 @@ suite is `enforcement-mutant-killed`. A green suite is
 `enforcement-mutant-survived`: your tests cannot tell enforced from unenforced.
 Strengthen them. Never remove the marker to make it pass. A suite that runs
 past `-timeout` is `enforcement-mutant-timeout`, which fails the run too: make
-the test that should catch the mutant fail fast instead of hanging. A layer
+the test that should catch the mutant fail fast instead of hanging. A suite
+that goes red only by a panic is `enforcement-mutant-crashed` and fails the
+run: assert on the denial before anything can dereference what the mutant
+broke. Each kill prints its first evidence (`witness`, `testimony` or
+`other`). Where an enforcement point has a witness test, aim for `witness`; an
+`other` kill means an exit code or error check ended the test before the
+witness was read (`harness.WatchSpawns` reads it at cleanup anyway). A layer
 reported as `enforcement-layer-masked` is caught only with another layer of its
 group removed too. It fails the run. Prefer a test that catches it alone; if
 the layer cannot be isolated, list it in `cross-masked.txt` with the reason, for

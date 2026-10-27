@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Cross: evidence per kill, and crashes.** Each killed mutant reports its
+  first evidence, from the first failure message of a failed test: `witness`,
+  `testimony` (the harness tags) or `other`. A suite that goes red only by a
+  panic is `enforcement-mutant-crashed` and fails the run. `-evidence-dir` keeps
+  every mutant run's full `go test -json` output.
+
 - **Guard and layered mutants in `subpoena-cross`.**
   `//subpoena:enforcement_guard true|false` on an `if` forces its condition to
   the bypass value. `group=<name>` on enforcement markers declares layers of one

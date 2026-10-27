@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -17,14 +18,24 @@ func NoSpawn(w witness.Witness, traceID string) (Verdict, error) {
 	if spawned := w.Spawned(traceID); len(spawned) != 0 {
 		return Fail, fmt.Errorf("witness saw processes for %s: %+v", traceID, spawned) //subpoena:enforcement
 	}
-	h, ok := w.(witness.HealthReporter)
-	if !ok {
-		return Inconclusive, fmt.Errorf("witness does not report capture health") //subpoena:enforcement
-	}
-	if err := h.Health(); err != nil {
+	if err := captureHealth(w); err != nil {
 		return Inconclusive, err //subpoena:enforcement
 	}
 	return Pass, nil
+}
+
+// errNoHealth is the capture fault of a witness that does not report health.
+var errNoHealth = errors.New("witness does not report capture health")
+
+// captureHealth is w's capture health; a witness that does not report it
+// counts as unhealthy. Missing and bad health are one fault, so removing the
+// check that acts on it is a real bypass, not a nil dereference.
+func captureHealth(w any) error {
+	h, ok := w.(witness.HealthReporter)
+	if !ok {
+		return errNoHealth
+	}
+	return h.Health()
 }
 
 // RequireNoSpawn fails the test unless a healthy witness reports no processes.

@@ -62,6 +62,10 @@ const (
 	// TimedOut means the suite did not finish within Options.Timeout. A hang
 	// may be the mutant's doing or the host's, so it is not a kill.
 	TimedOut Outcome = "enforcement-mutant-timeout"
+	// Crashed means the suite went red only by a panic: no assertion failed
+	// first. A crash is not evidence that the enforcement is tested, so it
+	// fails the run like a survivor.
+	Crashed Outcome = "enforcement-mutant-crashed"
 	// Masked means the layer survived alone but its group's mutant was killed:
 	// another declared layer catches the bypass. MaskedBy names it.
 	Masked Outcome = "enforcement-layer-masked"
@@ -103,13 +107,32 @@ type Result struct {
 	Group   string   // set on a whole-group run
 	Outcome Outcome
 	Failing []string // names of failing tests, for Killed
-	Output  string   // tail of go output, for Survived/Invalid
+	// Evidence is the kind of the first failure in a Killed run, and
+	// FirstFailure that failure's message.
+	Evidence     Evidence
+	FirstFailure string
+	// EvidenceFile is where the full go test -json output was kept, if
+	// Options.EvidenceDir is set.
+	EvidenceFile string
+	Output       string // tail of go output, for Survived/Invalid
 	// MaskedBy names, for Masked, each layer whose removal together with this
 	// one turned the suite red. Empty when only the layers together did.
 	MaskedBy []string
 	// Accepted is the reason from MaskedFile when a masked layer is listed.
 	Accepted string
 }
+
+// Evidence is what turned a mutant's suite red first, read from the first
+// failure message. The harness tags its messages (pkg/harness TagWitness,
+// TagTestimony); a test can tag its own the same way. An untagged message is
+// Other: an exit code, an audit row, a target record, or output.
+type Evidence string
+
+const (
+	EvidenceWitness   Evidence = "witness"
+	EvidenceTestimony Evidence = "testimony"
+	EvidenceOther     Evidence = "other"
+)
 
 // Report is the outcome of a whole cross-examination.
 type Report struct {
@@ -166,6 +189,10 @@ type Options struct {
 	Target  string        // directory to cross-examine, inside a Go module
 	Timeout time.Duration // per go command, and so per mutant run; 5 minutes if zero
 	Log     io.Writer     // progress; io.Discard if nil
+	// EvidenceDir, if set, keeps the full go test -json output of every
+	// mutant run there, killed ones included, one file per run.
+	EvidenceDir string
+	runs        *int // numbers the evidence files
 	// afterDiscover, if set, runs after the snapshot is taken and before
 	// baseline. Tests use it to edit the live tree. Production leaves it nil.
 	afterDiscover func(liveRoot string)
@@ -184,6 +211,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	if o.Timeout == 0 {
 		o.Timeout = 5 * time.Minute
 	}
+	o.runs = new(int)
 	target, err := filepath.Abs(o.Target)
 	if err != nil {
 		return nil, err
@@ -424,7 +452,7 @@ func runCase(ctx context.Context, o Options, tmp, pkgs string, ms []Mutant) (res
 	var testOut string
 	var testErr error
 	if err == nil {
-		testOut, testErr = goCmd(ctx, o.Timeout, tmp, "test", "-count=1", "-failfast", pkgs)
+		testOut, testErr = goCmd(ctx, o.Timeout, tmp, "test", "-json", "-count=1", "-failfast", pkgs)
 	}
 	if ctx.Err() != nil {
 		return res, fmt.Errorf("cross: run stopped: %w", ctx.Err()) //subpoena:enforcement
@@ -435,21 +463,120 @@ func runCase(ctx context.Context, o Options, tmp, pkgs string, ms []Mutant) (res
 		} else {
 			res.Outcome, res.Output = Invalid, tail(out, 20) //subpoena:enforcement
 		}
-	} else if out, err := testOut, testErr; err != nil {
-		// -failfast: one red test is a kill, so the rest of a package's
-		// tests need not run. Other packages still run to the end.
-		switch {
-		case timedOut(out, err):
-			res.Outcome, res.Output = TimedOut, tail(out, 20) //subpoena:enforcement
-		case buildFailed(out):
-			res.Outcome, res.Output = Invalid, tail(out, 20)
-		default:
-			res.Outcome, res.Failing = Killed, failingTests(out)
-		}
 	} else {
-		res.Outcome, res.Output = Survived, tail(out, 20)
+		raw, err := testOut, testErr
+		var ferr error
+		if res.EvidenceFile, ferr = keepEvidence(o, ms, raw); ferr != nil {
+			return res, ferr
+		}
+		out := testText(raw)
+		if err != nil {
+			// -failfast: one red test is a kill, so the rest of a package's
+			// tests need not run. Other packages still run to the end.
+			switch {
+			case timedOut(out, err):
+				res.Outcome, res.Output = TimedOut, tail(out, 20) //subpoena:enforcement
+			case buildFailed(out):
+				res.Outcome, res.Output = Invalid, tail(out, 20)
+			default:
+				ev, msg, crashed := firstFailure(raw)
+				if crashed {
+					res.Outcome, res.Output = Crashed, tail(out, 20) //subpoena:enforcement
+				} else {
+					res.Outcome, res.Failing = Killed, failingTests(out)
+					res.Evidence, res.FirstFailure = ev, msg
+				}
+			}
+		} else {
+			res.Outcome, res.Output = Survived, tail(out, 20)
+		}
 	}
 	return res, nil
+}
+
+// testText turns go test -json output back into the plain text go test
+// prints. Lines that are not JSON events (the go command's own messages) are
+// kept as they are.
+func testText(raw string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(raw, "\n") {
+		var ev struct{ Output string }
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &ev) == nil {
+			b.WriteString(ev.Output)
+			continue
+		}
+		if line != "" {
+			b.WriteString(line + "\n")
+		}
+	}
+	return b.String()
+}
+
+// failMsgRE matches a test's failure message, "    file_test.go:12: msg".
+var failMsgRE = regexp.MustCompile(`^\s+[^\s:]+\.go:\d+: (.*)$`)
+
+// firstFailure reads go test -json output for the first failure message of
+// a test that failed (a skipped or passing test's log lines don't count), or
+// a panic. crashed is true when a panic came before any such message.
+func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
+	type event struct {
+		Action, Package, Test, Output string
+	}
+	var evs []event
+	failed := map[[2]string]bool{}
+	for _, line := range strings.Split(raw, "\n") {
+		var e event
+		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
+			continue
+		}
+		evs = append(evs, e)
+		if e.Action == "fail" && e.Test != "" {
+			failed[[2]string{e.Package, e.Test}] = true
+		}
+	}
+	for _, e := range evs {
+		if e.Action != "output" {
+			continue
+		}
+		text := strings.TrimRight(e.Output, "\n")
+		if strings.HasPrefix(text, "panic: ") {
+			return "", text, true
+		}
+		if !failed[[2]string{e.Package, e.Test}] {
+			continue
+		}
+		m := failMsgRE.FindStringSubmatch(text)
+		if m == nil {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(m[1], "witness:"):
+			return EvidenceWitness, m[1], false
+		case strings.HasPrefix(m[1], "testimony:"):
+			return EvidenceTestimony, m[1], false
+		default:
+			return EvidenceOther, m[1], false
+		}
+	}
+	return EvidenceOther, "", false
+}
+
+// keepEvidence writes raw to Options.EvidenceDir, if set, and returns the path.
+func keepEvidence(o Options, ms []Mutant, raw string) (string, error) {
+	if o.EvidenceDir == "" {
+		return "", nil
+	}
+	*o.runs++
+	m := ms[0]
+	name := fmt.Sprintf("%03d-%s-%s-%d", *o.runs, strings.NewReplacer("/", "_", ".", "_").Replace(m.File), m.Func, m.Line)
+	if len(ms) > 1 {
+		name += fmt.Sprintf("-with%d", len(ms)-1)
+	}
+	if err := os.MkdirAll(o.EvidenceDir, 0o755); err != nil {
+		return "", err
+	}
+	p := filepath.Join(o.EvidenceDir, name+".jsonl")
+	return p, os.WriteFile(p, []byte(raw), 0o644)
 }
 
 // groupsOf collects the layer groups. A group needs at least two layers (one

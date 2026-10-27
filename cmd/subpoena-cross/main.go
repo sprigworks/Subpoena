@@ -27,13 +27,14 @@ import (
 
 func main() {
 	timeout := flag.Duration("timeout", 5*time.Minute, "bound on each go command, and so on each mutant's test run")
-	flag.Usage = func() { fmt.Fprintln(os.Stderr, "usage: subpoena-cross [-timeout 5m] <dir>") }
+	evidenceDir := flag.String("evidence-dir", "", "keep each mutant run's full go test -json output in this directory")
+	flag.Usage = func() { fmt.Fprintln(os.Stderr, "usage: subpoena-cross [-timeout 5m] [-evidence-dir dir] <dir>") }
 	flag.Parse()
 	if flag.NArg() != 1 || *timeout <= 0 {
 		flag.Usage()
 		os.Exit(2)
 	}
-	rep, err := cross.Run(context.Background(), cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr})
+	rep, err := cross.Run(context.Background(), cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr, EvidenceDir: *evidenceDir})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-cross:", err)
 		os.Exit(2)
@@ -58,6 +59,7 @@ func main() {
 		switch r.Outcome {
 		case cross.Killed:
 			fmt.Printf("  suite went red; failing: %s\n", strings.Join(r.Failing, ", "))
+			fmt.Printf("  first evidence (%s): %s\n", r.Evidence, r.FirstFailure)
 		case cross.Survived:
 			fmt.Println("  suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced")
 		case cross.Masked:
@@ -71,6 +73,9 @@ func main() {
 			} else {
 				fmt.Printf("  not listed in %s, so this fails the run. Prefer a test that catches this layer alone.\n", cross.MaskedFile)
 			}
+		case cross.Crashed:
+			fmt.Println("  suite went red only by a panic, before any assertion failed; a crash is not a kill:")
+			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
 		case cross.TimedOut:
 			fmt.Println("  suite did not finish within -timeout; a hang is not a kill. Make the test fail fast instead:")
 			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
