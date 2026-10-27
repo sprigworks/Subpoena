@@ -30,15 +30,20 @@ progress, and it says so.
 
 - **H1. One provider, from the harness.** The harness owns the tracer provider
   that the code under test uses. It samples every span, and its resource is
-  empty, so a span's attributes are only what the code set.
+  empty, so a span's attributes are only what the code set. It sets its own
+  span limits, unlimited, so nothing the code recorded is dropped or truncated
+  whatever the `OTEL_*_LIMIT` environment variables say. SDKs keep 128
+  attributes per span by default, and they do not count a truncated value as
+  dropped.
 - **H2. Collect before asserting.** `collect()` force-flushes and returns an
   immutable snapshot. Every assertion takes a snapshot; none reads the live
   recorder.
 - **H3. Completeness.** A snapshot is *complete* only if no span was dropped
   (the recorder has a fixed capacity; overflow counts as dropped, never as
-  silently ignored) and no span that started has failed to end. An incomplete
-  snapshot is still returned, together with an error that names the dropped
-  count and the names of the unfinished spans.
+  silently ignored), no span that started has failed to end, and the SDK
+  reported no dropped attribute, event or link on any recorded span. An
+  incomplete snapshot is still returned, together with an error that names the
+  dropped count, the unfinished spans and the spans that lost data.
 - **H4. Three verdicts.** `absent(q)` is Fail if `q` matches any trace (even
   from an incomplete snapshot), Pass if it matches none and the snapshot is
   complete, and Inconclusive otherwise. `exists(q)` is Pass on a match, Fail on

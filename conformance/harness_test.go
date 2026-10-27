@@ -26,6 +26,7 @@ type harnessCase struct {
 		ID     string         `yaml:"id"`
 		Parent string         `yaml:"parent"`
 		Name   string         `yaml:"name"`
+		Filler int            `yaml:"filler"`
 		Attrs  map[string]any `yaml:"attrs"`
 		Ended  *bool          `yaml:"ended"`
 	} `yaml:"spans"`
@@ -130,6 +131,9 @@ func TestHarnessCases(t *testing.T) {
 					opts = append(opts, trace.WithNewRoot())
 				}
 				ctx, sp := tracer.Start(parent, s.Name, opts...)
+				for i := 0; i < s.Filler; i++ {
+					sp.SetAttributes(attribute.Int(fmt.Sprintf("filler.%d", i), i))
+				}
 				for k, v := range s.Attrs {
 					a, err := kv(k, v)
 					if err != nil {

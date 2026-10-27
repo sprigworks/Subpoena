@@ -8,7 +8,9 @@
 #   - spans end in reverse list order (children before parents), except those
 #     with `ended: false`, which never end;
 #   - `capacity` (default: the harness default) is how many finished spans the
-#     recorder keeps; further spans count as dropped.
+#     recorder keeps; further spans count as dropped;
+#   - `filler: N` sets N integer attributes filler.0 .. filler.N-1 on the span
+#     before its `attrs`.
 # Attribute values are YAML scalars (string, bool, integer) or a list of
 # strings (a string-array attribute).
 #
@@ -55,6 +57,17 @@ cases:
     collect: { complete: false, dropped: 1, unfinished: [], traces: 1 }
     assertions:
       - { absent: '{ name = "zzz" }', verdict: Inconclusive, require: fails }
+
+  # H1: the harness owns its span limits. OTel SDKs keep 128 attributes per
+  # span by default; a decision attribute set after 200 others must still be
+  # captured, or absence of the violation would Pass.
+  - name: attribute_limits
+    spans:
+      - { id: a, name: authorize, filler: 200, attrs: { allowed: false } }
+      - { id: b, parent: a, name: exec }
+    collect: { complete: true, dropped: 0, unfinished: [], traces: 1 }
+    assertions:
+      - { absent: '{ name = "authorize" && span.allowed = false } >> { name = "exec" }', verdict: Fail, require: fails }
 
   # H4: a query that does not parse is an error, never a verdict.
   - name: invalid_query
