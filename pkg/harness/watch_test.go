@@ -126,6 +126,19 @@ func TestWatchSpawnsRule(t *testing.T) {
 		{"unhealthy and refused", &stoppableWitness{events: procs("sleep 1"), health: gap}, SpawnRule{Never: []string{"sleep 1"}},
 			[]string{"witness: refused command ran", "witness: trace: capture unhealthy"}},
 		{"no health", unknownWitness{}, SpawnRule{}, []string{"witness: trace: witness does not report capture health"}},
+		{"name only, refused program", &stoppableWitness{events: named("sleep")}, SpawnRule{Never: []string{"sleep 1.1"}},
+			[]string{"witness: refused program seen by name only"}},
+		{"name only, program from path and cut to 15 bytes", &stoppableWitness{events: named("averyveryverylo")},
+			SpawnRule{Never: []string{"/usr/local/bin/averyveryverylongname --x"}},
+			[]string{"witness: refused program seen by name only"}},
+		{"name only, not identified", &stoppableWitness{events: named("touch")}, SpawnRule{Allowed: []string{"sleep 0.6"}},
+			[]string{"witness: process seen by name only"}},
+		{"name only, allowed program not excused", &stoppableWitness{events: named("sleep")}, SpawnRule{Allowed: []string{"sleep 0.6"}},
+			[]string{"witness: process seen by name only"}},
+		{"name only, excused name is not an allowed program", &stoppableWitness{events: named("touch")},
+			SpawnRule{Allowed: []string{"sleep 0.6"}, ExcuseNameOnly: true},
+			[]string{"witness: process seen by name only"}},
+		{"name only, nil allowed, other program", &stoppableWitness{events: named("ls")}, SpawnRule{Never: []string{"sleep 1.1"}}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tb := &cleanupTB{}
@@ -142,6 +155,26 @@ func TestWatchSpawnsRule(t *testing.T) {
 				t.Fatalf("a passing test logs nothing; got %q", tb.logs)
 			}
 		})
+	}
+}
+
+// named is one process seen by name only: it exited before its arguments
+// were read.
+func named(name string) []witness.ProcessEvent {
+	return []witness.ProcessEvent{{PID: 100, Command: name, CommandSource: witness.CommandName}}
+}
+
+func TestExcusedNameOnlySightingIsLoggedNotFailed(t *testing.T) {
+	tb := &cleanupTB{}
+	w := &stoppableWitness{events: named("sleep")}
+	tb.run(func(tb testing.TB) {
+		WatchSpawns(tb, w, "trace", SpawnRule{Allowed: []string{"sleep 0.6"}, ExcuseNameOnly: true})
+	})
+	if len(tb.errs) != 0 {
+		t.Fatalf("excused sighting failed the test: %q", tb.errs)
+	}
+	if len(tb.logs) != 1 || !strings.HasPrefix(tb.logs[0], "witness: excused name-only sighting") {
+		t.Fatalf("excused sighting not logged: %q", tb.logs)
 	}
 }
 

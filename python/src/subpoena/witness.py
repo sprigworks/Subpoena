@@ -23,6 +23,10 @@ class ProcessEvent:
     attribution: str
     seen_at: datetime
     args: List[str] = field(default_factory=list)
+    # "cmdline" when command is the argument list; "" when there is none.
+    # subpoena-witness writes argv, never a bare name, so "comm" (name only)
+    # does not occur in a witness file.
+    command_source: str = ""
 
 
 class WitnessError(ValueError):
@@ -69,6 +73,7 @@ class Log:
                 pid=l["pid"], ppid=l["ppid"], exe=l.get("exe", ""), command=l.get("command", ""),
                 cgroup=l.get("cgroup", ""), cgroup_id=l.get("cgroup_id", 0), trace_id=l["trace_id"],
                 attribution=l.get("attribution", ""), seen_at=_parse_time(l["time"]), args=list(l.get("args") or []),
+                command_source="cmdline" if l.get("command") else "",
             )
             for l in self._lines
             if l.get("trace_id") == trace_id

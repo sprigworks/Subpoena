@@ -120,16 +120,21 @@ func (w *Witness) handle(e Event) {
 		}
 	}
 	if e.Kind == KindExec && e.Attribution != "" && !w.cfg.NoRetain {
+		var src witness.CommandSource
+		if len(e.Args) > 0 {
+			src = witness.CommandLine
+		}
 		w.events = append(w.events, witness.ProcessEvent{
-			PID:         e.PID,
-			PPID:        e.PPID,
-			Exe:         e.Exe,
-			Command:     strings.Join(e.Args, " "),
-			Cgroup:      e.Cgroup,
-			CgroupID:    e.CgroupID,
-			TraceID:     e.TraceID,
-			Attribution: e.Attribution,
-			SeenAt:      e.Time,
+			CommandSource: src,
+			PID:           e.PID,
+			PPID:          e.PPID,
+			Exe:           e.Exe,
+			Command:       strings.Join(e.Args, " "),
+			Cgroup:        e.Cgroup,
+			CgroupID:      e.CgroupID,
+			TraceID:       e.TraceID,
+			Attribution:   e.Attribution,
+			SeenAt:        e.Time,
 		})
 	}
 	w.mu.Unlock()

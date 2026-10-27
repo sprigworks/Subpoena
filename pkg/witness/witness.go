@@ -20,18 +20,38 @@ const (
 	ByLineage Attribution = "lineage"
 )
 
+// CommandSource says what ProcessEvent.Command holds.
+type CommandSource string
+
+const (
+	// CommandLine means Command is the argument list, space-joined.
+	CommandLine CommandSource = "cmdline"
+	// CommandName means the arguments could not be read (the process exited
+	// first) and Command is only the kernel's task name, cut to 15 bytes. The
+	// process was seen but not identified: "touch" may have been an allowed
+	// "touch approved" or a refused "touch rejected".
+	CommandName CommandSource = "comm"
+)
+
 // ProcessEvent is one observed process exec.
 type ProcessEvent struct {
-	PID         int
-	PPID        int
-	Exe         string // resolved executable path, if readable
-	Command     string // command line, space-joined
-	Cgroup      string // cgroup path, if readable
-	CgroupID    uint64 // kernel cgroup ID, if the witness reports one (0 otherwise)
-	TraceID     string // set when Attribution is ByCgroup
-	Attribution Attribution
-	SeenAt      time.Time
+	PID     int
+	PPID    int
+	Exe     string // resolved executable path, if readable
+	Command string // command line, space-joined; see CommandSource
+	// CommandSource says whether Command is a command line or only a name.
+	// Empty when Command is empty or the witness does not say.
+	CommandSource CommandSource
+	Cgroup        string // cgroup path, if readable
+	CgroupID      uint64 // kernel cgroup ID, if the witness reports one (0 otherwise)
+	TraceID       string // set when Attribution is ByCgroup
+	Attribution   Attribution
+	SeenAt        time.Time
 }
+
+// NameOnly reports whether the witness saw the process but read only its
+// name, not its arguments.
+func (e ProcessEvent) NameOnly() bool { return e.CommandSource == CommandName }
 
 // Witness reports process execs attributable to a trace.
 type Witness interface {

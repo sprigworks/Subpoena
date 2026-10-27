@@ -557,9 +557,9 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 // fields the sighting could not read (an exited process) keep what was seen.
 func (w *ProcWitness) refresh(ev *ProcessEvent, s *procSnap) {
 	if s.cmdline != "" {
-		ev.Command = s.cmdline
-	} else if ev.Command == "" {
-		ev.Command = s.comm
+		ev.Command, ev.CommandSource = s.cmdline, CommandLine
+	} else if ev.Command == "" && s.comm != "" {
+		ev.Command, ev.CommandSource = s.comm, CommandName
 	}
 	if s.exe != "" {
 		ev.Exe = s.exe

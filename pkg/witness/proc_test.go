@@ -469,3 +469,24 @@ func TestParallelScanMatchesSerialScan(t *testing.T) {
 		t.Fatalf("want the first fault in listing order (PID 1200), got %v", err)
 	}
 }
+
+// A process that exits before its cmdline is read is reported by its comm
+// name, and the event says so: "touch" is not the command line "touch".
+// A later sighting with the command line replaces it.
+func TestCommFallbackIsMarkedNameOnly(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 920, 100, "220", "", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "920", "comm"), []byte("touch\n"), 0o644))
+	fakeChildren(t, root, 100, 920)
+	w.pollChildren()
+	evs := w.Events()
+	if len(evs) != 1 || evs[0].Command != "touch" || !evs[0].NameOnly() || evs[0].CommandSource != CommandName {
+		t.Fatalf("name-only sighting: got %+v", evs)
+	}
+	must(t, os.WriteFile(filepath.Join(root, "920", "cmdline"), []byte("touch\x00approved\x00"), 0o644))
+	w.pollChildren()
+	evs = w.Events()
+	if len(evs) != 1 || evs[0].Command != "touch approved" || evs[0].NameOnly() || evs[0].CommandSource != CommandLine {
+		t.Fatalf("after the cmdline was read: got %+v", evs)
+	}
+}

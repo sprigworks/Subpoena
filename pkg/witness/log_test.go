@@ -35,7 +35,7 @@ func TestSpawnedReturnsEveryLineOfThatTrace(t *testing.T) {
 		t.Fatalf("want both execs of trace A, got %+v", got)
 	}
 	want := ProcessEvent{
-		PID: 7, PPID: 1, Exe: "/usr/bin/rm", Command: "rm -rf /tmp/x",
+		PID: 7, PPID: 1, Exe: "/usr/bin/rm", Command: "rm -rf /tmp/x", CommandSource: CommandLine,
 		Cgroup: "subpoena/" + traceA, CgroupID: 91, TraceID: traceA,
 		Attribution: ByCgroup, SeenAt: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC),
 	}

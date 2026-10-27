@@ -81,8 +81,13 @@ func (l *Log) Spawned(traceID string) []ProcessEvent {
 		if ln.TraceID != traceID {
 			continue
 		}
+		var src CommandSource
+		if ln.Command != "" {
+			src = CommandLine // subpoena-witness writes argv, never a name
+		}
 		out = append(out, ProcessEvent{
-			PID: ln.PID, PPID: ln.PPID, Exe: ln.Exe, Command: ln.Command,
+			CommandSource: src,
+			PID:           ln.PID, PPID: ln.PPID, Exe: ln.Exe, Command: ln.Command,
 			Cgroup: ln.Cgroup, CgroupID: ln.CgroupID, TraceID: ln.TraceID,
 			Attribution: Attribution(ln.Attribution), SeenAt: ln.Time,
 		})
