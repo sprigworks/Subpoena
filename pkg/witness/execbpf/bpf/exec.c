@@ -21,6 +21,7 @@ typedef __u32 u32;
 typedef int pid_t;
 
 enum bpf_map_type {
+	BPF_MAP_TYPE_PERCPU_ARRAY = 6,
 	BPF_MAP_TYPE_RINGBUF = 27,
 };
 
@@ -116,6 +117,24 @@ struct {
 	__uint(max_entries, 1 << 22);
 } events SEC(".maps");
 
+// Every failed reservation is a capture gap, including a lost fork needed for
+// lineage. Per-CPU storage avoids contention; atomic increments also cover
+// nested execution on a CPU. Go sums all CPUs after detaching both hooks.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u64);
+} lost SEC(".maps");
+
+static __always_inline void record_loss(void)
+{
+	u32 key = 0;
+	u64 *count = bpf_map_lookup_elem(&lost, &key);
+	if (count)
+		__sync_fetch_and_add(count, 1);
+}
+
 // Set from Go before loading: report forks too (needed for lineage).
 const volatile u32 track_forks = 0;
 // Set from Go before loading: the inode of the witness's PID namespace
@@ -190,8 +209,10 @@ int handle_exec(u64 *ctx)
 	struct linux_binprm *bprm = (struct linux_binprm *)ctx[2];
 
 	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e)
+	if (!e) {
+		record_loss();
 		return 0;
+	}
 	fill_common(e, p, BPF_CORE_READ(p, real_parent), KIND_EXEC);
 
 	if (bpf_probe_read_kernel_str(e->filename, PATH_LEN, BPF_CORE_READ(bprm, filename)) < 0)
@@ -223,8 +244,10 @@ int handle_fork(u64 *ctx)
 		return 0; // a new thread, not a new process
 
 	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e)
+	if (!e) {
+		record_loss();
 		return 0;
+	}
 	// The child has inherited the parent's cgroup by now; the IDs and the
 	// cgroup walk are the child's, the cgroup ID helper reads current (the
 	// parent), which is the same cgroup.

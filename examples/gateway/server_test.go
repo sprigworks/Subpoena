@@ -42,6 +42,9 @@ func TestHTTPDenyIs403AndSpawnsNothing(t *testing.T) {
 	}
 	traceID := resp.Header.Get("X-Trace-Id")
 	w.Stop()
+	if err := w.Health(); err != nil {
+		t.Fatalf("witness capture incomplete: %v", err)
+	}
 
 	tr, err := h.Collect(context.Background())
 	if err != nil {
@@ -51,9 +54,7 @@ func TestHTTPDenyIs403AndSpawnsNothing(t *testing.T) {
 	if len(tr.Spans(traceID)) == 0 {
 		t.Fatalf("X-Trace-Id %q not found among %v", traceID, tr.TraceIDs())
 	}
-	if n := len(w.Spawned(traceID)); n != 0 {
-		t.Fatalf("witness saw %d processes", n)
-	}
+	harness.RequireNoSpawn(t, w, traceID)
 }
 
 func TestHTTPBadBody(t *testing.T) {

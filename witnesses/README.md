@@ -14,6 +14,41 @@ The Go interface is `pkg/witness.Witness`:
 Spawned(traceID string) []ProcessEvent
 ```
 
+## Capture health and absence
+
+`Spawned` remains a raw observation API. Zero observations alone cannot certify
+absence. Stop the witness, call the harness's `Collect()`, then use:
+
+```go
+harness.RequireNoSpawn(t, w, traceID)
+```
+
+`harness.NoSpawn(w, traceID)` returns a verdict and diagnostic error. An observed
+process is Fail even with unhealthy capture; zero processes is Pass only when
+the optional `witness.HealthReporter` (`Health() error`) reports healthy capture.
+Unknown health, capture still running, or a known capture failure yields
+Inconclusive. `RequireNoSpawn` fails on both Fail and Inconclusive.
+
+`ProcWitness.Health` retains the first scan error and number of failed scans,
+including the final poll. Permission/I/O errors and malformed process stat
+entries invalidate capture; processes disappearing during a scan remain a
+known polling limitation. A later successful scan does not erase a failure.
+`Stop` retains its existing signature; check `Health` after it.
+
+The eBPF witness counts failed ring-buffer reservations for both exec and fork
+hooks in a per-CPU map. `Stop` detaches, drains, sums the counters and returns
+capture failures; `Health` retains them. Any host-wide drop invalidates the
+window because a lost event's session is unknown. Read/decode errors, failed
+counter reads and failed Flush also invalidate it. Closing after a failed Flush
+may discard an unknown number of samples; this is an error even if the kernel
+counter is zero. `NoRetain` is for streaming: its empty `Spawned` cannot certify
+absence. The daemon propagates capture errors when it stops; this is not a
+continuous health signal in Loki or an automatic production witness join.
+
+Health reports known capture faults. It does not remove polling or attribution
+gaps documented below, nor certify completeness of an imported witness log.
+A log's caller must also verify the producer completed successfully.
+
 ## Correlation: cgroup first, lineage second
 
 Which process belongs to which trace is the hard part. Three modes exist, and
@@ -121,6 +156,62 @@ exits at once is seen, lineage follows a fork that never execs, and a burst
 of execs before `Stop` is not lost. In the OATS stack it is the witness for
 both cases (`examples/gateway/oats/README.md`).
 
+### Network, tier 1: `Sinkhole` (runs in `go test`)
+
+`witness.Sinkhole` is a loopback TCP listener the test points the code under
+test at, standing in for a destination it must never reach. Every connection
+that arrives is recorded and closed. It needs no root, and the application
+cannot unsay a connection the listener accepted. `Stop` drains connections the
+kernel completed but the accept loop has not taken yet, so a client that hung
+up at once still counts; a drain or accept failure fails `Health`.
+
+It certifies only "nothing reached this address". Arrivals carry no PID or
+cgroup, so `Dialed` returns every arrival for every trace (`ByDestination`):
+safe for an absence claim, exact when one trace is in flight. Pair it with a
+positive control, a test in which the destination is allowed and the sinkhole
+sees the connection, so an unreachable sinkhole cannot pass for the wrong
+reason. `examples/gateway/fetch_test.go` does both. Its cross-examination
+mutant removes `Fetch`'s deny return and leaves the "denied" authorize span
+standing; the sinkhole sees the connection and the test goes red.
+
+### Network: `netbpf` (kernel-side)
+
+`pkg/witness/netbpf` is the network sibling of `execbpf`. It implements
+`witness.NetworkWitness`:
+
+```go
+Dialed(traceID string) []NetworkEvent
+```
+
+Two eBPF programs, on `fentry/security_socket_connect` and
+`fentry/security_socket_sendmsg`, record every outbound inet connection
+attempt on the machine: `connect`, and `sendto`/`sendmsg`/`sendmmsg` that
+carry a destination (unconnected UDP, TCP Fast Open). These are the LSM entry
+points, traced without an LSM boot parameter. Every user-space path goes
+through them, including io_uring, and the destination is a kernel copy by
+then. Each event carries the caller's cgroup ID and path, PIDs, protocol, and
+the destination address and port. It records attempts, not outcomes, so a
+refused connect still counts. Attribution is by session cgroup only. A
+connection has no parent to follow, so there is no lineage fallback.
+
+The absence check is `harness.RequireNoDial(t, w, traceID, match)`, with the
+same rules as `RequireNoSpawn`. A matching attempt is Fail. With none, the
+verdict is Pass only on healthy, stopped, retained capture. `harness.DialTo`
+matches destinations. Destinations are addresses, not names: a rule about a
+host name needs the test to pin what the name resolves to.
+
+Loss accounting is the same as `execbpf`: a per-CPU counter of failed
+ring-buffer reservations, the drain on `Stop`, and reader errors, all retained
+in `Health`. Not seen: packet sockets; the header destination of raw sockets
+that write their own IP header; traffic the kernel originates; and
+destinations reached through another process outside the session cgroup (a
+proxy, a resolver, a sidecar); and SCTP `connectx`, which goes through
+setsockopt. `make test-ebpf` runs its kernel tests: a
+successful and a refused TCP connect, an unconnected UDP send and an IPv6
+connect in a real session cgroup are attributed with the right cgroup ID; the
+test process's own dial is not attributed; and a burst of sends before `Stop`
+is not lost.
+
 ### How other witnesses identify a process's cgroup
 
 The kernel's own identity for a cgroup is its path, or its 64-bit cgroup ID
@@ -179,9 +270,11 @@ outside Kubernetes, so off Kubernetes it is unproven as a backstop.
 
 ## Layout
 
-- `../pkg/witness/`: interface and `ProcWitness`.
+- `../pkg/witness/`: interfaces, `ProcWitness` and `Sinkhole`.
 - `../pkg/witness/execbpf/`: the kernel-side witness; `bpf/exec.c` is the eBPF
   program (dual MIT/GPL-2.0, as the kernel requires for its helpers).
+- `../pkg/witness/netbpf/`: the kernel-side network witness; `bpf/net.c` is
+  its eBPF program (dual MIT/GPL-2.0).
 - `../cmd/subpoena-witness/`: runs it as a daemon, JSON lines out.
 - `../pkg/cgroup/`: per-session cgroup creation, placement and IDs, shared by
   the gateway and the witnesses.

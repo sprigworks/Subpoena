@@ -40,3 +40,11 @@ type Witness interface {
 	// pass because the witness was unsure.
 	Spawned(traceID string) []ProcessEvent
 }
+
+// HealthReporter reports capture integrity for the current observation window.
+// Call Stop before checking health for a final absence claim. A nil error means
+// no known capture failure, not freedom from documented polling/correlation gaps.
+// Witnesses that cannot report health cannot certify absence with the harness.
+type HealthReporter interface {
+	Health() error
+}

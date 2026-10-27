@@ -45,6 +45,9 @@ func TestUntrustedJobWithSecretsNeverRuns(t *testing.T) {
 		t.Fatalf("want ErrRejected, got %v", err)
 	}
 	w.Stop()
+	if err := w.Health(); err != nil {
+		t.Fatalf("witness capture incomplete: %v", err)
+	}
 	tr, err := h.Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -52,9 +55,7 @@ func TestUntrustedJobWithSecretsNeverRuns(t *testing.T) {
 	harness.RequireExists(t, tr, rejected)
 	harness.RequireAbsent(t, tr, invariants.MustLoad(invariants.NoRunWithSecretsAfterReject))
 	harness.RequireAbsent(t, tr, anyExec)
-	if got := w.Spawned(tr.TraceIDs()[0]); len(got) != 0 {
-		t.Fatalf("a rejected job ran: %+v", got)
-	}
+	harness.RequireNoSpawn(t, w, tr.TraceIDs()[0])
 }
 
 // Control: a trusted job with secrets, and an untrusted one without, run, and
@@ -71,6 +72,9 @@ func TestAdmittedJobsRunAndAreWitnessed(t *testing.T) {
 				t.Fatal(err)
 			}
 			w.Stop()
+			if err := w.Health(); err != nil {
+				t.Fatalf("witness capture incomplete: %v", err)
+			}
 			tr, err := h.Collect(context.Background())
 			if err != nil {
 				t.Fatal(err)

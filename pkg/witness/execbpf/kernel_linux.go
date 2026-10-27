@@ -20,9 +20,15 @@ import (
 type kernel struct {
 	objs  execObjects
 	links []link.Link
-	rd    *ringbuf.Reader
+	rd    eventReader
 	done  chan struct{}
-	err   error // first read error other than the final flush, set before done closes
+	lost  func() (uint64, error) // read after detaching, before unloading
+}
+
+type eventReader interface {
+	Read() (ringbuf.Record, error)
+	Flush() error
+	Close() error
 }
 
 const (
@@ -32,9 +38,14 @@ const (
 
 // Start loads and attaches the program. Execs after Start returns are seen.
 func (w *Witness) Start() error {
+	w.lifecycle.Lock()
+	defer w.lifecycle.Unlock()
 	if w.k != nil {
 		return errors.New("execbpf: already started")
 	}
+	w.mu.Lock()
+	w.events, w.healthErr, w.finished = nil, nil, false
+	w.mu.Unlock()
 	// Kernels before 5.11 charge eBPF memory to RLIMIT_MEMLOCK.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return fmt.Errorf("execbpf: %w", err)
@@ -80,6 +91,23 @@ func (w *Witness) Start() error {
 		k.close()
 		return fmt.Errorf("execbpf: %w", err)
 	}
+	k.lost = func() (uint64, error) {
+		var perCPU []uint64
+		if err := k.objs.Lost.Lookup(uint32(0), &perCPU); err != nil {
+			return 0, fmt.Errorf("execbpf: read loss counter: %w", err)
+		}
+		var total uint64
+		for _, n := range perCPU {
+			total += n
+		}
+		return total, nil
+	}
+	w.mu.Lock()
+	w.events, w.healthErr, w.finished = nil, nil, false
+	if w.cfg.RootPID != 0 {
+		w.desc = map[int]bool{w.cfg.RootPID: true}
+	}
+	w.mu.Unlock()
 	w.k = k
 	go w.read(k)
 	return nil
@@ -90,40 +118,62 @@ func (w *Witness) read(k *kernel) {
 	for {
 		rec, err := k.rd.Read()
 		if err != nil {
-			if !errors.Is(err, ringbuf.ErrFlushed) && !errors.Is(err, ringbuf.ErrClosed) {
-				k.err = err
+			if !errors.Is(err, ringbuf.ErrFlushed) {
+				w.recordError(fmt.Errorf("execbpf: read: %w", err))
 			}
 			return
 		}
 		e, err := decode(rec.RawSample, time.Now())
 		if err != nil {
-			k.err = err
+			w.recordError(err)
 			continue
 		}
 		w.handle(e)
 	}
 }
 
-// Stop detaches the program, delivers every event already in the ring buffer,
-// and unloads. It returns the first error the reader hit, if any.
+// Stop detaches the program, drains buffered events and reads the loss counter.
+// Capture errors persist in Health, including after repeated Stop calls.
 func (w *Witness) Stop() error {
+	w.lifecycle.Lock()
+	defer w.lifecycle.Unlock()
 	k := w.k
 	if k == nil {
-		return nil
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.healthErr
 	}
 	w.k = nil
+	var stopErr error
 	for _, l := range k.links {
-		l.Close() // no new events after this
+		if err := l.Close(); err != nil {
+			stopErr = errors.Join(stopErr, fmt.Errorf("execbpf: detach: %w", err))
+		}
 	}
 	k.links = nil
 	// Flush, not SetDeadline: SetDeadline takes the lock a blocked Read holds.
-	// After Flush, Read returns every pending sample and then ErrFlushed.
+	// If Flush fails, Close may discard pending samples. Their exact count is
+	// unknowable, so retain the error even when the kernel loss counter is zero.
 	if err := k.rd.Flush(); err != nil {
-		k.rd.Close() // unblocks Read with ErrClosed; pending samples are lost
+		stopErr = errors.Join(stopErr, fmt.Errorf("execbpf: flush (pending samples may be lost): %w", err))
+		if err := k.rd.Close(); err != nil {
+			stopErr = errors.Join(stopErr, fmt.Errorf("execbpf: close reader: %w", err))
+		}
 	}
 	<-k.done
-	err := k.err
+	lost, err := k.lost()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err)
+	}
+	if lost != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("execbpf: lost %d kernel event(s)", lost))
+	}
 	k.close()
+	w.mu.Lock()
+	w.healthErr = errors.Join(w.healthErr, stopErr)
+	w.finished = true
+	err = w.healthErr
+	w.mu.Unlock()
 	return err
 }
 

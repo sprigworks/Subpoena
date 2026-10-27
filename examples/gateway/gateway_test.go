@@ -78,6 +78,9 @@ func TestDeniedSessionNeverExecs(t *testing.T) {
 		t.Fatalf("expected ErrDenied, got %v", err)
 	}
 	r.w.Stop() // final poll before asking the witness
+	if err := r.w.Health(); err != nil {
+		t.Fatalf("witness capture incomplete: %v", err)
+	}
 
 	// (b) Collect.
 	tr, err := r.h.Collect(context.Background())
@@ -100,9 +103,7 @@ func TestDeniedSessionNeverExecs(t *testing.T) {
 	if len(ids) != 1 {
 		t.Fatalf("expected one trace, got %v", ids)
 	}
-	if spawned := r.w.Spawned(ids[0]); len(spawned) != 0 {
-		t.Fatalf("witness saw processes after a denial: %+v", spawned)
-	}
+	harness.RequireNoSpawn(t, r.w, ids[0])
 }
 
 func TestAllowedSessionExecsExactlyOnce(t *testing.T) {
@@ -113,6 +114,9 @@ func TestAllowedSessionExecsExactlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.w.Stop()
+	if err := r.w.Health(); err != nil {
+		t.Fatalf("witness capture incomplete: %v", err)
+	}
 
 	tr, err := r.h.Collect(context.Background())
 	if err != nil {
@@ -145,6 +149,9 @@ func TestAdminMayActOnProd(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.w.Stop()
+	if err := r.w.Health(); err != nil {
+		t.Fatalf("witness capture incomplete: %v", err)
+	}
 	tr, err := r.h.Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -163,12 +170,13 @@ func TestExecRefusesCommandsOutsideAllowlist(t *testing.T) {
 		t.Fatal("rm must not be runnable")
 	}
 	r.w.Stop()
+	if err := r.w.Health(); err != nil {
+		t.Fatalf("witness capture incomplete: %v", err)
+	}
 	tr, err := r.h.Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	harness.RequireAbsent(t, tr, anyExec)
-	if n := len(r.w.Spawned(tr.TraceIDs()[0])); n != 0 {
-		t.Fatalf("witness saw %d processes", n)
-	}
+	harness.RequireNoSpawn(t, r.w, tr.TraceIDs()[0])
 }
