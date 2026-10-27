@@ -235,6 +235,7 @@ func Forgotten(admin bool) error {
 
 func TestNoEnforcementPointIsVacuous(t *testing.T) {
 	src := strings.Replace(authOK, "//\n//subpoena:enforcement_point\n", "", 1)
+	src = strings.Replace(src, " //subpoena:enforcement", "", 1)
 	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": strongTest})
 	if _, err := run(t, dir); err == nil || !strings.Contains(err.Error(), "vacuous") {
 		t.Fatalf("want vacuous cross-examination error, got %v", err)
@@ -251,12 +252,37 @@ func TestMarkerOnCompoundStatementIsRejected(t *testing.T) {
 	}
 }
 
-func TestMarkersOutsideEnforcementPointsAreIgnored(t *testing.T) {
-	src := strings.Replace(authOK, "//\n//subpoena:enforcement_point\n", "", 1)
-	dir := module(t, map[string]string{"auth.go": src})
-	ms, err := FindMutants(dir, dir)
-	if err != nil || len(ms) != 0 {
-		t.Fatalf("want none, got %v %v", ms, err)
+// A statement marker outside an enforcement point, or a misspelt marker,
+// would leave its statement unexamined while the run stays green.
+func TestStrayAndMisspeltMarkersAreRefused(t *testing.T) {
+	for name, src := range map[string]string{
+		"outside a point":             strings.Replace(authOK, "//\n//subpoena:enforcement_point\n", "", 1),
+		"misspelt in a point":         strings.Replace(authOK, "\treturn nil\n}", "\treturn nil //subpoena:enforcement_gaurd true\n}", 1),
+		"point marker off a function": authOK + "\n//subpoena:enforcement_point\nvar X = 1\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := module(t, map[string]string{"auth.go": src})
+			if _, err := FindMutants(dir, dir); err == nil || !strings.Contains(err.Error(), "is not a marker cross applies") {
+				t.Fatalf("want a stray-marker error, got %v", err)
+			}
+		})
+	}
+	// Prose that mentions a marker mid-comment is not a marker.
+	dir := module(t, map[string]string{"auth.go": authOK + "\n// Mark it //subpoena:enforcement on the line.\n"})
+	if ms, err := FindMutants(dir, dir); err != nil || len(ms) != 1 {
+		t.Fatalf("prose must not count as a marker: %v %v", ms, err)
+	}
+}
+
+// A run whose context is canceled is an error, not a kill: the go command it
+// stopped proves nothing about the mutant.
+func TestCanceledRunIsAnErrorNotAKill(t *testing.T) {
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": strongTest})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rep, err := Run(ctx, Options{Target: dir, beforeMutate: func(string) { cancel() }})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("want a canceled error, got %v %+v", err, rep)
 	}
 }
 
@@ -820,5 +846,32 @@ func TestCancelInAWatcherGoroutineIsAMutant(t *testing.T) {
 	}
 	if len(rep.Results) != 1 || rep.Results[0].Mutant.Removed != "cancel()" || rep.Results[0].Outcome != Killed {
 		t.Fatalf("want cancel() killed, got %+v", rep.Results)
+	}
+}
+
+// One cross-masked.txt entry accepts one layer: an entry matching two masked
+// layers (the same text twice in one function) is refused, and so is an
+// entry listed twice.
+func TestMaskedEntryAcceptsOneLayer(t *testing.T) {
+	layer := Mutant{File: "exec.go", Func: "Exec", Removed: "return ErrNo"}
+	twoLayers := &Report{Results: []Result{{Mutant: layer, Outcome: Masked}, {Mutant: layer, Outcome: Masked}}}
+	path := filepath.Join(t.TempDir(), MaskedFile)
+	if err := os.WriteFile(path, []byte("exec.go | Exec | return ErrNo | covered together\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := acceptMasked(twoLayers, path); err == nil || !strings.Contains(err.Error(), "matches 2 masked layers") {
+		t.Fatalf("want an ambiguous-entry error, got %v", err)
+	}
+	for _, r := range twoLayers.Results {
+		if r.Accepted != "" {
+			t.Fatalf("an ambiguous entry must accept nothing: %+v", twoLayers.Results)
+		}
+	}
+	oneLayer := &Report{Results: []Result{{Mutant: layer, Outcome: Masked}}}
+	if err := os.WriteFile(path, []byte("exec.go | Exec | return ErrNo | one\nexec.go | Exec | return ErrNo | two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := acceptMasked(oneLayer, path); err == nil || !strings.Contains(err.Error(), "each layer listed once") {
+		t.Fatalf("want a duplicate-entry error, got %v", err)
 	}
 }

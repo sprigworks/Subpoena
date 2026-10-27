@@ -99,7 +99,10 @@ number of enforcement points and mutants.
 
 Enforcement that is a condition, not a statement, is marked on the `if` line
 with `//subpoena:enforcement_guard true` (or `false`). The value is the one that
-lets the action through, and the mutant forces the condition to it. Enforcement
+lets the action through, and the mutant forces the condition to it. The value
+is a reviewed claim, like the markers: a wrong one forces enforcement on, which
+only an allowed-path test notices, and leaves the refusal unexamined. Check it
+in review. Enforcement
 in layers, where an early refusal and a later check each stop the action alone,
 is declared with `group=<name>` on each layer's marker (2 to 8 layers, across
 functions and files). Cross also runs the whole group as one mutant. A layer
@@ -108,10 +111,16 @@ survived alone, is `enforcement-layer-masked`, and the report names the layer
 whose removal together with it turned the suite red. A layer killed on its own
 never masks another: a run that includes it is red because of it. A masked
 layer fails the run unless it is listed, with a reason, in `cross-masked.txt`
-in the target directory (`<file> | <func> | <removed text> | <reason>`). That
-file is a reviewed claim; an entry that no longer matches a masked layer fails
-the run too. Markers take no free text: an unknown argument, a guard marker
-without its value or off an `if` line, and a group of one are errors.
+in the target directory (`<file> | <func> | <removed text> | <reason>`, the
+file relative to the module root). That file is a reviewed claim. One entry
+accepts one layer: an entry that matches two masked layers (the same text
+twice in one function), an entry listed twice, and an entry that no longer
+matches a masked layer are errors or fail the run. Markers take no free text:
+an unknown argument, a guard marker without its value or off an `if` line, and
+a group of one are errors. So is a marker that would take no effect: a
+statement or guard marker outside an enforcement point, a point marker that is
+not on a function's doc comment, and a misspelt `//subpoena:enforcement...`
+comment. A run whose context is canceled is an error, never a verdict.
 
 Discovery, mutation and restoration use the same saved file bytes. Before each
 mutation, cross-examination checks that the copied file still matches discovery

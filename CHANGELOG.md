@@ -11,7 +11,12 @@
   reason; a stale entry fails too.
 - **Breaking:** enforcement markers no longer accept trailing text.
   `//subpoena:enforcement because ...` is now a discovery error; only
-  `group=<name>` may follow the marker.
+  `group=<name>` may follow the marker. A marker that would take no effect (a
+  statement or guard marker outside an enforcement point, or a misspelt one) is
+  an error too; before, it was ignored and its statement went unexamined.
+- **Cross refuses ambiguous `cross-masked.txt` entries.** One entry accepts one
+  masked layer; an entry matching two, or listed twice, is an error. A canceled
+  run is an error, not a kill.
 
 - **`harness.WatchSpawns`.** A witness check registered when the witness
   starts that runs at test cleanup, even after an earlier `Fatal`: it stops the

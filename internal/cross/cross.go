@@ -8,7 +8,9 @@
 // marked //subpoena:enforcement_point.
 //
 // A guard is marked on its if line with //subpoena:enforcement_guard true (or
-// false): the mutant forces the condition to that bypass value. Either marker
+// false): the mutant forces the condition to that bypass value. The value is
+// a reviewed claim, like the markers: a wrong one forces enforcement on, which
+// only an allowed-path test notices, and the refusal goes unexamined. Either marker
 // may name a group (group=<name>) of layers that together make one guarantee;
 // cross also mutates the whole group, and a layer that survives alone but is
 // caught with the group is reported as masked, naming the layer that masks it.
@@ -344,7 +346,10 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 
 // runCase applies the mutants together to the snapshot copy, builds, runs the
 // suite and restores the snapshot. The first mutant is the Result's Mutant;
-// the rest are With.
+// the rest are With. A canceled ctx is an error, never a verdict: the go
+// command it stopped proves nothing about the mutant.
+//
+//subpoena:enforcement_point
 func runCase(ctx context.Context, o Options, tmp, pkgs string, ms []Mutant) (res Result, err error) {
 	res = Result{Mutant: ms[0], With: ms[1:]}
 	byFile := map[string][]Mutant{}
@@ -416,9 +421,21 @@ func runCase(ctx context.Context, o Options, tmp, pkgs string, ms []Mutant) (res
 			out, err = goCmd(ctx, o.Timeout, tmp, "build", pkgs)
 		}
 	}
+	var testOut string
+	var testErr error
+	if err == nil {
+		testOut, testErr = goCmd(ctx, o.Timeout, tmp, "test", "-count=1", "-failfast", pkgs)
+	}
+	if ctx.Err() != nil {
+		return res, fmt.Errorf("cross: run stopped: %w", ctx.Err()) //subpoena:enforcement
+	}
 	if err != nil {
-		res.Outcome, res.Output = Invalid, tail(out, 20) //subpoena:enforcement
-	} else if out, err := goCmd(ctx, o.Timeout, tmp, "test", "-count=1", "-failfast", pkgs); err != nil {
+		if timedOut(out, err) {
+			res.Outcome, res.Output = TimedOut, tail(out, 20)
+		} else {
+			res.Outcome, res.Output = Invalid, tail(out, 20) //subpoena:enforcement
+		}
+	} else if out, err := testOut, testErr; err != nil {
 		// -failfast: one red test is a kill, so the rest of a package's
 		// tests need not run. Other packages still run to the end.
 		switch {
@@ -553,6 +570,18 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 	}
 	rel, _ := filepath.Rel(root, path)
 	var out []Mutant
+	// placed holds the marker comments that took effect: statement and guard
+	// markers inside an enforcement point, and point markers on a function.
+	placed := map[*ast.Comment]bool{}
+	for _, d := range f.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Doc != nil {
+			for _, c := range fd.Doc.List {
+				if pointRE.MatchString(c.Text) {
+					placed[c] = true
+				}
+			}
+		}
+	}
 	for _, d := range f.Decls {
 		fd, ok := d.(*ast.FuncDecl)
 		if !ok || fd.Body == nil || fd.Doc == nil || !hasPointMarker(fd.Doc) {
@@ -573,6 +602,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 				}
 				if ok {
 					lines[fset.Position(c.Pos()).Line] = mk
+					placed[c] = true
 				}
 			}
 		}
@@ -610,11 +640,12 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 			delete(lines, line)
 			found++
 			s, e := fset.Position(node.Pos()).Offset, fset.Position(node.End()).Offset
-			out = append(out, Mutant{
+			m := Mutant{
 				Func: fd.Name.Name, File: filepath.ToSlash(rel), Line: line,
 				Removed: string(src[s:e]), Bypass: mk.bypass, Group: mk.group,
 				start: s, end: e, point: fset.Position(fd.Pos()).Offset, src: src,
-			})
+			}
+			out = append(out, m)
 			return true
 		})
 		if len(lines) > 0 {
@@ -630,6 +661,19 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 		if found == 0 {
 			return nil, fmt.Errorf("cross: %s: %s is marked //%s but has no //%s statement, so it cannot be cross-examined", rel, fd.Name.Name, MarkerEnforcementPoint, MarkerEnforcement) //subpoena:enforcement
 		}
+	}
+	// A marker that took no effect would leave its statement unexamined while
+	// the run stays green: one outside an enforcement point, or a misspelt one.
+	var stray error
+	for _, g := range f.Comments {
+		for _, c := range g.List {
+			if anyMarkerRE.MatchString(c.Text) && !placed[c] && stray == nil {
+				stray = fmt.Errorf("cross: %s:%d: %q is not a marker cross applies: statement and guard markers belong inside a //%s function, and the point marker on a function's doc comment", rel, fset.Position(c.Pos()).Line, c.Text, MarkerEnforcementPoint)
+			}
+		}
+	}
+	if stray != nil {
+		return nil, stray //subpoena:enforcement
 	}
 	return out, nil
 }
@@ -653,6 +697,8 @@ var (
 	enforcementRE = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcement) + `(\s|$)`)
 	guardRE       = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerGuard) + `(\s|$)`)
 	groupRE       = regexp.MustCompile(`^group=([A-Za-z0-9_.-]+)$`)
+	pointRE       = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcementPoint) + `(\s|$)`)
+	anyMarkerRE   = regexp.MustCompile(`^//\s*subpoena:enforcement`)
 )
 
 func isEnforcementComment(text string) bool { return enforcementRE.MatchString(text) }
@@ -668,21 +714,26 @@ func parseMarker(text string) (mk marker, ok bool, err error) {
 	case guardRE.MatchString(text):
 		args = strings.Fields(strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(text, "//")), MarkerGuard))
 		mk.guard = true
-		if len(args) == 0 || (args[0] != "true" && args[0] != "false") {
+		if len(args) > 0 {
+			mk.bypass, args = args[0], args[1:]
+		}
+		if mk.bypass != "true" && mk.bypass != "false" {
 			return mk, false, fmt.Errorf("//%s needs the bypass value first: true or false", MarkerGuard) //subpoena:enforcement
 		}
-		mk.bypass, args = args[0], args[1:]
 	case enforcementRE.MatchString(text):
 		args = strings.Fields(strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(text, "//")), MarkerEnforcement))
 	default:
 		return mk, false, nil
 	}
 	for _, a := range args {
-		g := groupRE.FindStringSubmatch(a)
-		if g == nil || mk.group != "" {
+		name := ""
+		if g := groupRE.FindStringSubmatch(a); g != nil {
+			name = g[1]
+		}
+		if name == "" || mk.group != "" {
 			return mk, false, fmt.Errorf("marker argument %q: want at most one group=<name>", a) //subpoena:enforcement
 		}
-		mk.group = g[1]
+		mk.group = name
 	}
 	return mk, true, nil
 }
@@ -846,7 +897,7 @@ func failingTests(out string) []string {
 		}
 	}
 	if len(names) == 0 {
-		names = []string{"(package failed without a named test failure, e.g. panic or timeout)"}
+		names = []string{"(package failed without a named test failure)"}
 	}
 	return names
 }
@@ -877,6 +928,7 @@ func acceptMasked(rep *Report, path string) error {
 	reasons := map[string]string{}
 	var order []string
 	bad := 0 // first malformed line; the verdict is kept apart from the return, as in Run
+	ambiguous := ""
 	for i, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -888,11 +940,32 @@ func acceptMasked(rep *Report, path string) error {
 			break
 		}
 		key := maskedKey(strings.TrimSpace(f[0]), strings.TrimSpace(f[1]), f[2])
+		if _, dup := reasons[key]; dup {
+			bad = i + 1
+			break
+		}
 		reasons[key] = strings.TrimSpace(f[3])
 		order = append(order, key)
 	}
 	if bad > 0 {
-		return fmt.Errorf("cross: %s:%d: want <file> | <func> | <removed text> | <reason>", MaskedFile, bad) //subpoena:enforcement
+		return fmt.Errorf("cross: %s:%d: want <file> | <func> | <removed text> | <reason>, each layer listed once", MaskedFile, bad) //subpoena:enforcement
+	}
+	// One entry accepts one layer. Two masked layers with the same key (the
+	// same text twice in one function) cannot be told apart, so neither is.
+	layers := map[string]int{}
+	for _, r := range rep.Results {
+		if r.Outcome == Masked {
+			layers[maskedKey(r.Mutant.File, r.Mutant.Func, r.Mutant.Removed)]++
+		}
+	}
+	for key := range reasons {
+		if layers[key] > 1 {
+			delete(reasons, key)
+			ambiguous = key
+		}
+	}
+	if ambiguous != "" {
+		return fmt.Errorf("cross: %s: %q matches %d masked layers; an entry accepts one layer, so make the removed text unique", MaskedFile, ambiguous, layers[ambiguous]) //subpoena:enforcement
 	}
 	used := map[string]bool{}
 	for i, r := range rep.Results {
