@@ -386,7 +386,11 @@ end:
 func clobber(o *harness.Trace) { *pp = *o }
 
 func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); pp = tr; clobber(r.o); return tr }`,
-		"method value": `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); f := tr.Absent; _ = f; return tr }`,
+		"method value":                    `func (r *rig) Collect(t any) *harness.Trace { tr, _ := r.h.Collect(); f := tr.Absent; _ = f; return tr }`,
+		"named result swapped in a defer": `func (r *rig) Collect(t any) (out *harness.Trace) { tr, _ := r.h.Collect(); defer func() { out = r.o }(); return tr }`,
+		"defer recovers before the collect": `func (r *rig) boom() { panic("x") }
+
+func (r *rig) Collect(t any) *harness.Trace { defer func() { recover() }(); r.boom(); tr, _ := r.h.Collect(); return tr }`,
 	}
 	for name, helper := range cases {
 		t.Run(name, func(t *testing.T) {

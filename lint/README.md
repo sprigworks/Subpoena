@@ -113,21 +113,21 @@ h.Collect(ctx)`, or a variable assigned from that call outside any function
 literal. Returning `nil`, a parameter, a field or another trace disqualifies
 the helper. The returned variable must be a local collected by a top-level
 statement of the helper (not under an `if`, loop or `switch`), before the
-return, in a helper with no `goto`. Apart from that assignment it may only be
-returned, compared, or have a method called on it: any other use (another
-assignment, an alias, an argument, its address, a write in a closure or
-`defer`) disqualifies the helper, as do a named result and two results of the
-trace type. Its name doesn't matter: a method called `Collect` that isn't
+return. Apart from that assignment it may only be returned, compared, or have
+a method called on it: any other use (another assignment, an alias, an
+argument, its address, a write in a closure) disqualifies the helper. So do a
+`goto`, a label or a `defer` anywhere in the helper, named results, and two
+results of the trace type: each can skip the `Collect` or replace what is
+returned. Its name doesn't matter: a method called `Collect` that isn't
 verified, such as a metrics `Collect`, is not a wrapper. A wrapper can sit in
 any file in the targets.
 
-Limits: lint doesn't prove the `Collect` call runs on every path (an
-assignment under an `if` still counts); that is left to review. Some helpers
+Limits: some helpers
 that do collect are not recognised, and calls to them are reported as missing
 `Collect`: a `Collect` inside a closure (a retry loop or `t.Run`), a helper
-that stores the trace in a field or returns it inside a struct, a named result
-with a bare `return`, and a helper reached through an interface or a function
-value. Call the harness `Collect` directly in those tests.
+that stores the trace in a field or returns it inside a struct, one with a
+`defer` or named results, and a helper reached through an interface or a
+function value. Call the harness `Collect` directly in those tests.
 
 ```go
 func (h *rig) Collect(t *testing.T) *harness.Trace {

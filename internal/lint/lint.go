@@ -220,10 +220,8 @@ func collector(f file, c *ast.CallExpr, wrappers map[token.Pos]bool) types.Type 
 // least one return, and every return outside function literals hands back, in
 // fn's only result of the trace type, either a direct Collect (or wrapper)
 // call or a variable assigned from one in fn's own body. A return of nil, of a
-// parameter, or of anything else disqualifies it. A returned variable must be
-// a local written exactly once, by that assignment, with its address never
-// taken: a later write (reassignment, range, a closure, a defer, *p = ...)
-// could replace the collected trace.
+// parameter, or of anything else disqualifies it. The returned variable must
+// pass onlyReadUses: collected by a top-level statement, then only read.
 func isWrapper(f file, fn *types.Func, body *ast.BlockStmt, wrappers map[token.Pos]bool) bool {
 	var trace types.Type
 	collected := map[types.Object]bool{}
@@ -307,15 +305,23 @@ func isWrapper(f file, fn *types.Func, body *ast.BlockStmt, wrappers map[token.P
 // every other use only reads the trace: a return, a method call on it, or a
 // comparison. Any other use (another assignment, an argument, an alias, its
 // address, a write in a closure) could replace or overwrite what was
-// collected. A goto in body disqualifies the helper: it can jump past the
-// Collect.
+// collected. A goto, a label or a defer in body, or named results, disqualify
+// the helper: they can skip the Collect or replace what is returned.
 func onlyReadUses(f file, sig *types.Signature, body *ast.BlockStmt, collected map[types.Object]bool) bool {
+	// Named results can be rewritten by a deferred call after the return
+	// runs, and a defer can recover a panic and return before the Collect:
+	// neither shape is a wrapper.
+	if sig.Results().Len() > 0 && sig.Results().At(0).Name() != "" {
+		return false
+	}
 	jumps := false
 	ast.Inspect(body, func(n ast.Node) bool {
-		if br, ok := n.(*ast.BranchStmt); ok && br.Tok == token.GOTO {
-			jumps = true
-		}
-		if _, ok := n.(*ast.LabeledStmt); ok {
+		switch n := n.(type) {
+		case *ast.BranchStmt:
+			if n.Tok == token.GOTO {
+				jumps = true
+			}
+		case *ast.LabeledStmt, *ast.DeferStmt:
 			jumps = true
 		}
 		return true
