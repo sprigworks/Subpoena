@@ -563,9 +563,12 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 // reads no command line and a task name other than the one read with that
 // line, the process has exec'd (or renamed itself) since, so the stored line
 // may not be what ran. The line is kept, and the name is added as a second,
-// name-only event for the same process: each is judged on its own, so neither
-// an exec nor a rename can erase what was seen. w.mu must be held.
+// name-only event for the same process, each judged on its own: a rename
+// after the line was read cannot erase it. A later readable command line
+// still replaces the stored one (a forked child shows its parent's line until
+// it execs). w.mu must be held.
 func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
+	newName := ""
 	switch {
 	case s.cmdline != "":
 		ev.Command, ev.CommandSource = s.cmdline, CommandLine
@@ -576,13 +579,7 @@ func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 	case ev.Command == "":
 		ev.Command, ev.CommandSource = s.comm, CommandName
 	case ev.CommandSource == CommandLine && w.lineComm != nil && s.comm != w.lineComm[k]:
-		nk := procKey{pid: k.pid, start: k.start + "/name:" + s.comm}
-		if _, seen := w.tracked[nk]; !seen {
-			name := *ev
-			name.Command, name.CommandSource = s.comm, CommandName
-			w.tracked[nk] = &name
-			w.order = append(w.order, nk)
-		}
+		newName = s.comm
 	}
 	if s.exe != "" {
 		ev.Exe = s.exe
@@ -593,6 +590,23 @@ func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 	ev.Attribution, ev.TraceID = ByLineage, ""
 	if id, ok := cgroup.SessionTrace(ev.Cgroup, w.cgroupBase()); ok {
 		ev.Attribution, ev.TraceID = ByCgroup, id
+	}
+	if newName != "" {
+		// Copied after this sighting's updates, so it carries the current
+		// cgroup and attribution.
+		nk := procKey{pid: k.pid, start: k.start + "/name:" + newName}
+		name, seen := w.tracked[nk]
+		if !seen {
+			name = &ProcessEvent{}
+			w.tracked[nk] = name
+			w.order = append(w.order, nk)
+		}
+		seenAt := name.SeenAt
+		*name = *ev
+		name.Command, name.CommandSource = newName, CommandName
+		if seen {
+			name.SeenAt = seenAt
+		}
 	}
 }
 

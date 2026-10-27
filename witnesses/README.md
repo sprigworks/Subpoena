@@ -67,7 +67,10 @@ with no arguments and a different name has exec'd (or renamed itself) since:
 its command line is kept, and the name is added as a second, name-only event
 for the same process. A fork that execs a program with the same name
 (`sh` running `sh -c ...`) is not caught this way: the parent's line stays.
-Keep refused commands distinguishable by program where that matters. Never entries must start with the program
+Keep refused commands distinguishable by program where that matters. With an
+`Allowed` list, a forked child seen before its exec and then only by name keeps
+its parent's command line, which `Allowed` must list (or the test fails as not
+allowed); `ExcuseNameOnly` does not excuse a command line. Never entries must start with the program
 (`rm -rf /tmp/x`, not `/tmp/x` or `env rm ...`) to match a name. The kernel
 witness (`execbpf`) reads arguments at exec; when that read fails it, and the
 witness-file reader, report the task name as name-only rather than an empty

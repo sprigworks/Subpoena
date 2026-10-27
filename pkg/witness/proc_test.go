@@ -546,3 +546,24 @@ func TestExitWithoutExecKeepsCommandLine(t *testing.T) {
 		t.Fatalf("want the command line kept, got %+v", evs)
 	}
 }
+
+// The name event carries the cgroup and attribution of the sighting that
+// found it, not of the earlier one.
+func TestNameEventTakesTheCurrentAttribution(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 923, 100, "223", "myservice\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "923", "comm"), []byte("myservice\n"), 0o644))
+	fakeChildren(t, root, 100, 923)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "923", "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(root, "923", "comm"), []byte("rm\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(root, "923", "cgroup"), []byte(session(otherTid)), 0o644))
+	w.pollChildren()
+	evs := w.Events()
+	if len(evs) != 2 || evs[1].Command != "rm" || evs[1].Attribution != ByCgroup || evs[1].TraceID != otherTid {
+		t.Fatalf("the name event must be attributed to the session it was seen in, got %+v", evs)
+	}
+	if got := w.Spawned(tid); len(got) != 0 {
+		t.Fatalf("another session's process must not be returned for %s: %+v", tid, got)
+	}
+}
