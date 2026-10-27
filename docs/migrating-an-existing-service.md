@@ -154,7 +154,8 @@ What to carry over, and what changes:
 - **Inject a tracer, not a mock.** Constructors take a `trace.Tracer` (the
   gateway does); tests pass `h.Tracer(...)`. Use real collaborators where you can.
 - **Call `Collect()` before asserting on telemetry.** It force-flushes and fails
-  if a span was dropped or never ended. After an incomplete capture, absence is
+  if a span was dropped, never ended, or lost attributes, events or links. After
+  an incomplete capture, absence is
   `Inconclusive`, which fails the test. Never set `AllowInconclusive` to get green.
 - **Pair every absence with a presence control** (the denial was observed).
 - **Write the query once, as an invariant:** `invariants/<name>.traceql` (any
@@ -200,7 +201,8 @@ to fail. A function with the first marker but not the second makes
 cross-examination exit with an error naming it.
 
 Then ask who can observe the side effect without trusting your code. For the
-gateway the effect is a process exec and the witness is a process observer.
+gateway the effects are a process exec and an outbound connection, and the
+witnesses are a process observer and a network observer.
 Spans are testimony: the function that enforces also reports, so "denied" and no
 `exec` span can sit next to an exec that really happened. In tests:
 
@@ -222,12 +224,33 @@ run as root (CI in a privileged container), `pkg/witness/execbpf` is a
 drop-in `witness.Witness` that sees every exec in the kernel; it is also the
 tier-2 and production witness (`cmd/subpoena-witness`).
 
-Other side effects need another observer: an egress proxy for outbound
-connections, an audit log for file or database changes. `witness.Witness` is
-process-shaped today (`Spawned(traceID)`); another kind of witness needs a
-sibling interface, which is future work. The `unwitnessed-enforcement` lint rule
-only checks that some test calls `Spawned`, so for other enforcement points
-review has to carry it.
+For outbound connections (`Gateway.Fetch` is the example) the sibling
+interface is `witness.NetworkWitness`, with `Dialed(traceID)`. Assert absence
+with `harness.RequireNoDial(t, w, traceID, match)`; `harness.DialTo` builds the
+match. Like `RequireNoSpawn`, it fails on an Inconclusive verdict, such as a
+witness that reports no capture health. Destinations are addresses, not names,
+so pin what the name resolves to. Two witnesses implement it:
+
+```go
+sink, err := witness.NewSinkhole()                   // tier 1: no root, no kernel support
+// point the code under test at sink.Addr() as the upstream it must not reach
+...
+sink.Stop()                                          // end the observation window
+harness.RequireNoDial(t, sink, traceID, nil)
+```
+
+`Sinkhole` is a listener the test stands up as a destination the code must
+never reach. It certifies only "nothing reached this address", so pair it with
+a control where the destination is allowed and the connection arrives (see
+`examples/gateway/fetch_test.go`). `pkg/witness/netbpf` sees every outbound inet
+connect and named send on the host, attributed by session cgroup; like `execbpf`
+it needs root and BTF. `witnesses/README.md` lists what each does not see.
+
+Other side effects (file or database changes) need another observer, for
+example an audit log. There is no interface for them; that is future work. The
+`unwitnessed-enforcement` lint rule only checks that some test asks a witness
+(`Spawned`, `Dialed`, `NoSpawn`, `RequireNoSpawn`, `NoDial` or `RequireNoDial`),
+so for other enforcement points review has to carry it.
 
 ## 5. Add provenance markers
 
@@ -268,7 +291,7 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 | `no-trace-assertion` | The file defines tests but never calls `Collect()`. If it holds only pure-logic tests, mark it `//subpoena:pure_logic` (see "What to delete") |
 | `unguarded-absence` | Call `Collect()` earlier in the same function |
 | `missing-provenance` | Add the marker (step 5) |
-| `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`) what happened |
+| `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`, `Dialed`) what happened |
 | `orphan-invariant` | Load the query by name, or add `invariants/<name>.traceql` and regenerate |
 | `provider-override` | Legacy tests often build their own `TracerProvider` with an in-memory exporter. Use the harness's tracer instead; mark a real need with `//subpoena:own_provider <reason>` |
 | `dead-telemetry` | A registry entry nothing emits. Emit it, or remove it from the registry (reviewed). Pass `-dead-telemetry` only when the targets cover the whole service |

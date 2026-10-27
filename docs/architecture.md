@@ -59,7 +59,8 @@ because the instrumentation is a separate statement from the enforcement. A
 suite that trusts spans alone can be green over broken enforcement.
 
 So enforcement is proven by a witness: something outside the application's
-control that observes the side effect directly. Here, process exec events.
+control that observes the side effect directly. Here, process exec events and
+outbound connection attempts.
 Tier 1 uses `ProcWitness`, which polls `/proc` and correlates by cgroup first:
 the gateway puts each session's processes in a cgroup named with the trace ID
 (`pkg/cgroup`), and the witness reads `/proc/<pid>/cgroup` to tie a process to a
