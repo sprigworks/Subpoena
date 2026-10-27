@@ -8,20 +8,20 @@
 //
 // `make SANDBOX=1 <target>` does the same. Keep go.mod free of these replaces.
 
-go 1.24
+go 1.25.0
 
 use .
 
-replace go.opentelemetry.io/otel => github.com/open-telemetry/opentelemetry-go v1.35.0
-replace go.opentelemetry.io/otel/sdk => github.com/open-telemetry/opentelemetry-go/sdk v1.35.0
-replace go.opentelemetry.io/otel/trace => github.com/open-telemetry/opentelemetry-go/trace v1.35.0
-replace go.opentelemetry.io/otel/metric => github.com/open-telemetry/opentelemetry-go/metric v1.35.0
-replace go.opentelemetry.io/auto/sdk => github.com/open-telemetry/opentelemetry-go-instrumentation/sdk v1.1.0
-replace golang.org/x/sys => github.com/golang/sys v0.37.0
-replace golang.org/x/tools => github.com/golang/tools v0.38.0
-replace golang.org/x/mod => github.com/golang/mod v0.29.0
-replace golang.org/x/sync => github.com/golang/sync v0.17.0
-replace golang.org/x/net => github.com/golang/net v0.46.0
+replace go.opentelemetry.io/otel => github.com/open-telemetry/opentelemetry-go v1.45.0
+replace go.opentelemetry.io/otel/sdk => github.com/open-telemetry/opentelemetry-go/sdk v1.45.0
+replace go.opentelemetry.io/otel/trace => github.com/open-telemetry/opentelemetry-go/trace v1.45.0
+replace go.opentelemetry.io/otel/metric => github.com/open-telemetry/opentelemetry-go/metric v1.45.0
+replace go.opentelemetry.io/auto/sdk => github.com/open-telemetry/opentelemetry-go-instrumentation/sdk v1.2.1
+replace golang.org/x/sys => github.com/golang/sys v0.47.0
+replace golang.org/x/tools => github.com/golang/tools v0.40.1-0.20260108161641-ca281cf95054
+replace golang.org/x/mod => github.com/golang/mod v0.31.0
+replace golang.org/x/sync => github.com/golang/sync v0.20.0
+replace golang.org/x/net => github.com/golang/net v0.48.0
 // gopkg.in is a blocked vanity host. A v3 tag cannot be a replace target on a
 // non-/v3 GitHub path, so pin the commit of tag v3.0.1 as a pseudo-version.
 replace gopkg.in/yaml.v3 => github.com/go-yaml/yaml v0.0.0-20220527083530-f6f7691b1fde

@@ -25,7 +25,7 @@ go get -tool github.com/sprigworks/subpoena/cmd/subpoena-cross
 go get -tool github.com/sprigworks/subpoena/cmd/subpoena-invgen
 ```
 
-The commands become Go tools of your module (Go 1.24+), pinned to the Subpoena
+The commands become Go tools of your module (Go 1.25+), pinned to the Subpoena
 version in your `go.mod`, and run with `go tool subpoena-lint` and so on. In
 this repository the same commands run as `go run ./cmd/...`.
 

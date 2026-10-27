@@ -81,7 +81,7 @@ test-cgroup:
 # execs in real session cgroups. Needs root, so it runs in a privileged
 # container (Docker, Linux host with BTF); SUBPOENA_EBPF_REQUIRE makes a skip a
 # failure. Modules are downloaded on the host and mounted read-only.
-GO_IMAGE ?= golang:1.24
+GO_IMAGE ?= golang:1.25
 test-ebpf:
 	go mod download
 	docker run --rm --privileged -v "$(CURDIR)":/src -w /src \
