@@ -73,10 +73,12 @@ type Report struct {
 }
 
 // Failed reports whether any mutant survived or was invalid.
+//
+//subpoena:enforcement_point
 func (r *Report) Failed() bool {
 	for _, x := range r.Results {
 		if x.Outcome != Killed {
-			return true
+			return true //subpoena:enforcement
 		}
 	}
 	return false
@@ -90,6 +92,8 @@ type Options struct {
 }
 
 // Run cross-examines the suite.
+//
+//subpoena:enforcement_point
 func Run(ctx context.Context, o Options) (*Report, error) {
 	if o.Log == nil {
 		o.Log = io.Discard
@@ -113,7 +117,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		return nil, err
 	}
 	if len(mutants) == 0 {
-		return nil, fmt.Errorf("cross: no //%s functions under %s; cross-examination would be vacuous", MarkerEnforcementPoint, o.Target)
+		return nil, fmt.Errorf("cross: no //%s functions under %s; cross-examination would be vacuous", MarkerEnforcementPoint, o.Target) //subpoena:enforcement
 	}
 	points := map[string]bool{}
 	for _, m := range mutants {
@@ -151,8 +155,14 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		pkgs = "./..."
 	}
 	fmt.Fprintf(o.Log, "baseline: go test %s\n", pkgs)
+	// The verdict is kept apart from the return so that cross-examining
+	// this function (make cross-self) can remove the return and still compile.
+	var baselineErr error
 	if out, err := goCmd(ctx, o.Timeout, tmp, "test", "-count=1", pkgs); err != nil {
-		return nil, fmt.Errorf("cross: baseline suite is not green, cannot judge mutants:\n%s", tail(out, 40))
+		baselineErr = fmt.Errorf("cross: baseline suite is not green, cannot judge mutants:\n%s", tail(out, 40))
+	}
+	if baselineErr != nil {
+		return nil, baselineErr //subpoena:enforcement
 	}
 
 	for _, m := range mutants {
@@ -180,7 +190,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 			}
 		}
 		if err != nil {
-			res.Outcome, res.Output = Invalid, tail(out, 20)
+			res.Outcome, res.Output = Invalid, tail(out, 20) //subpoena:enforcement
 		} else if out, err := goCmd(ctx, o.Timeout, tmp, "test", "-count=1", pkgs); err != nil {
 			if buildFailed(out) {
 				res.Outcome, res.Output = Invalid, tail(out, 20)
@@ -200,7 +210,9 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 }
 
 // FindMutants locates every //subpoena:enforcement statement inside a function
-// marked //subpoena:enforcement_point, in non-test files under target.
+// marked as an enforcement point (MarkerEnforcementPoint), in non-test files
+// under target. Its doc names the marker by constant: the marker text in a
+// doc comment, even in prose, makes a function an enforcement point.
 func FindMutants(root, target string) ([]Mutant, error) {
 	var out []Mutant
 	err := filepath.WalkDir(target, func(p string, d fs.DirEntry, err error) error {
@@ -229,6 +241,7 @@ func FindMutants(root, target string) ([]Mutant, error) {
 	return out, err
 }
 
+//subpoena:enforcement_point
 func mutantsInFile(root, path string) ([]Mutant, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -288,12 +301,12 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 			return true
 		})
 		if len(lines) > 0 {
-			return nil, fmt.Errorf("cross: %s: //%s in %s is not on a simple statement line", rel, MarkerEnforcement, fd.Name.Name)
+			return nil, fmt.Errorf("cross: %s: //%s in %s is not on a simple statement line", rel, MarkerEnforcement, fd.Name.Name) //subpoena:enforcement
 		}
 		// An enforcement point with nothing to remove would never be
 		// cross-examined, and the run would still go green.
 		if found == 0 {
-			return nil, fmt.Errorf("cross: %s: %s is marked //%s but has no //%s statement, so it cannot be cross-examined", rel, fd.Name.Name, MarkerEnforcementPoint, MarkerEnforcement)
+			return nil, fmt.Errorf("cross: %s: %s is marked //%s but has no //%s statement, so it cannot be cross-examined", rel, fd.Name.Name, MarkerEnforcementPoint, MarkerEnforcement) //subpoena:enforcement
 		}
 	}
 	return out, nil

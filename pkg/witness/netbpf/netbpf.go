@@ -157,17 +157,19 @@ func (w *Witness) Dialed(traceID string) []witness.NetworkEvent {
 
 // Health reports known loss or reader failures from this capture. Stop must
 // finish draining the ring buffer and reading the loss counter first.
+//
+//subpoena:enforcement_point
 func (w *Witness) Health() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.healthErr != nil {
-		return w.healthErr
+		return w.healthErr //subpoena:enforcement
 	}
 	if !w.finished {
-		return fmt.Errorf("netbpf: capture has not stopped")
+		return fmt.Errorf("netbpf: capture has not stopped") //subpoena:enforcement
 	}
 	if w.cfg.NoRetain {
-		return fmt.Errorf("netbpf: capture not retained; use the event sink's health and records")
+		return fmt.Errorf("netbpf: capture not retained; use the event sink's health and records") //subpoena:enforcement
 	}
 	return nil
 }

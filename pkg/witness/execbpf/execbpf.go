@@ -192,15 +192,16 @@ func (w *Witness) Health() error {
 	return w.healthLocked()
 }
 
+//subpoena:enforcement_point
 func (w *Witness) healthLocked() error {
 	if w.healthErr != nil {
-		return w.healthErr
+		return w.healthErr //subpoena:enforcement
 	}
 	if !w.finished {
-		return fmt.Errorf("execbpf: capture has not stopped")
+		return fmt.Errorf("execbpf: capture has not stopped") //subpoena:enforcement
 	}
 	if w.cfg.NoRetain {
-		return fmt.Errorf("execbpf: capture not retained; use the event sink's health and records")
+		return fmt.Errorf("execbpf: capture not retained; use the event sink's health and records") //subpoena:enforcement
 	}
 	return nil
 }

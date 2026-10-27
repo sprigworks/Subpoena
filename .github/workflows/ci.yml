@@ -29,6 +29,8 @@ jobs:
         run: go run ./cmd/subpoena-lint -dead-telemetry ./examples/gateway
       - name: cross-examination over examples/gateway
         run: go run ./cmd/subpoena-cross ./examples/gateway
+      - name: cross-examination over Subpoena's own guards
+        run: make cross-self
 
   # The Python port (python/): its own tests over the shared corpus, then the
   # evaluator through subpoena-conform, the protocol every port is checked by.

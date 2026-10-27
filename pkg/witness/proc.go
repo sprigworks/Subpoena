@@ -391,14 +391,16 @@ var _ Witness = (*ProcWitness)(nil)
 
 // Health reports failed scans, including the final poll. Recovery on a later
 // poll does not erase a gap. Stop must complete before absence is certified.
+//
+//subpoena:enforcement_point
 func (w *ProcWitness) Health() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.firstScanErr != nil {
-		return fmt.Errorf("witness: %d failed scan(s), first: %w", w.scanErrors, w.firstScanErr)
+		return fmt.Errorf("witness: %d failed scan(s), first: %w", w.scanErrors, w.firstScanErr) //subpoena:enforcement
 	}
 	if !w.finished {
-		return fmt.Errorf("witness: capture has not stopped")
+		return fmt.Errorf("witness: capture has not stopped") //subpoena:enforcement
 	}
 	return nil
 }
