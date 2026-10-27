@@ -1,7 +1,10 @@
 // Command subpoena-cross cross-examines a test suite: it removes each enforcement
 // statement in a temp copy of the module and requires the test suite to fail.
 //
-//	subpoena-cross <dir>
+//	subpoena-cross [-timeout 5m] <dir>
+//
+// -timeout bounds each go command, so each mutant's test run. A mutant whose
+// run times out is reported as enforcement-mutant-timeout, not killed.
 //
 // Exit status: 0 every mutant killed, 1 a mutant survived or was invalid,
 // 2 usage or setup error (including a red baseline).
@@ -9,19 +12,24 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/sprigworks/subpoena/internal/cross"
 )
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: subpoena-cross <dir>")
+	timeout := flag.Duration("timeout", 5*time.Minute, "bound on each go command, and so on each mutant's test run")
+	flag.Usage = func() { fmt.Fprintln(os.Stderr, "usage: subpoena-cross [-timeout 5m] <dir>") }
+	flag.Parse()
+	if flag.NArg() != 1 || *timeout <= 0 {
+		flag.Usage()
 		os.Exit(2)
 	}
-	rep, err := cross.Run(context.Background(), cross.Options{Target: os.Args[1], Log: os.Stderr})
+	rep, err := cross.Run(context.Background(), cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-cross:", err)
 		os.Exit(2)
@@ -38,6 +46,9 @@ func main() {
 			fmt.Printf("  suite went red; failing: %s\n", strings.Join(r.Failing, ", "))
 		case cross.Survived:
 			fmt.Println("  suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced")
+		case cross.TimedOut:
+			fmt.Println("  suite did not finish within -timeout; a hang is not a kill. Make the test fail fast instead:")
+			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
 		case cross.Invalid:
 			fmt.Println("  mutant did not compile, so it proves nothing; fix the marker placement:")
 			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))

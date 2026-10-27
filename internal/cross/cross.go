@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -45,6 +46,9 @@ const (
 	Survived Outcome = "enforcement-mutant-survived"
 	// Invalid means the mutant did not compile; it proves nothing either way.
 	Invalid Outcome = "enforcement-mutant-invalid"
+	// TimedOut means the suite did not finish within Options.Timeout. A hang
+	// may be the mutant's doing or the host's, so it is not a kill.
+	TimedOut Outcome = "enforcement-mutant-timeout"
 )
 
 // Mutant is one planned removal.
@@ -102,7 +106,7 @@ func (r *Report) Failed() bool {
 // Options configure a run.
 type Options struct {
 	Target  string        // directory to cross-examine, inside a Go module
-	Timeout time.Duration // per go command; 5 minutes if zero
+	Timeout time.Duration // per go command, and so per mutant run; 5 minutes if zero
 	Log     io.Writer     // progress; io.Discard if nil
 	// afterDiscover, if set, runs after the snapshot is taken and before
 	// baseline. Tests use it to edit the live tree. Production leaves it nil.
@@ -228,10 +232,15 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		}
 		if err != nil {
 			res.Outcome, res.Output = Invalid, tail(out, 20) //subpoena:enforcement
-		} else if out, err := goCmd(ctx, o.Timeout, tmp, "test", "-count=1", pkgs); err != nil {
-			if buildFailed(out) {
+		} else if out, err := goCmd(ctx, o.Timeout, tmp, "test", "-count=1", "-failfast", pkgs); err != nil {
+			// -failfast: one red test is a kill, so the rest of a package's
+			// tests need not run. Other packages still run to the end.
+			switch {
+			case timedOut(out, err):
+				res.Outcome, res.Output = TimedOut, tail(out, 20) //subpoena:enforcement
+			case buildFailed(out):
 				res.Outcome, res.Output = Invalid, tail(out, 20)
-			} else {
+			default:
 				res.Outcome, res.Failing = Killed, failingTests(out)
 			}
 		} else {
@@ -502,15 +511,33 @@ func copyTree(src, dst string) error {
 	})
 }
 
+// errTimeout is returned by goCmd when the command ran past its timeout.
+var errTimeout = errors.New("timed out")
+
 func goCmd(ctx context.Context, timeout time.Duration, dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
+	killGroupOnCancel(cmd)
+	// A process left holding the output pipe must not hold up the verdict.
+	cmd.WaitDelay = 5 * time.Second
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	err := cmd.Run()
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		err = fmt.Errorf("go %s: %w after %v", args[0], errTimeout, timeout)
+	}
 	return buf.String(), err
+}
+
+// testTimeoutRE matches the test binary's own -timeout panic.
+var testTimeoutRE = regexp.MustCompile(`(?m)^panic: test timed out after `)
+
+// timedOut reports whether a failed go test run ended by a timeout, either
+// goCmd's or the test binary's own, rather than by a failing test.
+func timedOut(out string, err error) bool {
+	return errors.Is(err, errTimeout) || testTimeoutRE.MatchString(out)
 }
 
 var (

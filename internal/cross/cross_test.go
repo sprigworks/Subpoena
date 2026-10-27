@@ -3,15 +3,18 @@
 package cross
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const goMod = "module mini\n\ngo 1.24\n"
@@ -426,5 +429,76 @@ func TestRunRefusesCopyDriftBeforeMutation(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "snapshot drift") {
 		t.Fatalf("copy drift was not refused: %v", err)
+	}
+}
+
+// hangOK sleeps where enforcement used to return, so removing the enforcement
+// makes the suite hang rather than fail. Before sleeping it writes its pid to
+// PIDFILE, so the test can check the timeout killed it.
+const hangOK = `package mini
+
+import (
+	"os"
+	"strconv"
+	"time"
+)
+
+// Allow decides.
+//
+//subpoena:enforcement_point
+func Allow(admin bool) bool {
+	if !admin {
+		return false //subpoena:enforcement
+	}
+	os.WriteFile("PIDFILE", []byte(strconv.Itoa(os.Getpid())), 0o644)
+	time.Sleep(time.Hour)
+	return true
+}
+`
+
+const hangTest = `package mini
+
+import "testing"
+
+func TestDeny(t *testing.T) {
+	if Allow(false) {
+		t.Fatal("non-admin allowed")
+	}
+}
+`
+
+// A mutant whose suite hangs past the timeout is not a kill: the hang may be
+// the host's, and nothing asserted the enforcement.
+func TestHangingMutantTimesOutNotKilled(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	dir := module(t, map[string]string{"auth.go": strings.Replace(hangOK, "PIDFILE", pidFile, 1), "auth_test.go": hangTest})
+	rep, err := Run(context.Background(), Options{Target: dir, Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Outcome != TimedOut || !rep.Failed() {
+		t.Fatalf("want timed out, got %+v", rep.Results)
+	}
+	// The timeout kills the test binary too, not only the go command. A
+	// killed process may linger unreaped as a zombie, which is not running.
+	pid, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("the mutant never reached the hang: %v", err)
+	}
+	if stat, err := os.ReadFile("/proc/" + string(pid) + "/stat"); err == nil {
+		if f := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:])); len(f) > 0 && f[0] != "Z" {
+			t.Fatalf("hung test binary %s outlived the timeout (state %s)", pid, f[0])
+		}
+	}
+}
+
+// The test binary's own -timeout panic counts as a timeout too.
+func TestTestBinaryTimeoutPanicIsATimeout(t *testing.T) {
+	out := "panic: test timed out after 10m0s\n\trunning tests:\n\t\tTestDeny (10m0s)\n"
+	if !timedOut(out, errors.New("exit status 2")) {
+		t.Fatal("the test binary's timeout panic must be a timeout")
+	}
+	if timedOut("--- FAIL: TestDeny (0.00s)\n", errors.New("exit status 1")) {
+		t.Fatal("a failing test is not a timeout")
 	}
 }

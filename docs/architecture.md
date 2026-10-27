@@ -89,7 +89,10 @@ that copy, and removes the statement marked
 and runs the tests. A red suite kills the mutant. A green suite means the tests
 cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
-mutant that does not compile is "invalid", never "killed". An enforcement point
+mutant that does not compile is "invalid", never "killed". A mutant whose tests
+run past `-timeout` (5 minutes by default) is `enforcement-mutant-timeout`, also
+never "killed": a hang may be the host's, and no assertion caught it. Mutant
+runs use `go test -failfast`, so a package stops at its first red test. An enforcement point
 with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.

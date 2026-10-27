@@ -306,7 +306,9 @@ Cross-examination is the check that matters most. It requires a green baseline, 
 each marked enforcement statement in a temporary copy, and runs the tests. A red
 suite is `enforcement-mutant-killed`. A green suite is
 `enforcement-mutant-survived`: your tests cannot tell enforced from unenforced.
-Strengthen them. Never remove the marker to make it pass.
+Strengthen them. Never remove the marker to make it pass. A suite that runs
+past `-timeout` is `enforcement-mutant-timeout`, which fails the run too: make
+the test that should catch the mutant fail fast instead of hanging.
 
 On a first run cross-examination will often report a survivor, because the legacy tests
 assert on return values and mocks. That is the finding, not a failure of the
