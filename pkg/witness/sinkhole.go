@@ -39,6 +39,9 @@ var (
 	_ HealthReporter = (*Sinkhole)(nil)
 )
 
+// drain is drainAccepts, replaceable in tests to inject a failed drain.
+var drain = drainAccepts
+
 // NewSinkhole listens on a free loopback port and starts recording.
 func NewSinkhole() (*Sinkhole, error) {
 	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -101,7 +104,7 @@ func (s *Sinkhole) Stop() error {
 		return s.err
 	}
 	s.mu.Unlock()
-	n, drainErr := drainAccepts(s.ln)
+	n, drainErr := drain(s.ln)
 	for i := 0; i < n; i++ {
 		s.record()
 	}
@@ -126,14 +129,16 @@ func (s *Sinkhole) Dialed(string) []NetworkEvent {
 
 // Health reports whether the capture is complete: stopped, drained, and no
 // accept error along the way.
+//
+//subpoena:enforcement_point
 func (s *Sinkhole) Health() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.err != nil {
-		return s.err
+		return s.err //subpoena:enforcement
 	}
 	if !s.finished {
-		return errors.New("sinkhole: capture has not stopped")
+		return errors.New("sinkhole: capture has not stopped") //subpoena:enforcement
 	}
 	return nil
 }

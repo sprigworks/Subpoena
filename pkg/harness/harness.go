@@ -91,6 +91,8 @@ func (e *IncompleteError) Error() string {
 // incomplete, so absence assertions on it return Inconclusive rather than
 // Pass. Callers should treat the error as a test failure unless they are
 // deliberately testing that behaviour.
+//
+//subpoena:enforcement_point
 func (h *Harness) Collect(ctx context.Context) (*Trace, error) {
 	if err := h.tp.ForceFlush(ctx); err != nil {
 		return nil, fmt.Errorf("harness: force flush: %w", err)
@@ -105,7 +107,7 @@ func (h *Harness) Collect(ctx context.Context) (*Trace, error) {
 		unfinished: s.unfinished,
 	}
 	if !t.complete {
-		return t, &IncompleteError{Dropped: s.dropped, Unfinished: s.unfinished, Truncated: s.truncated}
+		return t, &IncompleteError{Dropped: s.dropped, Unfinished: s.unfinished, Truncated: s.truncated} //subpoena:enforcement
 	}
 	return t, nil
 }

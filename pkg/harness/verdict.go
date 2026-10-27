@@ -32,6 +32,8 @@ func (v Verdict) String() string {
 // from an incomplete capture; zero matches is Pass only if the capture is
 // complete, otherwise Inconclusive. The error is non-nil only if q cannot be
 // evaluated (see Trace.Query).
+//
+//subpoena:enforcement_point
 func (t *Trace) Absent(q string) (Verdict, error) {
 	r, err := t.Query(q)
 	if err != nil {
@@ -39,9 +41,9 @@ func (t *Trace) Absent(q string) (Verdict, error) {
 	}
 	switch {
 	case r.Count() > 0:
-		return Fail, nil
+		return Fail, nil //subpoena:enforcement
 	case !t.complete:
-		return Inconclusive, nil
+		return Inconclusive, nil //subpoena:enforcement
 	}
 	return Pass, nil
 }

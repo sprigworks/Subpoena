@@ -4,6 +4,7 @@
 package witness
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -97,5 +98,29 @@ func TestSinkholeHealthNeedsStop(t *testing.T) {
 	s.Stop()
 	if s.Health() != nil || s.Stop() != nil {
 		t.Fatal("stopped sinkhole should be healthy, and Stop repeatable")
+	}
+}
+
+// A failed drain means queued connections may have gone unseen: Stop and
+// Health must both say so, and stay saying so, even though Dialed is empty.
+func TestSinkholeFailedDrainCannotCertifyAbsence(t *testing.T) {
+	broken := errors.New("accept queue unreadable")
+	drain = func(*net.TCPListener) (int, error) { return 0, broken }
+	t.Cleanup(func() { drain = drainAccepts })
+	s, err := NewSinkhole()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(); !errors.Is(err, broken) {
+		t.Fatalf("Stop = %v, want the drain failure", err)
+	}
+	if err := s.Health(); !errors.Is(err, broken) {
+		t.Fatalf("Health = %v, want the drain failure", err)
+	}
+	if len(s.Dialed("")) != 0 {
+		t.Fatal("no arrivals were recorded")
+	}
+	if err := s.Stop(); !errors.Is(err, broken) {
+		t.Fatalf("second Stop = %v, erased the failure", err)
 	}
 }

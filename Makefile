@@ -17,7 +17,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift cross conform python test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: all build vet fmt test lint lint-drift cross cross-self conform python test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -48,6 +48,11 @@ lint-drift:
 # Cross-examination: remove each enforcement statement; the suite must go red.
 cross:
 	go run ./cmd/subpoena-cross ./examples/gateway
+
+# Subpoena's own fail-closed guards, cross-examined like any adopter's.
+CROSS_SELF := ./pkg/harness ./pkg/witness ./internal/cross
+cross-self:
+	@set -e; for t in $(CROSS_SELF); do go run ./cmd/subpoena-cross $$t; done
 
 # Check a TraceQL evaluator in any language against the conformance corpus
 # (docs/ports.md): make conform EVAL="python -m subpoena.traceql". Without
@@ -137,7 +142,7 @@ oats:
 	docker volume ls -q --filter name=_witness-events | grep '^oats-' | xargs -r docker volume rm >/dev/null; exit $$rc
 
 # Everything that runs without Docker or eBPF.
-check: build vet test lint cross
+check: build vet test lint cross cross-self
 
 # Regenerate the constants from the registry with Weaver: Go, Python and
 # TypeScript (one module each, the same names).

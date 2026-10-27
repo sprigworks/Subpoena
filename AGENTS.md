@@ -45,6 +45,10 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
 - `go run ./cmd/subpoena-cross ./examples/gateway` must report every mutant
   killed. If a mutant survives, strengthen the tests; never remove the
   enforcement marker.
+- Subpoena's own fail-closed guards (Inconclusive on bad witness health,
+  refusing Pass on a truncated capture, lost kernel events, cross's own
+  refusals) are enforcement points too. `make cross-self` cross-examines
+  them; a new guard gets the markers and a test that kills its mutant.
 
 ## Environment
 

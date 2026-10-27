@@ -12,6 +12,8 @@ import (
 // has ended. match selects the attempts the claim is about (nil: any attempt);
 // one matching attempt contradicts absence even if capture was unhealthy. With
 // none, missing or bad health makes the claim Inconclusive.
+//
+//subpoena:enforcement_point
 func NoDial(w witness.NetworkWitness, traceID string, match func(witness.NetworkEvent) bool) (Verdict, error) {
 	var hits []witness.NetworkEvent
 	for _, e := range w.Dialed(traceID) {
@@ -20,14 +22,14 @@ func NoDial(w witness.NetworkWitness, traceID string, match func(witness.Network
 		}
 	}
 	if len(hits) != 0 {
-		return Fail, fmt.Errorf("witness saw connection attempts for %s: %+v", traceID, hits)
+		return Fail, fmt.Errorf("witness saw connection attempts for %s: %+v", traceID, hits) //subpoena:enforcement
 	}
 	h, ok := w.(witness.HealthReporter)
 	if !ok {
-		return Inconclusive, fmt.Errorf("witness does not report capture health")
+		return Inconclusive, fmt.Errorf("witness does not report capture health") //subpoena:enforcement
 	}
 	if err := h.Health(); err != nil {
-		return Inconclusive, err
+		return Inconclusive, err //subpoena:enforcement
 	}
 	return Pass, nil
 }

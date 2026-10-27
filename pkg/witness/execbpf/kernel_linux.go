@@ -134,6 +134,8 @@ func (w *Witness) read(k *kernel) {
 
 // Stop detaches the program, drains buffered events and reads the loss counter.
 // Capture errors persist in Health, including after repeated Stop calls.
+//
+//subpoena:enforcement_point
 func (w *Witness) Stop() error {
 	w.lifecycle.Lock()
 	defer w.lifecycle.Unlock()
@@ -166,7 +168,7 @@ func (w *Witness) Stop() error {
 		stopErr = errors.Join(stopErr, err)
 	}
 	if lost != 0 {
-		stopErr = errors.Join(stopErr, fmt.Errorf("execbpf: lost %d kernel event(s)", lost))
+		stopErr = errors.Join(stopErr, fmt.Errorf("execbpf: lost %d kernel event(s)", lost)) //subpoena:enforcement
 	}
 	k.close()
 	w.mu.Lock()

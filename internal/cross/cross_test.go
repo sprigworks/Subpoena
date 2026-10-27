@@ -238,8 +238,9 @@ func TestMarkerOnCompoundStatementIsRejected(t *testing.T) {
 	src := strings.Replace(authOK, "if !admin {", "if !admin { //subpoena:enforcement", 1)
 	src = strings.Replace(src, " //subpoena:enforcement\n\t}", "\n\t}", 1)
 	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": strongTest})
-	if _, err := FindMutants(dir, dir); err == nil {
-		t.Fatal("a marker on an if line must be rejected rather than remove the whole if")
+	// The rejection must be for the misplaced marker itself, not a later check.
+	if _, err := FindMutants(dir, dir); err == nil || !strings.Contains(err.Error(), "not on a simple statement line") {
+		t.Fatalf("a marker on an if line must be rejected rather than remove the whole if; got %v", err)
 	}
 }
 
