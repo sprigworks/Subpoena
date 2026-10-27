@@ -74,6 +74,7 @@ type ProcWitness struct {
 	stop         chan struct{}
 	done         chan struct{}
 	finished     bool
+	stoppedAt    time.Time // when Stop returned; ends the last open window
 	scanErrors   uint64
 	firstScanErr error
 	walkErr      error // why the children walk cannot run; set by Start
@@ -180,7 +181,7 @@ func (w *ProcWitness) Stop() {
 	close(stop)
 	<-done
 	w.mu.Lock()
-	w.stop, w.finished = nil, true
+	w.stop, w.finished, w.stoppedAt = nil, true, time.Now()
 	w.mu.Unlock()
 }
 
@@ -637,14 +638,29 @@ func cgroupHasTrace(cgroup, traceID string) bool {
 type Coverage struct {
 	FullScans      int           // successful full /proc scans after the baseline
 	ChildrenWalks  int           // walks of the root's children lists
-	MaxFullScanGap time.Duration // longest time from one successful scan's start (the baseline's included) to the next one's end
+	MaxFullScanGap time.Duration // longest time from one successful scan's start (the baseline's included) to the next one's end, or to Stop (now while running) for the last
 }
 
 // Coverage returns the polling coverage so far.
+//
+//subpoena:enforcement_point
 func (w *ProcWitness) Coverage() Coverage {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.coverage
+	c := w.coverage
+	// The window since the last successful scan started is still open:
+	// failed scans did not close it, and nothing has yet. It ends at Stop,
+	// or now while polling runs.
+	if !w.lastScan.IsZero() {
+		end := time.Now()
+		if w.finished {
+			end = w.stoppedAt
+		}
+		if gap := end.Sub(w.lastScan); gap > c.MaxFullScanGap {
+			c.MaxFullScanGap = gap //subpoena:enforcement
+		}
+	}
+	return c
 }
 
 // Events returns every observed event, in discovery order.

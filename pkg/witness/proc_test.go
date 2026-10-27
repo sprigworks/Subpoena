@@ -491,6 +491,21 @@ func TestCoverageReportsFullScanGap(t *testing.T) {
 	}
 }
 
+// Scans that fail after the last good one leave its window open until Stop:
+// Coverage must count it, though no later scan closed it.
+func TestCoverageCountsTheWindowLeftOpenByFailedScans(t *testing.T) {
+	w, root := freshFake(t, func(w *ProcWitness) { w.Interval = time.Hour })
+	must(t, w.Start())
+	must(t, os.Rename(root, root+".gone"))
+	defer os.Rename(root+".gone", root)
+	time.Sleep(50 * time.Millisecond)
+	w.Poll()
+	w.Stop()
+	if c := w.Coverage(); c.MaxFullScanGap < 50*time.Millisecond {
+		t.Fatalf("a 50ms window closed by no scan must show in MaxFullScanGap, got %+v", c)
+	}
+}
+
 // A new Start resets coverage.
 func TestCoverageResetsOnStart(t *testing.T) {
 	w, _ := freshFake(t, nil)
