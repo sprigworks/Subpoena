@@ -875,3 +875,72 @@ func TestMaskedEntryAcceptsOneLayer(t *testing.T) {
 		t.Fatalf("want a duplicate-entry error, got %v", err)
 	}
 }
+
+const threePoints = `package mini
+
+import "errors"
+
+var ErrDenied = errors.New("denied")
+
+//subpoena:enforcement_point
+func A(ok bool) error {
+	if !ok {
+		return ErrDenied //subpoena:enforcement
+	}
+	return nil
+}
+
+//subpoena:enforcement_point
+func B(ok bool) error {
+	if !ok {
+		return ErrDenied //subpoena:enforcement
+	}
+	return nil
+}
+
+//subpoena:enforcement_point
+func C(ok bool) error {
+	if !ok {
+		return ErrDenied //subpoena:enforcement
+	}
+	return nil
+}
+`
+
+// A and C are tested; B is not, so it survives.
+const threeTests = `package mini
+
+import "testing"
+
+func TestA(t *testing.T) {
+	if A(false) == nil {
+		t.Fatal("A must deny")
+	}
+}
+func TestC(t *testing.T) {
+	if C(false) == nil {
+		t.Fatal("C must deny")
+	}
+}
+`
+
+// Parallel workers give the same verdicts, in the same order, as one.
+func TestParallelJobsGiveTheSameVerdicts(t *testing.T) {
+	dir := module(t, map[string]string{"auth.go": threePoints, "auth_test.go": threeTests})
+	outcomes := func(jobs int) []string {
+		rep, err := Run(context.Background(), Options{Target: dir, Jobs: jobs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range rep.Results {
+			out = append(out, r.Mutant.Func+" "+string(r.Outcome))
+		}
+		return out
+	}
+	one, three := outcomes(1), outcomes(3)
+	want := []string{"A " + string(Killed), "B " + string(Survived), "C " + string(Killed)}
+	if strings.Join(one, ",") != strings.Join(want, ",") || strings.Join(three, ",") != strings.Join(want, ",") {
+		t.Fatalf("jobs=1 %v, jobs=3 %v, want %v", one, three, want)
+	}
+}

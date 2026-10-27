@@ -35,6 +35,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -193,7 +195,12 @@ type Options struct {
 	// EvidenceDir, if set, keeps the full go test -json output of every
 	// mutant run there, killed ones included, one file per run.
 	EvidenceDir string
-	runs        *int // numbers the evidence files
+	// Jobs is how many single mutants run at once, each in its own copy of
+	// the module; 1 if zero. Group runs stay sequential. A polling witness
+	// sees less on a busy host, so a higher value can turn a kill into a
+	// survivor (which fails the run), never the reverse.
+	Jobs int
+	runs *atomic.Int64 // numbers the evidence files
 	// afterDiscover, if set, runs after the snapshot is taken and before
 	// baseline. Tests use it to edit the live tree. Production leaves it nil.
 	afterDiscover func(liveRoot string)
@@ -212,7 +219,11 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	if o.Timeout == 0 {
 		o.Timeout = 5 * time.Minute
 	}
-	o.runs = new(int)
+	o.runs = new(atomic.Int64)
+	if o.Jobs < 1 {
+		o.Jobs = 1
+	}
+	o.Log = &lockedWriter{w: o.Log}
 	target, err := filepath.Abs(o.Target)
 	if err != nil {
 		return nil, err
@@ -257,17 +268,34 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		return nil, err
 	}
 	// A GOWORK file inside the module (e.g. go.work.sandbox) was copied along
-	// with the tree; point the copy's builds at the copied file so its `use .`
-	// resolves to the mutated tree, not the original.
+	// with the tree; point each copy's builds at its own copied file so its
+	// `use .` resolves to the mutated tree, not the original.
 	// A GOWORK file outside the module can never `use` the temp copy, so it is
 	// disabled for the copy's builds.
-	if work := os.Getenv("GOWORK"); work != "" && work != "off" {
-		defer os.Setenv("GOWORK", work)
-		if rel, err := filepath.Rel(root, work); err == nil && !strings.HasPrefix(rel, "..") {
-			os.Setenv("GOWORK", filepath.Join(tmp, rel))
-		} else {
-			os.Setenv("GOWORK", "off")
+	inCopy := func(dir string) sandbox {
+		sb := sandbox{dir: dir}
+		if work := os.Getenv("GOWORK"); work != "" && work != "off" {
+			sb.work = "off"
+			if rel, err := filepath.Rel(root, work); err == nil && !strings.HasPrefix(rel, "..") {
+				sb.work = filepath.Join(dir, rel)
+			}
 		}
+		return sb
+	}
+	primary := inCopy(tmp)
+	// Further workers get copies of the discovery copy, made after the
+	// replaces were rewritten: the same bytes, so the drift check holds.
+	workers := []sandbox{primary}
+	for i := 1; i < o.Jobs; i++ {
+		dir, err := os.MkdirTemp("", "subpoena-cross-")
+		if err != nil {
+			return nil, err
+		}
+		defer os.RemoveAll(dir)
+		if err := copyTree(tmp, dir); err != nil {
+			return nil, fmt.Errorf("cross: copy tree: %w", err)
+		}
+		workers = append(workers, inCopy(dir))
 	}
 
 	pkgs := "./" + rep.Target + "/..."
@@ -281,7 +309,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	// The verdict is kept apart from the return so that cross-examining
 	// this function (make cross-self) can remove the return and still compile.
 	var baselineErr error
-	if out, err := goCmd(ctx, o.Timeout, tmp, "test", "-count=1", pkgs); err != nil {
+	if out, err := goIn(ctx, o.Timeout, primary, "test", "-count=1", pkgs); err != nil {
 		baselineErr = fmt.Errorf("cross: baseline suite is not green, cannot judge mutants:\n%s", tail(out, 40))
 	}
 	if baselineErr != nil {
@@ -289,13 +317,13 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	}
 
 	single := map[string]int{} // Mutant.Name() -> index in rep.Results
-	for _, m := range mutants {
-		res, err := runCase(ctx, o, tmp, pkgs, []Mutant{m})
-		if err != nil {
-			return nil, err
-		}
+	results, err := runSingles(ctx, o, workers, pkgs, mutants)
+	if err != nil {
+		return nil, err
+	}
+	for i, m := range mutants {
 		single[m.Name()] = len(rep.Results)
-		rep.Results = append(rep.Results, res)
+		rep.Results = append(rep.Results, results[i])
 	}
 
 	// Layer groups. The whole group runs as one mutant. A layer that survived
@@ -310,7 +338,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	sort.Strings(names)
 	for _, g := range names {
 		members := groups[g]
-		res, err := runCase(ctx, o, tmp, pkgs, members)
+		res, err := runCase(ctx, o, primary, pkgs, members)
 		if err != nil {
 			return nil, err
 		}
@@ -326,7 +354,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 			continue
 		}
 		if len(alone) < len(members) {
-			if res, err = runCase(ctx, o, tmp, pkgs, alone); err != nil {
+			if res, err = runCase(ctx, o, primary, pkgs, alone); err != nil {
 				return nil, err
 			}
 			res.Group = g
@@ -348,7 +376,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 				}
 				out, seen := pairs[key]
 				if !seen {
-					pair, err := runCase(ctx, o, tmp, pkgs, []Mutant{m, other})
+					pair, err := runCase(ctx, o, primary, pkgs, []Mutant{m, other})
 					if err != nil {
 						return nil, err
 					}
@@ -379,7 +407,8 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 // command it stopped proves nothing about the mutant.
 //
 //subpoena:enforcement_point
-func runCase(ctx context.Context, o Options, tmp, pkgs string, ms []Mutant) (res Result, err error) {
+func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutant) (res Result, err error) {
+	tmp := sb.dir
 	res = Result{Mutant: ms[0], With: ms[1:]}
 	byFile := map[string][]Mutant{}
 	var files []string
@@ -433,7 +462,7 @@ func runCase(ctx context.Context, o Options, tmp, pkgs string, ms []Mutant) (res
 		fmt.Fprintf(o.Log, "  (%d layers together)\n", len(ms))
 	}
 
-	out, err := goCmd(ctx, o.Timeout, tmp, "build", pkgs)
+	out, err := goIn(ctx, o.Timeout, sb, "build", pkgs)
 	if err != nil {
 		// Removing a statement may leave an import unused (the removed line
 		// was its only use); drop those imports and build again.
@@ -447,13 +476,13 @@ func runCase(ctx context.Context, o Options, tmp, pkgs string, ms []Mutant) (res
 			}
 		}
 		if pruned {
-			out, err = goCmd(ctx, o.Timeout, tmp, "build", pkgs)
+			out, err = goIn(ctx, o.Timeout, sb, "build", pkgs)
 		}
 	}
 	var testOut string
 	var testErr error
 	if err == nil {
-		testOut, testErr = goCmd(ctx, o.Timeout, tmp, "test", "-json", "-count=1", "-failfast", pkgs)
+		testOut, testErr = goIn(ctx, o.Timeout, sb, "test", "-json", "-count=1", "-failfast", pkgs)
 	}
 	if ctx.Err() != nil {
 		return res, fmt.Errorf("cross: run stopped: %w", ctx.Err()) //subpoena:enforcement
@@ -585,9 +614,9 @@ func keepEvidence(o Options, ms []Mutant, raw string) (string, error) {
 	if o.EvidenceDir == "" {
 		return "", nil
 	}
-	*o.runs++
+	n := o.runs.Add(1)
 	m := ms[0]
-	name := fmt.Sprintf("%03d-%s-%s-%d", *o.runs, strings.NewReplacer("/", "_", ".", "_").Replace(m.File), m.Func, m.Line)
+	name := fmt.Sprintf("%03d-%s-%s-%d", n, strings.NewReplacer("/", "_", ".", "_").Replace(m.File), m.Func, m.Line)
 	if len(ms) > 1 {
 		name += fmt.Sprintf("-with%d", len(ms)-1)
 	}
@@ -997,14 +1026,87 @@ func copyTree(src, dst string) error {
 	})
 }
 
+// sandbox is one copy of the module that mutants are run in, and the GOWORK
+// its go commands use ("" to inherit the environment's).
+type sandbox struct {
+	dir, work string
+}
+
+// runSingles runs each mutant alone, on as many copies as there are workers,
+// and returns the results in mutants' order. The first error stops the rest.
+func runSingles(ctx context.Context, o Options, workers []sandbox, pkgs string, mutants []Mutant) ([]Result, error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	results := make([]Result, len(mutants))
+	next := make(chan int)
+	var wg sync.WaitGroup
+	var once sync.Once
+	var firstErr error
+	for _, sb := range workers {
+		wg.Add(1)
+		go func(sb sandbox) {
+			defer wg.Done()
+			for i := range next {
+				res, err := runCase(ctx, o, sb, pkgs, []Mutant{mutants[i]})
+				if err != nil {
+					once.Do(func() { firstErr = err; cancel(err) })
+					continue
+				}
+				results[i] = res
+			}
+		}(sb)
+	}
+feed:
+	for i := range mutants {
+		select {
+		case next <- i:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(next)
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return results, nil
+}
+
+// goIn runs go in a sandbox copy.
+func goIn(ctx context.Context, timeout time.Duration, sb sandbox, args ...string) (string, error) {
+	var env []string
+	if sb.work != "" {
+		env = append(os.Environ(), "GOWORK="+sb.work)
+	}
+	return goCmdEnv(ctx, timeout, sb.dir, env, args...)
+}
+
+// lockedWriter serializes progress lines from parallel mutants.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
 // errTimeout is returned by goCmd when the command ran past its timeout.
 var errTimeout = errors.New("timed out")
 
 func goCmd(ctx context.Context, timeout time.Duration, dir string, args ...string) (string, error) {
+	return goCmdEnv(ctx, timeout, dir, nil, args...)
+}
+
+// goCmdEnv is goCmd with an environment; nil inherits this process's.
+func goCmdEnv(ctx context.Context, timeout time.Duration, dir string, env []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
+	cmd.Env = env
 	killGroupOnCancel(cmd)
 	// A process left holding the output pipe must not hold up the verdict.
 	cmd.WaitDelay = 5 * time.Second

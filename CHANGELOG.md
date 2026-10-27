@@ -8,6 +8,9 @@
   crash (a panic, a runtime fatal error, `os.Exit`, or a failure with no
   message) is `enforcement-mutant-crashed` and fails the run. `-evidence-dir` keeps
   every mutant run's full `go test -json` output.
+- **Cross: `-j N` parallel mutants.** Single mutants run N at a time, each in
+  its own copy of the module. cross-self: 490 s at `-j 1`, 135 s at `-j 8`, same
+  verdicts.
 
 - **Guard and layered mutants in `subpoena-cross`.**
   `//subpoena:enforcement_guard true|false` on an `if` forces its condition to
