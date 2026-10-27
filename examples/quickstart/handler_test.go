@@ -40,6 +40,9 @@ var (
 // exists, no purge span follows it, and the witness saw no process.
 func TestNonAdminDeleteNeverPurges(t *testing.T) {
 	h, d, w := rig(t)
+	// Read the witness at cleanup too, so a test that stops early still
+	// reports a purge process that ran.
+	harness.WatchSpawns(t, w, "", harness.SpawnRule{Never: []string{"sleep " + sleepArg}})
 	err := d.Delete(context.Background(), quickstart.Request{AccountID: "acct-1", Command: "sleep", Args: []string{sleepArg}})
 	if !errors.Is(err, quickstart.ErrRefused) {
 		t.Fatalf("want ErrRefused, got %v", err)
