@@ -10,7 +10,9 @@ human and agent contributions alike.
    security vulnerabilities, contact the maintainers privately instead of
    opening a public issue.
 2. Create a branch from current `main`. Keep the change focused and include
-   tests for behavior changes.
+   tests for behavior changes. If the change alters behavior, flags, versions
+   or make targets, update the matching docs (README, CONTRIBUTING, `docs/`,
+   `examples/adopter/README.md`) in the same pull request.
 3. Run the checks below and review your diff before opening a pull request.
    Explain what changed, why, and which checks ran. State any skipped checks
    and the environment limitation.
