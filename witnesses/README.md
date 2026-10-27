@@ -63,8 +63,11 @@ and the name is the program of an `Allowed` entry; then it is logged. Set
 `ExcuseNameOnly` only when the test runs commands too short-lived to read, and
 keep refused probes long-lived so a refused one is always seen whole. A child
 first seen with its parent's command line (just forked) that is later seen
-with no arguments and a different name has exec'd since; its event falls back
-to the name and is name-only too. Never entries must start with the program
+with no arguments and a different name has exec'd (or renamed itself) since:
+its command line is kept, and the name is added as a second, name-only event
+for the same process. A fork that execs a program with the same name
+(`sh` running `sh -c ...`) is not caught this way: the parent's line stays.
+Keep refused commands distinguishable by program where that matters. Never entries must start with the program
 (`rm -rf /tmp/x`, not `/tmp/x` or `env rm ...`) to match a name. The kernel
 witness (`execbpf`) reads arguments at exec; when that read fails it, and the
 witness-file reader, report the task name as name-only rather than an empty

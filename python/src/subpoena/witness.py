@@ -23,9 +23,9 @@ class ProcessEvent:
     attribution: str
     seen_at: datetime
     args: List[str] = field(default_factory=list)
-    # "cmdline" when command is the argument list; "" when there is none.
-    # subpoena-witness writes argv, never a bare name, so "comm" (name only)
-    # does not occur in a witness file.
+    # "cmdline" when command is the argument list; "comm" when a line had no
+    # argv and command is the task name (seen, not identified); "" when there
+    # is neither.
     command_source: str = ""
 
 

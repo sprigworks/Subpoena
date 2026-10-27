@@ -492,8 +492,8 @@ func TestCommFallbackIsMarkedNameOnly(t *testing.T) {
 }
 
 // A forked child is first seen with its parent's command line; it then execs
-// rm and is seen only as a zombie (no cmdline, comm "rm"). The stored line is
-// not what ran, so the event falls back to the name and is name-only.
+// rm and is seen only as a zombie (no cmdline, comm "rm"). The stored line may
+// not be what ran, so the name is added as a second, name-only event.
 func TestForkThenExecFallsBackToName(t *testing.T) {
 	w, root := freshFake(t, nil)
 	fakeProc(t, root, 920, 100, "220", "myservice\x00--serve\x00", "0::/")
@@ -504,8 +504,30 @@ func TestForkThenExecFallsBackToName(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(root, "920", "comm"), []byte("rm\n"), 0o644))
 	w.pollChildren()
 	evs := w.Events()
-	if len(evs) != 1 || evs[0].Command != "rm" || !evs[0].NameOnly() {
-		t.Fatalf("want a name-only rm event, got %+v", evs)
+	if len(evs) != 2 || evs[0].Command != "myservice --serve" || evs[0].NameOnly() ||
+		evs[1].Command != "rm" || !evs[1].NameOnly() || evs[1].PID != 920 {
+		t.Fatalf("want the line kept and a name-only rm event, got %+v", evs)
+	}
+	w.pollChildren() // a further sighting adds nothing
+	if n := len(w.Events()); n != 2 {
+		t.Fatalf("the name event must be added once, got %d events", n)
+	}
+}
+
+// A process that renames itself (prctl PR_SET_NAME) before exiting keeps the
+// command line it was seen with: a rule on that line still applies.
+func TestRenameKeepsTheCommandLine(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 922, 100, "222", "evil\x00--x\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "922", "comm"), []byte("evil\n"), 0o644))
+	fakeChildren(t, root, 100, 922)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "922", "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(root, "922", "comm"), []byte("benign\n"), 0o644))
+	w.pollChildren()
+	evs := w.Events()
+	if len(evs) != 2 || evs[0].Command != "evil --x" || evs[0].NameOnly() || evs[1].Command != "benign" || !evs[1].NameOnly() {
+		t.Fatalf("want the line kept and the new name added, got %+v", evs)
 	}
 }
 

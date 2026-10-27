@@ -26,10 +26,13 @@ type CommandSource string
 const (
 	// CommandLine means Command is the argument list, space-joined.
 	CommandLine CommandSource = "cmdline"
-	// CommandName means the arguments could not be read (the process exited
-	// first) and Command is only the kernel's task name, cut to 15 bytes. The
-	// process was seen but not identified: "touch" may have been an allowed
-	// "touch approved" or a refused "touch rejected".
+	// CommandName means Command is only the kernel's task name, cut to 15
+	// bytes: the arguments could not be read (the process exited first, or
+	// the kernel witness's argv read failed), or ProcWitness saw the name
+	// change after reading a command line (an exec or a rename; the line is
+	// kept as its own event). The process was seen but not identified:
+	// "touch" may have been an allowed "touch approved" or a refused
+	// "touch rejected".
 	CommandName CommandSource = "comm"
 )
 

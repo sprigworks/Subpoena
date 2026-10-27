@@ -354,13 +354,14 @@ func exited(err error) bool {
 func (w *ProcWitness) readSnap(pid int) *procSnap {
 	dir := filepath.Join(w.root(), strconv.Itoa(pid))
 	s := &procSnap{}
-	if b, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
-		s.cmdline = strings.Join(strings.Split(strings.TrimRight(string(b), "\x00"), "\x00"), " ")
-	}
-	// The name is read with every command line too, so a later sighting can
-	// tell that the process exec'd since (see refresh).
+	// The name is read with every command line, and first: an exec between
+	// the two reads then pairs the old name with the new line, which a later
+	// sighting reports as an extra name (see refresh), never the reverse.
 	if b, err := os.ReadFile(filepath.Join(dir, "comm")); err == nil {
 		s.comm = strings.TrimSpace(string(b))
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
+		s.cmdline = strings.Join(strings.Split(strings.TrimRight(string(b), "\x00"), "\x00"), " ")
 	}
 	if exe, err := os.Readlink(filepath.Join(dir, "exe")); err == nil {
 		s.exe = exe
@@ -560,9 +561,10 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 //
 // A forked child first shows its parent's command line. If a later sighting
 // reads no command line and a task name other than the one read with that
-// line, the process has exec'd (or renamed itself) since: the stored line is
-// not what ran, so the event falls back to the name, which WatchSpawns treats
-// as name-only.
+// line, the process has exec'd (or renamed itself) since, so the stored line
+// may not be what ran. The line is kept, and the name is added as a second,
+// name-only event for the same process: each is judged on its own, so neither
+// an exec nor a rename can erase what was seen. w.mu must be held.
 func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 	switch {
 	case s.cmdline != "":
@@ -574,7 +576,13 @@ func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 	case ev.Command == "":
 		ev.Command, ev.CommandSource = s.comm, CommandName
 	case ev.CommandSource == CommandLine && w.lineComm != nil && s.comm != w.lineComm[k]:
-		ev.Command, ev.CommandSource = s.comm, CommandName
+		nk := procKey{pid: k.pid, start: k.start + "/name:" + s.comm}
+		if _, seen := w.tracked[nk]; !seen {
+			name := *ev
+			name.Command, name.CommandSource = s.comm, CommandName
+			w.tracked[nk] = &name
+			w.order = append(w.order, nk)
+		}
 	}
 	if s.exe != "" {
 		ev.Exe = s.exe
