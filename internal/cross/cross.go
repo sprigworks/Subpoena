@@ -11,6 +11,8 @@ package cross
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -53,7 +55,8 @@ type Mutant struct {
 	Removed string // the source text removed
 	start   int    // byte offsets of the statement in File
 	end     int
-	point   int // byte offset of the enclosing function declaration in File
+	point   int    // byte offset of the enclosing function declaration in File
+	src     []byte // file bytes the offsets were computed from; not a later reread
 }
 
 // Result is the outcome of running one mutant.
@@ -69,7 +72,19 @@ type Report struct {
 	ModuleRoot        string
 	Target            string // target directory relative to the module root
 	EnforcementPoints int    // functions marked //subpoena:enforcement_point
-	Results           []Result
+	// Snapshot hashes mutant-bearing files only, from the bytes discovery
+	// parsed. It is not a hash of the full source tree, test files, or
+	// external module replacements.
+	Snapshot []SourceFile
+	Results  []Result
+}
+
+// SourceFile is one mutant-bearing file frozen at discovery. Offsets are valid
+// only for these bytes. Files with no mutant, and modules pulled in by replace,
+// are absent.
+type SourceFile struct {
+	Path   string
+	SHA256 string
 }
 
 // Failed reports whether any mutant survived or was invalid.
@@ -89,6 +104,12 @@ type Options struct {
 	Target  string        // directory to cross-examine, inside a Go module
 	Timeout time.Duration // per go command; 5 minutes if zero
 	Log     io.Writer     // progress; io.Discard if nil
+	// afterDiscover, if set, runs after the snapshot is taken and before
+	// baseline. Tests use it to edit the live tree. Production leaves it nil.
+	afterDiscover func(liveRoot string)
+	// beforeMutate, if set, runs after baseline and before a mutant is written.
+	// Tests use it to edit the snapshot copy. Production leaves it nil.
+	beforeMutate func(tmpRoot string)
 }
 
 // Run cross-examines the suite.
@@ -112,7 +133,18 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	rel, _ := filepath.Rel(root, target)
 	rep := &Report{ModuleRoot: root, Target: filepath.ToSlash(rel)}
 
-	mutants, err := FindMutants(root, target)
+	tmp, err := os.MkdirTemp("", "subpoena-cross-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	if err := copyTree(root, tmp); err != nil {
+		return nil, fmt.Errorf("cross: copy tree: %w", err)
+	}
+	// Discovery reads this copy, not the live tree. The offsets and the
+	// mutation use the same bytes, so later live edits cannot move them.
+	// copyTree is not an atomic snapshot of the whole module.
+	mutants, err := FindMutants(tmp, filepath.Join(tmp, rel))
 	if err != nil {
 		return nil, err
 	}
@@ -124,15 +156,8 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		points[fmt.Sprintf("%s:%d", m.File, m.point)] = true
 	}
 	rep.EnforcementPoints = len(points)
+	rep.Snapshot = snapshotOf(mutants)
 
-	tmp, err := os.MkdirTemp("", "subpoena-cross-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tmp)
-	if err := copyTree(root, tmp); err != nil {
-		return nil, fmt.Errorf("cross: copy tree: %w", err)
-	}
 	if err := absoluteReplaces(ctx, root, tmp); err != nil {
 		return nil, err
 	}
@@ -155,6 +180,9 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		pkgs = "./..."
 	}
 	fmt.Fprintf(o.Log, "baseline: go test %s\n", pkgs)
+	if o.afterDiscover != nil {
+		o.afterDiscover(root)
+	}
 	// The verdict is kept apart from the return so that cross-examining
 	// this function (make cross-self) can remove the return and still compile.
 	var baselineErr error
@@ -167,11 +195,20 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 
 	for _, m := range mutants {
 		path := filepath.Join(tmp, filepath.FromSlash(m.File))
-		orig, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(m.File)))
+		if o.beforeMutate != nil {
+			o.beforeMutate(tmp)
+		}
+		onDisk, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
 		}
-		mutated := append(append(append([]byte{}, orig[:m.start]...), []byte("/* removed by subpoena-cross */")...), orig[m.end:]...)
+		if !bytes.Equal(onDisk, m.src) {
+			return nil, fmt.Errorf("cross: %s: snapshot drift: copy no longer matches discovery bytes", m.File) //subpoena:enforcement
+		}
+		mutated, err := applyMutant(m.src, m)
+		if err != nil {
+			return nil, fmt.Errorf("cross: %s: %w", m.File, err)
+		}
 		if err := os.WriteFile(path, mutated, 0o644); err != nil {
 			return nil, err
 		}
@@ -202,11 +239,47 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		}
 		rep.Results = append(rep.Results, res)
 
-		if err := os.WriteFile(path, orig, 0o644); err != nil { // restore for the next mutant
+		if err := os.WriteFile(path, m.src, 0o644); err != nil { // restore the snapshot, not a later reread
 			return nil, err
 		}
 	}
 	return rep, nil
+}
+
+// applyMutant removes the marked statement from the snapshot bytes. Run does
+// not use this to detect copy drift: it compares the copy to m.src and refuses
+// before calling here. This check remains so a direct caller cannot slice
+// different bytes silently.
+func applyMutant(src []byte, m Mutant) ([]byte, error) {
+	if m.src != nil && !bytes.Equal(src, m.src) {
+		return nil, fmt.Errorf("source drift: bytes are not the discovery snapshot")
+	}
+	if m.start < 0 || m.end < m.start || m.end > len(src) {
+		return nil, fmt.Errorf("source drift: offsets %d:%d outside %d-byte snapshot", m.start, m.end, len(src))
+	}
+	if string(src[m.start:m.end]) != m.Removed {
+		return nil, fmt.Errorf("source drift: offsets no longer match %q", oneLine(m.Removed))
+	}
+	return append(append(append([]byte{}, src[:m.start]...), []byte("/* removed by subpoena-cross */")...), src[m.end:]...), nil
+}
+
+func snapshotOf(mutants []Mutant) []SourceFile {
+	seen := map[string][]byte{}
+	var files []string
+	for _, m := range mutants {
+		if _, ok := seen[m.File]; ok {
+			continue
+		}
+		seen[m.File] = m.src
+		files = append(files, m.File)
+	}
+	sort.Strings(files)
+	out := make([]SourceFile, 0, len(files))
+	for _, file := range files {
+		sum := sha256.Sum256(seen[file])
+		out = append(out, SourceFile{Path: file, SHA256: hex.EncodeToString(sum[:])})
+	}
+	return out
 }
 
 // FindMutants locates every //subpoena:enforcement statement inside a function
@@ -296,7 +369,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 			out = append(out, Mutant{
 				Func: fd.Name.Name, File: filepath.ToSlash(rel), Line: line,
 				Removed: string(src[s:e]), start: s, end: e,
-				point: fset.Position(fd.Pos()).Offset,
+				point: fset.Position(fd.Pos()).Offset, src: src,
 			})
 			return true
 		})
