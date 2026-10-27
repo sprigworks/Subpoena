@@ -3,6 +3,10 @@
 Oct 25, 2026 · Nick Henggeler
 
 > Exported from the design doc written with Claude before the repo existed. Project name chosen afterwards: **Subpoena**. The architecture diagram did not survive export; `docs/architecture.md` describes the same five components in text.
+>
+> **Status.** This file is the original proposal of 25 October 2026, not the current specification. What exists is in [architecture.md](architecture.md). How to adopt it on a Go service is in [migrating-an-existing-service.md](migrating-an-existing-service.md). The TraceQL that tier 1 evaluates is in [traceql-subset.md](traceql-subset.md).
+>
+> Two choices below were superseded. Python-first became Go, then Python, then TypeScript ([decisions.md](decisions.md), language-order row). The tier-2 witness in the worked example is Tetragon; the witness that shipped is `pkg/witness/execbpf`, run as `cmd/subpoena-witness`, and Tetragon is kept for enforcement only ([decisions.md](decisions.md), amendment 3). The Python, OATS and alert snippets are the proposal's sketch. The runnable forms are [`examples/gateway/gateway.go`](../examples/gateway/gateway.go), [`examples/gateway/oats/oats-case.yaml`](../examples/gateway/oats/oats-case.yaml) and [`examples/gateway/alerts/no_exec_after_deny.yaml`](../examples/gateway/alerts/no_exec_after_deny.yaml).
 
 ## Thesis: improvement by addition
 
@@ -19,9 +23,9 @@ What it lets you retire: hand-rolled E2E smoke tests, integration tests whose on
 
 The design goal for the agent drop-in (Section 5) is that an agent writing a feature produces correct instrumentation, trace-level tests, and at least one witness assertion for every enforcement point, with a linter rejecting anything else.
 
-## Prior art: every piece exists, nobody has assembled it
+## Prior art: the pieces, separately
 
-Each component of the design has a working implementation somewhere. What does not exist is a single package that wires a domain registry, an in-memory harness, independent witnesses, test-to-monitor promotion, and a linter for agents into one workflow.
+Each component of the design has a working implementation somewhere. The proposal treated them as separate projects. It does not claim, and this file does not check, that no later package has wired the same pieces together.
 
 | Piece | Who does it | What they have | What they lack for this design |
 | --- | --- | --- | --- |
@@ -72,7 +76,7 @@ Three test types are retired, four are improved, and three are untouched. The ru
 | Property-based tests and fuzzing | **Untouched** | Input generation is outside the observation layer entirely |
 | Mutation testing | **Untouched, and now load-bearing** | The only measure of whether trace assertions and witnesses detect injected faults; cross-examination in Section 3 is a targeted mutation run |
 
-The net is fewer test files and more assertions per execution. For a service with the usual shape, expect the integration and E2E directories to shrink by roughly half, the unit directory to stay the same, and a new `invariants/` directory of TraceQL strings shared by CI and the alerting config.
+The net is fewer test files and more assertions per execution. The proposal expected the integration and E2E directories to shrink, the unit directory to stay the same, and a new `invariants/` directory of TraceQL strings shared by CI and the alerting config. It did not measure by how much.
 
 ## The agent drop-in
 
@@ -146,7 +150,7 @@ Any trace matching it is a violation: a session that was denied and then execute
     - ref: process.command_line       # upstream semconv
 ```
 
-**Application code** (the agent writes this):
+**Application code** (conceptual sketch, not the implementation; the runnable example is Go, [`examples/gateway/gateway.go`](../examples/gateway/gateway.go)):
 
 ```markdown
 @enforcement_point
@@ -160,7 +164,7 @@ def authorize(session, span):
     return decision
 ```
 
-**Tier 1, unit** (the agent writes this from the spec, in a fresh session):
+**Tier 1, unit** (conceptual sketch. The runnable tests are [`examples/gateway`](../examples/gateway)):
 
 ```markdown
 def test_denied_session_executes_nothing(trace, witness):
@@ -174,7 +178,7 @@ def test_denied_session_executes_nothing(trace, witness):
 
 The three assertions have different jobs. The invariant query checks the span structure. The attribute check confirms the decision was recorded. The witness check is the only one that fails when `raise Denied` is deleted, because the other two still see a span that says "denied."
 
-**Tier 2, integration** (`oats.yaml`, run against a collector and Tempo in docker-compose):
+**Tier 2, integration** (conceptual `oats.yaml`. The runnable case is [`examples/gateway/oats/oats-case.yaml`](../examples/gateway/oats/oats-case.yaml), which uses `cmd/subpoena-witness`, not Tetragon):
 
 ```markdown
 input:
@@ -193,9 +197,9 @@ expected:
       count: 0
 ```
 
-The witness at this tier is a Tetragon `process_exec` stream exported to Loki, tagged with the trace ID the gateway injects into the environment of anything it spawns. Zero matching log lines is the enforcement check.
+The witness at this tier is a Tetragon `process_exec` stream exported to Loki, tagged with the trace ID the gateway injects into the environment of anything it spawns. Zero matching log lines is the enforcement check. Superseded: Tetragon does not carry the session cgroup outside Kubernetes, and the shipped tier-2 witness is `execbpf` ([decisions.md](decisions.md), amendment 3).
 
-**Tier 3, production** (Grafana alert rule):
+**Tier 3, production** (conceptual alert rule. The runnable file is [`examples/gateway/alerts/no_exec_after_deny.yaml`](../examples/gateway/alerts/no_exec_after_deny.yaml), checked by `make alerts`):
 
 ```markdown
 - alert: AgentExecAfterDeny
@@ -204,7 +208,7 @@ The witness at this tier is a Tetragon `process_exec` stream exported to Loki, t
   labels: { severity: critical }
 ```
 
-The same string, now a pager. Tier 3 cannot evaluate the witness (there is no test container), so the production rule covers the self-report structure only. The production witness is the Tetragon policy itself, set to enforce: a `process_exec` from a session whose authorize span said `false` is killed at the kernel, and that event is its own alert.
+The same string, now a pager. Tier 3 cannot evaluate the witness (there is no test container), so the production rule covers the self-report structure only. The production witness is the Tetragon policy itself, set to enforce: a `process_exec` from a session whose authorize span said `false` is killed at the kernel, and that event is its own alert. Superseded for the witness: Tetragon is kept for enforcement only, and that kernel backstop is decided, not built ([decisions.md](decisions.md), amendments 3 and 4).
 
 **Cross-examination run.** It deletes `raise Denied(session)`, re-runs tier 1. The invariant query still returns `[]` (no exec span is emitted on this code path), the attribute check still passes, and `witness.process.spawned()` returns one entry. Red. If a team removes the witness line, the linter reports `unwitnessed-enforcement` before cross-examination ever runs.
 
@@ -218,7 +222,7 @@ The same string, now a pager. Tier 3 cannot evaluate the witness (there is no te
 - [ ] **Registry governance.** Who approves a registry change, and how is a breaking rename handled across services on different versions? Weaver's `diff` reports it; the policy for acting on it is a team decision.
 - [ ] **Cardinality in tier 3.** `session.id` on every span is fine in a test; in production it is a high-cardinality attribute that some backends will reject or bill for. The registry should mark which attributes are test-tier only.
 - [ ] **What the fresh-session rule costs.** Generating tests before reading the implementation means the agent cannot see which branches exist. The skill allows a second, implementation-aware pass for branch exploration, but those tests are labeled and excluded from oracle coverage metrics. Whether that labeling holds up in practice is untested.
-- [ ] **Scope of the first cut.** Python first (the harness, the lint, one witness), with the registry language-neutral from day one. Go and TypeScript codegen from the same registry is a later step.
+- [ ] **Scope of the first cut.** Python first (the harness, the lint, one witness), with the registry language-neutral from day one. Go and TypeScript codegen from the same registry is a later step. Superseded: Go shipped first ([decisions.md](decisions.md), language-order row).
 
 One risk outside the design: the whole stack assumes instrumentation is trustworthy at the SDK level. An agent that monkeypatches the tracer provider can make any invariant pass. The linter should flag any import of the SDK's provider-setting APIs outside the harness.
 
@@ -234,7 +238,7 @@ One risk outside the design: the whole stack assumes instrumentation is trustwor
 - [Tempo TraceQL structural operators](https://grafana.com/docs/tempo/latest/release-notes/v2-3.md)
 - [agentevals](https://pypi.org/project/agentevals-cli/)
 - [Microsoft ASSERT](https://github.com/responsibleai/ASSERT/releases)
-- [Gravitee — OpenTelemetry trace verification](https://gravitee.io/corpus/gen-2261/test-plan/opentelemetry-trace-verification.html)
+- [Gravitee — OpenTelemetry trace verification](https://gravitee.io/corpus/gen-2261/test-plan/opentelemetry-trace-verification.html) (URL returned 404 on 2026-10-27; left as the proposal cited it)
 - [Tetragon concepts](https://tetragon.io/docs/concepts/)
 - [Runtime verification: from propositional to first-order temporal logic (RV 2018)](https://cris.biu.ac.il/en/publications/runtime-verification-from-propositional-to-first-order-temporal-l-2/)
 - [arXiv:2607.05139 — On the risk of coding before testing](https://arxiv.org/abs/2607.05139)

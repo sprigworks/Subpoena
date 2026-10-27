@@ -68,12 +68,16 @@ trace, falling back to parent-process lineage when there is no session cgroup.
 The exec span records which correlation applies (`subpoena.witness.correlation`).
 Tier 2 and production use `pkg/witness/execbpf`: an eBPF program on the exec
 tracepoint that reads each process's cgroup in the kernel, run as
-`cmd/subpoena-witness` with its events shipped to Loki. See
+`cmd/subpoena-witness` with its events shipped to Loki. That command ships
+exec events only. Tier 1 network absence uses `witness.Sinkhole`, a listener
+the test stands up. The kernel sibling is `pkg/witness/netbpf`, in
+`make test-ebpf`; it is not what `cmd/subpoena-witness` runs. See
 `witnesses/README.md` for the gaps in each.
 
-The toy gateway makes this concrete. `Authorize` is marked
+The toy gateway makes this concrete. `Authorize` and `Fetch` are marked
 `//subpoena:enforcement_point`, and the tests do not stop at the span: they ask
-the witness how many processes were spawned for the trace.
+the witness how many processes were spawned, and whether a forbidden address
+was dialed.
 
 ## Cross-examination
 
@@ -113,7 +117,11 @@ to reviewers and to tooling.
 
 ## Not decided here
 
-Cross-service registry migration policy, the Python and TypeScript harnesses,
-and enforcement at the kernel (killing a denied session's process) are
-deferred. Tetragon was the first tier-2 witness; outside Kubernetes its events
-lack the session cgroup, so Subpoena has its own (`witnesses/README.md`).
+Cross-service registry migration policy is still open (`docs/decisions.md`).
+The Python harness passes its contract checks for the harness, the TraceQL
+evaluator and the witness reader; lint and cross-examination are not ported
+(`docs/ports.md`). TypeScript has generated names
+(`generated/ts/semconv.ts`) and no harness. An exec backstop in the open core
+was decided and is not built (`docs/decisions.md`, amendment 4). Tetragon was
+the first tier-2 witness; outside Kubernetes its events lack the session
+cgroup, so Subpoena has its own (`witnesses/README.md`).
