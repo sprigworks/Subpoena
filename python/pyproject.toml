@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subpoena"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Trace-native testing: OpenTelemetry spans as the test interface, enforcement proven by an independent witness."
 readme = "README.md"
 license = { text = "Apache-2.0" }

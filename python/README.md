@@ -47,10 +47,6 @@ Trimmed from [`examples/python-quickstart`](https://github.com/sprigworks/subpoe
 whose full test file also has an admin control test, and which CI
 cross-examines.
 
-The absence checks and `subpoena-cross` are on `main` and arrive in the next
-release. The current PyPI release, 0.1.0a1, has the harness, the TraceQL
-subset and the witness reader.
-
 `collect()` raises `IncompleteError` (carrying the snapshot) if a span was
 dropped, never ended, or lost attributes, events or links to span limits. Absence on an incomplete snapshot is Inconclusive, and
 `require_absent` fails on it unless `allow_inconclusive=True` is passed.

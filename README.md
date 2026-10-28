@@ -18,7 +18,7 @@ that kind of code in three ways.
    mutant) and requires the suite to go red. A mutant that survives means the
    tests would still pass with the protection gone.
 
-**Status: alpha, v0.1.0-alpha.1.** APIs will change. Go is the reference
+**Status: alpha, v0.1.0-alpha.2.** APIs will change. Go is the reference
 implementation, and Python is a port (see [Languages](#languages)).
 
 ## What a test looks like
@@ -114,8 +114,6 @@ Details in [docs/architecture.md](docs/architecture.md).
 | Tiers 2 and 3 (OATS, alert rules) | same files, any language | same files, any language |
 
 The Python package is `pip install subpoena`; see [python/README.md](python/README.md).
-The PyPI release (0.1.0a1) predates the absence checks and cross-examination,
-which are on `main` and arrive with the next release.
 TypeScript is next, and has generated names already. Every port meets the
 contract in [docs/ports.md](docs/ports.md), and shared conformance cases check
 each part.

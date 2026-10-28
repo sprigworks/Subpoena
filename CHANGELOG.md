@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.1.0-alpha.2 and Python 0.1.0a2 (2026-10-28)
+
+Tagged `v0.1.0-alpha.2` and `python/v0.1.0a2`. Python gains the witnessed
+absence checks and cross-examination; lint is still Go only.
 
 - **Python cross-examination (G1).** `subpoena-cross <dir>` (console script,
   `subpoena.cross`) forces each `# subpoena:enforcement_guard` condition and
