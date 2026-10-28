@@ -13,7 +13,9 @@ A port of pkg/harness; conformance/harness.yaml holds the cases it must pass.
 from __future__ import annotations
 
 import enum
+import posixpath
 import threading
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 from opentelemetry import trace as trace_api
@@ -251,3 +253,121 @@ def _report(kind: str, check, q: str, allow_inconclusive: bool) -> None:
             return
         raise AssertionError(f"testimony: {kind} {q}: INCONCLUSIVE: capture incomplete, absence is not proven")
     raise AssertionError(f"testimony: {kind} {q}: {v}")
+
+
+# Witness checks (docs/ports.md W4, W5): absence of a process, proven by the
+# independent witness, not by the spans. A witness here is anything with
+# spawned(trace_id) and, to certify absence, health() -> Optional[str]
+# (subpoena.witness.Log has both). A port of pkg/harness's NoSpawn,
+# RequireNoSpawn and WatchSpawns.
+
+_NO_HEALTH = "witness does not report capture health"
+
+
+def _capture_health(w: Any) -> Optional[str]:
+    health = getattr(w, "health", None)
+    if not callable(health):
+        return _NO_HEALTH
+    return health()
+
+
+def no_spawn(w: Any, trace_id: str) -> "tuple[Verdict, Optional[str]]":
+    """Fail if the witness saw any process for trace_id, even from an
+    unhealthy capture. With none, missing or bad capture health is
+    Inconclusive; Pass needs a healthy witness. Stop the witness first."""
+    spawned = w.spawned(trace_id)
+    if spawned:
+        return Verdict.FAIL, f"witness saw processes for {trace_id}: {spawned}"
+    err = _capture_health(w)
+    if err is not None:
+        return Verdict.INCONCLUSIVE, err
+    return Verdict.PASS, None
+
+
+def require_no_spawn(w: Any, trace_id: str) -> None:
+    """Fail the test (AssertionError) unless a healthy witness saw no process
+    for trace_id. Inconclusive fails too."""
+    __tracebackhide__ = True
+    v, err = no_spawn(w, trace_id)
+    if v is not Verdict.PASS:
+        raise AssertionError(f"witness: no spawn for {trace_id}: {v}: {err}")
+
+
+@dataclass
+class SpawnRule:
+    """Which commands a watch_spawns check accepts; each list matches in the
+    direction that fails closed. Never matches loosely: a command line whose
+    words end with the entry's words, the entry's program compared without
+    its directory on either side, so it fires through timeout or env and on
+    /usr/bin/x. Allowed matches the whole command line exactly; None allows
+    any command not in Never, an empty list allows none. A name-only sighting
+    fails when its name is the program of a Never entry; otherwise, with an
+    Allowed list, it fails as unidentified unless excuse_name_only is set and
+    the name is the program of an Allowed entry. A program is an entry's
+    first word, without its directory, cut to the kernel's 15-byte task name."""
+
+    allowed: Optional[List[str]] = None
+    never: List[str] = field(default_factory=list)
+    excuse_name_only: bool = False
+
+
+def _programs(rules: Sequence[str]) -> List[str]:
+    out = []
+    for r in rules:
+        f = r.split()
+        if f:
+            out.append(posixpath.basename(f[0])[:15])
+    return out
+
+
+def _matches_any(cmd: str, rules: Sequence[str]) -> bool:
+    words = cmd.split()
+    for r in rules:
+        rw = r.split()
+        if not rw or len(rw) > len(words):
+            continue
+        tail = words[len(words) - len(rw):]
+        if posixpath.basename(tail[0]) == posixpath.basename(rw[0]) and tail[1:] == rw[1:]:
+            return True
+    return False
+
+
+def check_spawns(w: Any, trace_id: str, rule: SpawnRule) -> List[str]:
+    """Stop the witness (if it can be stopped) and return one failure message
+    per process the rule refuses, then one for missing or bad capture health.
+    An empty list means the check passed."""
+    stop = getattr(w, "stop", None)
+    if callable(stop):
+        stop()
+    errs = []
+    for p in w.spawned(trace_id):
+        name_only = p.command_source == "comm"
+        if name_only and p.command in _programs(rule.never):
+            errs.append(f"witness: refused program seen by name only for {trace_id}, arguments unknown: "
+                        f"pid {p.pid} {p.command!r} ({p.attribution})")
+        elif name_only and rule.allowed is not None and not (
+                rule.excuse_name_only and p.command in _programs(rule.allowed)):
+            errs.append(f"witness: process seen by name only for {trace_id}, not identified: "
+                        f"pid {p.pid} {p.command!r} ({p.attribution})")
+        elif name_only and rule.allowed is not None:
+            pass  # excused
+        elif _matches_any(p.command, rule.never):
+            errs.append(f"witness: refused command ran for {trace_id}: pid {p.pid} {p.command!r} ({p.attribution})")
+        elif rule.allowed is not None and p.command not in rule.allowed:
+            errs.append(f"witness: command not allowed for {trace_id}: pid {p.pid} {p.command!r} ({p.attribution})")
+    err = _capture_health(w)
+    if err is not None:
+        errs.append(f"witness: {trace_id}: capture unhealthy, absence of refused commands is not proven: {err}")
+    return errs
+
+
+def watch_spawns(addfinalizer, w: Any, trace_id: str, rule: SpawnRule) -> None:
+    """Register check_spawns to run at test teardown, even after an earlier
+    failure: pass pytest's request.addfinalizer. Register it when the witness
+    starts, so a test that stops early still reports what ran."""
+    def finalize() -> None:
+        __tracebackhide__ = True
+        errs = check_spawns(w, trace_id, rule)
+        if errs:
+            raise AssertionError("\n".join(errs))
+    addfinalizer(finalize)

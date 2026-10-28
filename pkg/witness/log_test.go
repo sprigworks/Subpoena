@@ -114,17 +114,23 @@ func TestAMalformedLineIsAnErrorWithItsLineNumber(t *testing.T) {
 	}
 }
 
-// The schema is the contract other languages read; Line is what the witness
-// writes. They must name the same fields, with the same ones required.
+// The schema is the contract other languages read; Line and Record are what
+// the witness writes. They must name the same fields, with the same ones
+// required: Line's in the schema's else branch, Record's in its then branch.
 func TestLineMatchesTheSchema(t *testing.T) {
 	b, err := os.ReadFile("../../docs/witness-event.schema.json")
 	if err != nil {
 		t.Fatal(err)
 	}
+	type branch struct {
+		Required []string `json:"required"`
+	}
 	var schema struct {
-		Required             []string                  `json:"required"`
 		Properties           map[string]map[string]any `json:"properties"`
 		AdditionalProperties *bool                     `json:"additionalProperties"`
+		If                   branch                    `json:"if"`
+		Then                 branch                    `json:"then"`
+		Else                 branch                    `json:"else"`
 	}
 	if err := json.Unmarshal(b, &schema); err != nil {
 		t.Fatal(err)
@@ -132,29 +138,46 @@ func TestLineMatchesTheSchema(t *testing.T) {
 	if schema.AdditionalProperties == nil || !*schema.AdditionalProperties {
 		t.Error("the schema must allow additional properties: readers ignore fields they do not know")
 	}
-	var fields, required []string
-	lt := reflect.TypeOf(Line{})
-	for i := 0; i < lt.NumField(); i++ {
-		tag := lt.Field(i).Tag.Get("json")
-		name, opts, _ := strings.Cut(tag, ",")
-		fields = append(fields, name)
-		if opts != "omitempty" {
-			required = append(required, name)
-		}
+	if !reflect.DeepEqual(schema.If.Required, []string{"record"}) {
+		t.Errorf("a line is a record exactly when it has a record field; if = %v", schema.If.Required)
 	}
-	var props []string
+	fieldsOf := func(v any) (fields, required []string) {
+		lt := reflect.TypeOf(v)
+		for i := 0; i < lt.NumField(); i++ {
+			name, opts, _ := strings.Cut(lt.Field(i).Tag.Get("json"), ",")
+			fields = append(fields, name)
+			if opts != "omitempty" {
+				required = append(required, name)
+			}
+		}
+		sort.Strings(required)
+		return fields, required
+	}
+	lineFields, lineReq := fieldsOf(Line{})
+	recFields, recReq := fieldsOf(Record{})
+	all := map[string]bool{}
+	for _, f := range append(lineFields, recFields...) {
+		all[f] = true
+	}
+	var fields, props []string
+	for f := range all {
+		fields = append(fields, f)
+	}
 	for p := range schema.Properties {
 		props = append(props, p)
 	}
 	sort.Strings(fields)
 	sort.Strings(props)
-	sort.Strings(required)
-	sort.Strings(schema.Required)
+	sort.Strings(schema.Then.Required)
+	sort.Strings(schema.Else.Required)
 	if !reflect.DeepEqual(fields, props) {
-		t.Errorf("fields:\n Line   %v\n schema %v", fields, props)
+		t.Errorf("fields:\n Line+Record %v\n schema      %v", fields, props)
 	}
-	if !reflect.DeepEqual(required, schema.Required) {
-		t.Errorf("required:\n Line   %v\n schema %v", required, schema.Required)
+	if !reflect.DeepEqual(lineReq, schema.Else.Required) {
+		t.Errorf("exec line required:\n Line   %v\n schema %v", lineReq, schema.Else.Required)
+	}
+	if !reflect.DeepEqual(recReq, schema.Then.Required) {
+		t.Errorf("record required:\n Record %v\n schema %v", recReq, schema.Then.Required)
 	}
 }
 
@@ -191,5 +214,31 @@ func TestLineWithoutArgvIsNameOnly(t *testing.T) {
 	got := log.Spawned(traceA)
 	if len(got) != 2 || got[0].Command != "rm" || !got[0].NameOnly() || got[1].Command != "" || got[1].CommandSource != "" {
 		t.Fatalf("want rm name-only, then an empty event with no source; got %+v", got)
+	}
+}
+
+// Health comes from the file's start and stop records (docs/ports.md W4):
+// a window closed by a healthy stop certifies the capture, anything else is
+// a fault. conformance/witness.yaml holds the full table both readers pass.
+func TestLogHealthComesFromRecords(t *testing.T) {
+	start := `{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}`
+	stop := `{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}`
+	lost := `{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":false,"error":"execbpf: lost 3 kernel event(s)"}`
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{"healthy", start + "\n" + stop + "\n", ""},
+		{"no records", "", "no start or stop records"},
+		{"never stopped", start + "\n", "never stopped"},
+		{"lost events", start + "\n" + lost + "\n", "lost 3 kernel event(s)"},
+	} {
+		log, err := ReadLog(strings.NewReader(tc.in))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		h := log.Health()
+		if (tc.want == "") != (h == nil) || (h != nil && !strings.Contains(h.Error(), tc.want)) {
+			t.Errorf("%s: health %v, want %q", tc.name, h, tc.want)
+		}
 	}
 }

@@ -75,5 +75,8 @@ def test_a_malformed_line_is_an_error_with_its_line_number(bad):
 def test_the_schema_names_the_fields_the_reader_checks():
     schema = json.loads((ROOT / "docs" / "witness-event.schema.json").read_text())
     from subpoena import witness
-    assert set(witness._INT_FIELDS) | set(witness._STR_FIELDS) | {"time", "args"} == set(schema["properties"])
+    exec_fields = set(witness._INT_FIELDS) | set(witness._STR_FIELDS) | {"time", "args"}
+    record_fields = {"time", "record", "healthy", "error"}
+    assert exec_fields | record_fields == set(schema["properties"])
+    assert schema["if"] == {"required": ["record"]}
     assert schema["additionalProperties"] is True

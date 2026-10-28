@@ -7,11 +7,15 @@
 //
 // By default only execs inside a session cgroup are written; -all writes every
 // exec on the machine, which an argument-based witness query needs. The line
-// format is witness.Line (schema: docs/witness-event.schema.json).
+// format is witness.Line (schema: docs/witness-event.schema.json). A "start"
+// record (witness.Record) opens the file's capture window once the program is
+// attached, and a "stop" record closes it with the capture's health: whether
+// kernel events were lost, or a read or write failed.
 package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/sprigworks/subpoena/pkg/witness"
 	"github.com/sprigworks/subpoena/pkg/witness/execbpf"
@@ -83,6 +88,16 @@ func run(root string, all bool, out, ready string) error {
 	if err := w.Start(); err != nil {
 		return err
 	}
+	// The start and stop records bound the capture. A reader trusts an
+	// absence only inside a window closed by a healthy stop, so a witness
+	// killed before it could write one leaves a file that proves nothing.
+	mu.Lock()
+	err := enc.Encode(witness.Record{Time: time.Now().UTC(), Record: witness.RecordStart})
+	mu.Unlock()
+	if err != nil {
+		w.Stop()
+		return err
+	}
 	if ready != "" {
 		if err := os.WriteFile(ready, []byte("attached\n"), 0o644); err != nil {
 			w.Stop()
@@ -95,11 +110,13 @@ func run(root string, all bool, out, ready string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	err := w.Stop()
+	err = w.Stop()
 	mu.Lock()
 	defer mu.Unlock()
-	if writeErr != nil {
-		return writeErr
+	err = errors.Join(err, writeErr)
+	stop := witness.Record{Time: time.Now().UTC(), Record: witness.RecordStop, Healthy: err == nil}
+	if err != nil {
+		stop.Error = err.Error()
 	}
-	return err
+	return errors.Join(err, enc.Encode(stop))
 }

@@ -1,0 +1,155 @@
+# The witness file (docs/ports.md W3, W4): what a port's reader must report
+# for each file. lines are written as-is, one per file line. read_error: the
+# read itself fails, with a message containing this text. health: "ok" or
+# text the capture fault must contain. spawned: PIDs per trace ID, in file
+# order. no_spawn: the verdict of the no-spawn check for that trace ID.
+traces: {A: c0de00000000000000000000000000a1, B: c0de00000000000000000000000000b2, C: c0de00000000000000000000000000c3}
+cases:
+  # One capture window closed by a healthy stop: absence rests on it.
+  - name: healthy_window
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":8,"ppid":1,"host_pid":4008,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000b2","trace_id":"c0de00000000000000000000000000b2","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    spawned:
+      A: [7]
+      B: [8]
+      C: []
+    no_spawn:
+      A: Fail
+      C: Pass
+
+  # A file with execs and no records (an older witness, or cut short): what ran still counts, absence is Inconclusive.
+  - name: no_records
+    lines:
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+    health: "no start or stop records"
+    spawned:
+      A: [7]
+    no_spawn:
+      A: Fail
+      C: Inconclusive
+
+  # Nothing at all: no capture health, so no absence.
+  - name: empty_file
+    lines: []
+    health: "no start or stop records"
+    spawned:
+      A: []
+    no_spawn:
+      A: Inconclusive
+
+  # The witness was killed, or the file read before it stopped.
+  - name: never_stopped
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+    health: "never stopped"
+    spawned:
+      A: [7]
+    no_spawn:
+      A: Fail
+      C: Inconclusive
+
+  # The stop record says kernel events were lost.
+  - name: lost_events
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":false,"error":"execbpf: lost 3 kernel event(s)"}'
+    health: "lost 3 kernel event(s)"
+    spawned:
+      A: []
+    no_spawn:
+      A: Inconclusive
+
+  # A stop that claims health but carries an error is unhealthy.
+  - name: healthy_with_error
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"error":"write: disk full"}'
+    health: "disk full"
+    spawned:
+      A: []
+    no_spawn:
+      A: Inconclusive
+
+  # An exec before any start: written when nothing vouched for the capture.
+  - name: exec_outside_window
+    lines:
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "outside any capture window"
+    spawned:
+      A: [7]
+    no_spawn:
+      A: Fail
+      C: Inconclusive
+
+  # Two runs appended to one file, each closed by a healthy stop.
+  - name: two_windows
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:01:01Z","pid":9,"ppid":1,"host_pid":4009,"comm":"curl","exe":"/usr/bin/x","command":"curl x","args":["curl","x"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:01:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    spawned:
+      A: [7, 9]
+    no_spawn:
+      A: Fail
+      C: Pass
+
+  # An exec after one stop and before the next start.
+  - name: exec_between_windows
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "outside any capture window"
+    spawned:
+      A: [7]
+    no_spawn:
+      C: Inconclusive
+
+  # A second start before the first window stopped.
+  - name: start_inside_window
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "still open"
+    spawned:
+      A: []
+    no_spawn:
+      A: Inconclusive
+
+  # A stop with no window open.
+  - name: stop_without_start
+    lines:
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "no capture open"
+    spawned:
+      A: []
+    no_spawn:
+      A: Inconclusive
+
+  # A record kind this reader does not know is an error, never skipped.
+  - name: unknown_record
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time": "2026-10-28T12:00:05Z", "record": "pause"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "unknown record"
+
+  # A record must carry its time.
+  - name: record_without_time
+    lines:
+      - '{"record": "start"}'
+    read_error: "no time"

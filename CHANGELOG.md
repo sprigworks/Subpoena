@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Witness file health (W4), and absence checks in Python (W5).**
+  `subpoena-witness` writes a `start` record once attached and a `stop`
+  record with the capture's health (lost kernel events, read or write
+  failures), which it used to drop. `witness.Log` now reports `Health`, so
+  `NoSpawn` over a witness file can Pass; before, it was always Inconclusive.
+  A file with no records, an exec outside a start..stop window, or an
+  unhealthy or missing stop is a capture fault. Python gains the same
+  `Log.health()`, `no_spawn`, `require_no_spawn`, `watch_spawns` and
+  `SpawnRule`, and `ProcessEvent.name_only`. `conformance/witness.yaml` holds
+  the cases both readers pass.
 - **Cross: evidence per kill, and crashes.** Each killed mutant reports its
   first evidence, from the first failure message of a failed test: `witness`,
   `testimony` (the harness tags) or `other`. A suite that goes red only by a

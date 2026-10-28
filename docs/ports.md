@@ -142,15 +142,31 @@ ones keep their name and meaning.
   `time`, is an error naming its line number, never skipped: skipping it could
   turn an exec into an absence. The empty trace ID matches nothing.
 
-Check: the Go reader `witness.ReadLog` is the reference;
-`pkg/witness/log_test.go` holds the cases a port's reader must also pass.
+- **W4. Health comes from the file.** The witness writes a `start` record
+  (`{"time", "record": "start"}`) once it is attached and a `stop` record
+  (`"record": "stop"`, `"healthy"`, and `"error"` when unhealthy) when it
+  stops; a line with a `record` field is a record, any other line an exec.
+  The file's capture is healthy only if it has records, every exec lies
+  inside a start..stop window, every window is closed, and every stop says
+  `healthy: true` with no error. Anything else is a capture fault: the execs
+  still count, but no absence rests on the file. An unknown record kind is a
+  read error.
+- **W5. Absence checks.** `no_spawn(witness, trace_id)` is Fail when the
+  witness saw any process for the trace (even from an unhealthy capture),
+  Inconclusive when it saw none but its health is bad or unreported, and Pass
+  only from a healthy witness. `watch_spawns` registers a teardown check with
+  a `SpawnRule`: `Never` entries match a command line whose words end with
+  theirs, the program compared without its directory on either side;
+  `Allowed` matches exactly; a name-only sighting fails when its name is a
+  `Never` program, and with an `Allowed` list unless excused. Failure
+  messages start with `witness:`.
 
-Go also builds absence checks on the witness: `NoSpawn` and `RequireNoSpawn`
-(Inconclusive when capture health is missing or bad), `WatchSpawns` with a
-`SpawnRule` (`Never`, `Allowed`, name-only sightings), and `NoDial` for the
-network witness. They are not yet part of the port contract, and the Python
-port does not have them: a Python test can list what ran, but no helper turns
-that into a fail-closed verdict.
+Check: `conformance/witness.yaml` holds files and what a reader must report
+for each (read error, health, spawned PIDs, the no-spawn verdict); the Go
+runner is `conformance/witness_test.go`. `pkg/witness/log_test.go` and
+`pkg/harness/watch_test.go` hold the reader and `SpawnRule` cases a port must
+also pass. Go's network witness (`NoDial`) is not part of the port contract
+yet.
 
 ## L and G: lint and cross-examination
 
