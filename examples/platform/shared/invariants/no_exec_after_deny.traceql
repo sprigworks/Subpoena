@@ -1,0 +1,1 @@
+{ name = "platform.action.authorize" && span.platform.authorization.allowed = false } >> { name = "platform.action.exec" }
