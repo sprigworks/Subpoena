@@ -1,0 +1,21 @@
+groups:
+  - id: span.platform.action.authorize
+    type: span
+    name: platform.action.authorize
+    span_kind: internal
+    stability: development
+    brief: The service decides whether the action may execute.
+    attributes:
+      - ref: platform.action.id
+        requirement_level: required
+      - ref: platform.authorization.allowed
+        requirement_level: required
+  - id: span.platform.action.exec
+    type: span
+    name: platform.action.exec
+    span_kind: internal
+    stability: development
+    brief: The service executes an authorized action.
+    attributes:
+      - ref: platform.action.id
+        requirement_level: required

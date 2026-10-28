@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 	"testing"
@@ -28,18 +29,26 @@ const (
 // allowed command (`sh -c "x; sleep 0.6"`) is not allowed; list the wrapped
 // form ("timeout 5 sleep 0.6") if the test runs one.
 //
-// A witness that cannot read a process's arguments reports a shorter command
-// line (ProcWitness falls back to the process name), which Never may not
-// match. An Allowed list catches those, so pair Never with Allowed where the
-// test knows what it runs.
+// A process that exits before its arguments are read is seen by name only
+// (ProcessEvent.NameOnly). Such a sighting fails when its name is the program
+// of a Never entry, because it may have been that command. Otherwise, with an
+// Allowed list, it fails as unidentified unless ExcuseNameOnly is set and the
+// name is the program of an Allowed entry. A program is an entry's first
+// word, without its directory, cut to the kernel's 15-byte task name.
 type SpawnRule struct {
 	// Allowed lists the exact command lines the test may run. Nil allows any
 	// command not in Never; an empty, non-nil slice allows none.
 	Allowed []string
 	// Never lists commands that must not run in this test, whatever Allowed
-	// says. An entry matches a command line equal to it or ending with it
-	// after a space.
+	// says. An entry matches a command line whose words end with its words;
+	// the entry's program matches with or without a directory on either
+	// side ("sleep 1" refuses "/usr/bin/sleep 1", and the reverse).
 	Never []string
+	// ExcuseNameOnly logs, instead of failing, a name-only sighting whose name
+	// is the program of an Allowed entry. Set it only when the test runs
+	// commands too short-lived to be read, and keep every refused probe
+	// long-lived, so a refused one is always seen with its arguments.
+	ExcuseNameOnly bool
 }
 
 // WatchSpawns registers a witness check that runs when the test ends, even
@@ -68,6 +77,14 @@ func checkSpawns(tb testing.TB, w witness.Witness, traceID string, rule SpawnRul
 	ok := true
 	for _, p := range w.Spawned(traceID) {
 		switch {
+		case p.NameOnly() && slices.Contains(programs(rule.Never), p.Command):
+			tb.Errorf("%s: refused program seen by name only for %s, arguments unknown: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
+			ok = false
+		case p.NameOnly() && rule.Allowed != nil && !(rule.ExcuseNameOnly && slices.Contains(programs(rule.Allowed), p.Command)):
+			tb.Errorf("%s: process seen by name only for %s, not identified: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
+			ok = false
+		case p.NameOnly() && rule.Allowed != nil:
+			tb.Logf("%s: excused name-only sighting for %s: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution)
 		case matchesAny(p.Command, rule.Never):
 			tb.Errorf("%s: refused command ran for %s: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
@@ -101,12 +118,38 @@ func stopWitness(w any) {
 	}
 }
 
-// matchesAny reports whether cmd equals one of rules or ends with one after a
-// space. Used for Never only: for an allow list, a suffix match would let any
-// command line that ends with an allowed command through.
-func matchesAny(cmd string, rules []string) bool {
+// programs returns the task name each rule's program would have: the first
+// word, without its directory, cut to 15 bytes.
+func programs(rules []string) []string {
+	var out []string
 	for _, r := range rules {
-		if r != "" && strings.HasSuffix(" "+cmd, " "+r) {
+		f := strings.Fields(r)
+		if len(f) == 0 {
+			continue
+		}
+		name := path.Base(f[0])
+		if len(name) > 15 {
+			name = name[:15]
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// matchesAny reports whether cmd's words end with one of rules' words, the
+// rule's program compared without its directory on both sides, so
+// "/usr/bin/sleep 1" and "sleep 1" match each other. Used for Never only: for
+// an allow list, a suffix match would let any command line that ends with an
+// allowed command through.
+func matchesAny(cmd string, rules []string) bool {
+	words := strings.Fields(cmd)
+	for _, r := range rules {
+		rw := strings.Fields(r)
+		if len(rw) == 0 || len(rw) > len(words) {
+			continue
+		}
+		tail := words[len(words)-len(rw):]
+		if path.Base(tail[0]) == path.Base(rw[0]) && slices.Equal(tail[1:], rw[1:]) {
 			return true
 		}
 	}

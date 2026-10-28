@@ -142,7 +142,7 @@ oats:
 	docker volume ls -q --filter name=_witness-events | grep '^oats-' | xargs -r docker volume rm >/dev/null; exit $$rc
 
 # Everything that runs without Docker or eBPF.
-check: build vet test lint cross cross-self
+check: build vet test lint cross cross-self platform
 
 # Regenerate the constants from the registry with Weaver: Go, Python and
 # TypeScript (one module each, the same names).
@@ -166,3 +166,12 @@ check-generated: generate
 # -e: tolerate test-only dependencies of dependencies on unreachable vanity hosts.
 tidy:
 	go mod tidy -e
+
+# Multi-module platform adoption example (each service has its own CI gate).
+.PHONY: platform
+platform:
+ifeq ($(SANDBOX),1)
+	@echo "platform: skipped under SANDBOX=1 (go.work.sandbox covers only the root module; the example's modules need the module proxy)"
+else
+	$(MAKE) -C examples/platform check
+endif

@@ -469,3 +469,181 @@ func TestParallelScanMatchesSerialScan(t *testing.T) {
 		t.Fatalf("want the first fault in listing order (PID 1200), got %v", err)
 	}
 }
+
+// A process that exits before its cmdline is read is reported by its comm
+// name, and the event says so: "touch" is not the command line "touch".
+// A later sighting with the command line replaces it.
+func TestCommFallbackIsMarkedNameOnly(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 920, 100, "220", "", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "920", "comm"), []byte("touch\n"), 0o644))
+	fakeChildren(t, root, 100, 920)
+	w.pollChildren()
+	evs := w.Events()
+	if len(evs) != 1 || evs[0].Command != "touch" || !evs[0].NameOnly() || evs[0].CommandSource != CommandName {
+		t.Fatalf("name-only sighting: got %+v", evs)
+	}
+	must(t, os.WriteFile(filepath.Join(root, "920", "cmdline"), []byte("touch\x00approved\x00"), 0o644))
+	w.pollChildren()
+	evs = w.Events()
+	if len(evs) != 1 || evs[0].Command != "touch approved" || evs[0].NameOnly() || evs[0].CommandSource != CommandLine {
+		t.Fatalf("after the cmdline was read: got %+v", evs)
+	}
+}
+
+// A forked child is first seen with its parent's command line; it then execs
+// rm and is seen only as a zombie (no cmdline, comm "rm"). The stored line may
+// not be what ran, so the name is added as a second, name-only event.
+func TestForkThenExecFallsBackToName(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 920, 100, "220", "myservice\x00--serve\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "920", "comm"), []byte("myservice\n"), 0o644))
+	fakeChildren(t, root, 100, 920)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "920", "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(root, "920", "comm"), []byte("rm\n"), 0o644))
+	w.pollChildren()
+	evs := w.Events()
+	if len(evs) != 2 || evs[0].Command != "myservice --serve" || evs[0].NameOnly() ||
+		evs[1].Command != "rm" || !evs[1].NameOnly() || evs[1].PID != 920 {
+		t.Fatalf("want the line kept and a name-only rm event, got %+v", evs)
+	}
+	w.pollChildren() // a further sighting adds nothing
+	if n := len(w.Events()); n != 2 {
+		t.Fatalf("the name event must be added once, got %d events", n)
+	}
+}
+
+// A process that renames itself (prctl PR_SET_NAME) before exiting keeps the
+// command line it was seen with: a rule on that line still applies.
+func TestRenameKeepsTheCommandLine(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 922, 100, "222", "evil\x00--x\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "922", "comm"), []byte("evil\n"), 0o644))
+	fakeChildren(t, root, 100, 922)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "922", "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(root, "922", "comm"), []byte("benign\n"), 0o644))
+	w.pollChildren()
+	evs := w.Events()
+	if len(evs) != 2 || evs[0].Command != "evil --x" || evs[0].NameOnly() || evs[1].Command != "benign" || !evs[1].NameOnly() {
+		t.Fatalf("want the line kept and the new name added, got %+v", evs)
+	}
+}
+
+// A process that exits without exec'ing keeps the command line it was seen
+// with: the name read at exit is the one read with that line.
+func TestExitWithoutExecKeepsCommandLine(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 921, 100, "221", "sleep\x001\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "921", "comm"), []byte("sleep\n"), 0o644))
+	fakeChildren(t, root, 100, 921)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "921", "cmdline"), nil, 0o644))
+	w.pollChildren()
+	evs := w.Events()
+	if len(evs) != 1 || evs[0].Command != "sleep 1" || evs[0].NameOnly() {
+		t.Fatalf("want the command line kept, got %+v", evs)
+	}
+}
+
+// The name event carries the cgroup and attribution of the sighting that
+// found it, not of the earlier one.
+func TestNameEventTakesTheCurrentAttribution(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 923, 100, "223", "myservice\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "923", "comm"), []byte("myservice\n"), 0o644))
+	fakeChildren(t, root, 100, 923)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "923", "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(root, "923", "comm"), []byte("rm\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(root, "923", "cgroup"), []byte(session(otherTid)), 0o644))
+	w.pollChildren()
+	evs := w.Events()
+	if len(evs) != 2 || evs[1].Command != "rm" || evs[1].Attribution != ByCgroup || evs[1].TraceID != otherTid {
+		t.Fatalf("the name event must be attributed to the session it was seen in, got %+v", evs)
+	}
+	if got := w.Spawned(tid); len(got) != 0 {
+		t.Fatalf("another session's process must not be returned for %s: %+v", tid, got)
+	}
+}
+
+// A process that rewrites its own argv (setproctitle) keeps its comm. The
+// line first read is still what ran, so it stays as an event of its own.
+func TestRewrittenArgvKeepsTheEarlierLine(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 930, 100, "230", "curl\x00evil.example\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(root, "930", "comm"), []byte("curl\n"), 0o644))
+	fakeChildren(t, root, 100, 930)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "930", "cmdline"), []byte("worker: idle\x00"), 0o644))
+	w.pollChildren()
+	got := byCmd(w.Events())
+	if len(got) != 2 || got["curl evil.example"].PID != 930 || got["worker: idle"].PID != 930 ||
+		got["curl evil.example"].CommandSource != CommandLine {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// A forked child first shows exactly its parent's line, which was never its
+// own: its exec replaces it, and only what it ran is reported.
+func TestForkedChildsInheritedLineIsReplaced(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 931, 100, "231", "gateway", "0::/")
+	fakeChildren(t, root, 100, 931)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(root, "931", "cmdline"), []byte("curl\x00x\x00"), 0o644))
+	w.pollChildren()
+	if got := byCmd(w.Events()); len(got) != 1 || got["curl x"].PID != 931 {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// Coverage counts both pollers and reports the longest gap between full
+// scans: the window in which a process outside the children tree can slip by.
+func TestCoverageReportsFullScanGap(t *testing.T) {
+	w, _ := freshFake(t, nil)
+	before := w.Coverage()
+	if before.FullScans == 0 || before.ChildrenWalks == 0 {
+		t.Fatalf("Start and Stop poll with both pollers; got %+v", before)
+	}
+	w.Poll()
+	time.Sleep(30 * time.Millisecond)
+	w.Poll()
+	w.pollChildren()
+	got := w.Coverage()
+	if got.FullScans != before.FullScans+2 || got.ChildrenWalks != before.ChildrenWalks+1 {
+		t.Fatalf("want 2 more full scans and 1 more walk than %+v, got %+v", before, got)
+	}
+	if got.MaxFullScanGap < 30*time.Millisecond {
+		t.Fatalf("a 30ms pause between full scans must show in MaxFullScanGap, got %v", got.MaxFullScanGap)
+	}
+}
+
+// Scans that fail after the last good one leave its window open until Stop:
+// Coverage must count it, though no later scan closed it.
+func TestCoverageCountsTheWindowLeftOpenByFailedScans(t *testing.T) {
+	w, root := freshFake(t, func(w *ProcWitness) { w.Interval = time.Hour })
+	must(t, w.Start())
+	must(t, os.Rename(root, root+".gone"))
+	defer os.Rename(root+".gone", root)
+	time.Sleep(50 * time.Millisecond)
+	w.Poll()
+	w.Stop()
+	if c := w.Coverage(); c.MaxFullScanGap < 50*time.Millisecond {
+		t.Fatalf("a 50ms window closed by no scan must show in MaxFullScanGap, got %+v", c)
+	}
+}
+
+// A new Start resets coverage.
+func TestCoverageResetsOnStart(t *testing.T) {
+	w, _ := freshFake(t, nil)
+	for i := 0; i < 100; i++ {
+		w.Poll()
+	}
+	must(t, w.Start())
+	w.Stop()
+	if c := w.Coverage(); c.FullScans >= 100 {
+		t.Fatalf("coverage carried over from the previous capture: %+v", c)
+	}
+}

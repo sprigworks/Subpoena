@@ -2,16 +2,82 @@
 
 ## Unreleased
 
-- **`harness.WatchSpawns`.** A witness check registered when the witness
+- **Cross: evidence per kill, and crashes.** Each killed mutant reports its
+  first evidence, from the first failure message of a failed test: `witness`,
+  `testimony` (the harness tags) or `other`. A suite that goes red only by a
+  crash (a panic, a runtime fatal error, `os.Exit`, or a failure with no
+  message) is `enforcement-mutant-crashed` and fails the run. `-evidence-dir` keeps
+  every mutant run's full `go test -json` output.
+- **Cross: `-j N` parallel mutants.** Single mutants run N at a time, each in
+  its own copy of the module. cross-self: 490 s at `-j 1`, 135 s at `-j 8`, same
+  verdicts. Load can flip a verdict either way, so gate on `-j 1`.
+- **Cross: `-select` test selection.** Each mutant runs only the tests that
+  executed its line in a per-test coverage pass after the baseline. Opt-in: it
+  pays off on long suites, not on short ones. A mutant its selected tests do
+  not kill runs again on the whole suite, and group runs use the whole suite. A
+  test that fails alone, or a selected subset that fails together without any
+  mutant, is an error.
+
+- **Guard and layered mutants in `subpoena-cross`.**
+  `//subpoena:enforcement_guard true|false` on an `if` forces its condition to
+  the bypass value. `group=<name>` on enforcement markers declares layers of one
+  guarantee: cross also mutates the whole group, and a layer that survives alone
+  but is caught with its group is `enforcement-layer-masked`, naming the masking
+  layer. A masked layer fails the run unless `cross-masked.txt` lists it with a
+  reason; a stale entry fails too.
+- **Breaking:** enforcement markers no longer accept trailing text.
+  `//subpoena:enforcement because ...` is now a discovery error; only
+  `group=<name>` may follow the marker. A marker that would take no effect (a
+  statement or guard marker outside an enforcement point, or a misspelt one) is
+  an error too; before, it was ignored and its statement went unexamined.
+- **Cross run hygiene.** A timed-out mutant names the packages and tests still
+  running at `-timeout`. Ctrl-C (or SIGTERM) cancels the run, killing the
+  mutant's test processes and removing the copies. Where a timeout cannot kill
+  the test binary (not unix), the run stops at the first timeout. A guard
+  marker on a line whose outermost statement is not the `if` (an `if` inside
+  an inline closure) is an error.
+
+- **Cross refuses ambiguous `cross-masked.txt` entries.** One entry accepts one
+  masked layer; an entry matching two, or listed twice, is an error. An entry
+  names the layer's group (`<file> | <func> | group=<group> | <removed text> |
+  <reason>`), so a layer moved to another group needs a fresh review. A canceled
+  run is an error, not a kill.
+
+- **`harness.WatchSpawns` (Go).** A witness check registered when the witness
   starts that runs at test cleanup, even after an earlier `Fatal`: it stops the
   witness, fails on commands the `SpawnRule` refuses (`Allowed`, `Never`) and on
   missing or bad capture health, and logs every process seen when the test had
-  already failed. Moved from GhostGate's test helpers.
-- **`harness.CheckNoSpawn`, `CheckNoDial`.** Non-fatal forms of the witness
+  already failed. Moved from GhostGate's test helpers. A `Never` entry's program
+  matches with or without a directory (`sleep 1` refuses `/usr/bin/sleep 1`).
+- **`harness.CheckNoSpawn`, `CheckNoDial` (Go).** Non-fatal forms of the witness
   absence checks. `subpoena-lint` counts them, and `WatchSpawns`, as asking a
   witness.
+- **Name-only sightings are marked.** When `ProcWitness` sees a process only
+  by its kernel task name (it exited before its arguments were read),
+  `ProcessEvent.CommandSource` is `comm` and `NameOnly()` is true. `WatchSpawns`
+  fails on a name-only sighting whose name is a `Never` program, and, with an
+  `Allowed` list, on any name-only sighting unless `SpawnRule.ExcuseNameOnly`
+  is set and the name is an `Allowed` program. Before, a bare name could slip
+  past `Never`.
 - **Tagged failure messages.** Harness witness failures start with `witness:`,
   telemetry assertion failures with `testimony:` (Go and Python).
+- **Lint: verified `Collect` wrappers.** A test helper that stops the system
+  and witness, checks health and calls the harness `Collect` counts as
+  `Collect` for `no-trace-assertion` and `unguarded-absence`, but only when
+  every `return` hands back the trace from that call. A same-named method that
+  doesn't, such as a metrics `Collect`, still doesn't count (`lint/README.md`).
+- **`ProcWitness.Coverage` (Go).** The number of full scans and children walks, and
+  the longest window in which a process outside the root's children tree could
+  have started and exited unseen (from one scan's start to the next one's end,
+  or to Stop). A process shorter than that window may have been missed. CI now runs the `BenchmarkProc*` benchmarks (report only).
+- **Python harness: span limits (fix).** The Python harness now sets its own
+  span limits, all unlimited, so `OTEL_*_LIMIT` variables no longer drop or
+  truncate attributes (H1). `collect()` raises `IncompleteError` (`.truncated`)
+  when a span lost attributes, events or links (H3). In 0.1.0a1, a span with
+  more than 128 attributes silently lost its oldest ones, and
+  `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT` truncated values. Both still reported a
+  complete capture. `conformance/harness.yaml` gains an `env` field and an
+  `env_limits_ignored` case, and the Python runner now applies `filler`.
 
 ## Python 0.1.0a1 (2026-10-26)
 

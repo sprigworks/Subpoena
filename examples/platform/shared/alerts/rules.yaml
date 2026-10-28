@@ -1,0 +1,99 @@
+apiVersion: 1
+groups:
+    - folder: Platform
+      interval: 1m
+      name: platform-invariants
+      orgId: 1
+      rules:
+        - annotations:
+            description: Application spans only; independent production witness checks require a separate deployment.
+            summary: no_exec_after_deny violation
+          condition: C
+          data:
+            - datasourceUid: tempo
+              model:
+                metricsQueryType: instant
+                query: '{ name = "platform.action.authorize" && span.platform.authorization.allowed = false } >> { name = "platform.action.exec" } | count_over_time()'
+                queryType: traceql
+                refId: A
+              refId: A
+              relativeTimeRange:
+                from: 900
+                to: 0
+            - datasourceUid: __expr__
+              model:
+                expression: A
+                reducer: last
+                refId: B
+                type: reduce
+              refId: B
+              relativeTimeRange:
+                from: 900
+                to: 0
+            - datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: B
+                refId: C
+                type: threshold
+              refId: C
+              relativeTimeRange:
+                from: 900
+                to: 0
+          execErrState: Error
+          for: 0s
+          labels:
+            invariant: no_exec_after_deny
+          noDataState: OK
+          title: no_exec_after_deny violation
+          uid: plt-no_exec_after_deny-violation
+        - annotations:
+            description: Application spans only; independent production witness checks require a separate deployment.
+            summary: no_exec_after_deny missing
+          condition: C
+          data:
+            - datasourceUid: tempo
+              model:
+                metricsQueryType: instant
+                query: '{ name = "platform.action.authorize" } | count_over_time()'
+                queryType: traceql
+                refId: A
+              refId: A
+              relativeTimeRange:
+                from: 900
+                to: 0
+            - datasourceUid: __expr__
+              model:
+                expression: A
+                reducer: last
+                refId: B
+                type: reduce
+              refId: B
+              relativeTimeRange:
+                from: 900
+                to: 0
+            - datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 1
+                        type: lt
+                expression: B
+                refId: C
+                type: threshold
+              refId: C
+              relativeTimeRange:
+                from: 900
+                to: 0
+          execErrState: Error
+          for: 15m
+          labels:
+            invariant: no_exec_after_deny
+          noDataState: Alerting
+          title: no_exec_after_deny missing
+          uid: plt-no_exec_after_deny-missing

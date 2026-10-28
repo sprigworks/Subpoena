@@ -87,6 +87,12 @@ type Witness struct {
 	k         *kernel // loaded program; guarded by lifecycle
 	healthErr error
 	finished  bool
+
+	// Test hooks. ringBytes, if set, replaces the ring buffer's size (a
+	// power of two, at least a page); holdReads, if set, holds the reader
+	// until it is closed, so a test can fill the buffer and force drops.
+	ringBytes uint32
+	holdReads chan struct{}
 }
 
 var _ witness.Witness = (*Witness)(nil)
@@ -120,16 +126,26 @@ func (w *Witness) handle(e Event) {
 		}
 	}
 	if e.Kind == KindExec && e.Attribution != "" && !w.cfg.NoRetain {
+		// Without argv (the read failed), the task name stands in, marked as
+		// name-only, rather than an empty command no rule can match.
+		cmd, src := strings.Join(e.Args, " "), witness.CommandLine
+		if len(e.Args) == 0 {
+			cmd, src = e.Comm, witness.CommandName
+			if cmd == "" {
+				src = ""
+			}
+		}
 		w.events = append(w.events, witness.ProcessEvent{
-			PID:         e.PID,
-			PPID:        e.PPID,
-			Exe:         e.Exe,
-			Command:     strings.Join(e.Args, " "),
-			Cgroup:      e.Cgroup,
-			CgroupID:    e.CgroupID,
-			TraceID:     e.TraceID,
-			Attribution: e.Attribution,
-			SeenAt:      e.Time,
+			CommandSource: src,
+			PID:           e.PID,
+			PPID:          e.PPID,
+			Exe:           e.Exe,
+			Command:       cmd,
+			Cgroup:        e.Cgroup,
+			CgroupID:      e.CgroupID,
+			TraceID:       e.TraceID,
+			Attribution:   e.Attribution,
+			SeenAt:        e.Time,
 		})
 	}
 	w.mu.Unlock()

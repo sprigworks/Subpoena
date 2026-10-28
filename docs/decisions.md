@@ -46,6 +46,14 @@ Petiole, a separate product, holds the agent-aware layer. Its license is not fin
 
 **Rules:** in a test run, a backstop intervention is a failure, because it means the application's own enforcement failed. Cross-examination runs with the backstop observing only, so it measures the application and not the kernel.
 
+## Layered enforcement in cross-examination
+
+**Decision:** a layer that survives on its own but is caught together with other layers of its group fails the run. The one way to accept it is a line in `cross-masked.txt` naming that layer, with a reason, under review. A line that no longer matches a masked layer fails too.
+
+**Why:** a masked layer is an unproven result: nobody has shown that the layer does anything by itself. Subpoena treats unproven results as failures, as it does an Inconclusive witness verdict. Letting masked layers pass would also let anyone turn a survivor green by declaring a group. The exception is per layer and carries a reason, like `//subpoena:own_provider <reason>`, so nothing is waived in bulk.
+
+**Cost:** services with layered enforcement need either a test that catches each layer alone, which is preferred, or a reviewed entry for each layer that cannot be isolated.
+
 ## Integration tier
 
 **Decision:** tier 2 is built on Grafana OATS. Tracetest is a reference, not a dependency.

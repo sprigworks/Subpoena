@@ -3,3 +3,6 @@
 /registry/   @nickhenggeler
 /generated/  @nickhenggeler
 /invariants/ @nickhenggeler
+
+# Platform team stand-in for the multi-module example's shared contract.
+/examples/platform/shared/ @nickhenggeler

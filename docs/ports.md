@@ -32,7 +32,8 @@ progress, and it says so.
   that the code under test uses. It samples every span, and its resource is
   empty, so a span's attributes are only what the code set. It sets its own
   span limits, unlimited, so nothing the code recorded is dropped or truncated
-  whatever the `OTEL_*_LIMIT` environment variables say. SDKs keep 128
+  whatever the `OTEL_*_LIMIT` environment variables say, and it records even
+  under `OTEL_SDK_DISABLED=true` (or refuses to start). SDKs keep 128
   attributes per span by default, and they do not count a truncated value as
   dropped.
 - **H2. Collect before asserting.** `collect()` force-flushes and returns an
@@ -60,7 +61,8 @@ progress, and it says so.
   ([traceql-subset.md](traceql-subset.md#why-arrays-are-refused)).
 
 Check: `conformance/harness.yaml` holds these rules as cases: spans to
-create (start order, parents, which never end, recorder capacity), what
+create (start order, parents, which never end, recorder capacity, filler
+attributes), environment variables to set while the case runs, what
 `collect()` must report, and the verdict and the Require helper's outcome for
 each assertion. A port runs every case through its own harness. The Go runner
 is `conformance/harness_test.go`.
@@ -142,6 +144,13 @@ ones keep their name and meaning.
 
 Check: the Go reader `witness.ReadLog` is the reference;
 `pkg/witness/log_test.go` holds the cases a port's reader must also pass.
+
+Go also builds absence checks on the witness: `NoSpawn` and `RequireNoSpawn`
+(Inconclusive when capture health is missing or bad), `WatchSpawns` with a
+`SpawnRule` (`Never`, `Allowed`, name-only sightings), and `NoDial` for the
+network witness. They are not yet part of the port contract, and the Python
+port does not have them: a Python test can list what ran, but no helper turns
+that into a fail-closed verdict.
 
 ## L and G: lint and cross-examination
 

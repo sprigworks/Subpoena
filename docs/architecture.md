@@ -89,10 +89,67 @@ that copy, and removes the statement marked
 and runs the tests. A red suite kills the mutant. A green suite means the tests
 cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
-mutant that does not compile is "invalid", never "killed". An enforcement point
+mutant that does not compile is "invalid", never "killed". A mutant whose tests
+run past `-timeout` (5 minutes by default) is `enforcement-mutant-timeout`, also
+never "killed": a hang may be the host's, and no assertion caught it. A suite
+that goes red with no clean failure message is `enforcement-mutant-crashed`,
+which fails the run too: a crash is not evidence that the enforcement is
+tested. A package whose test binary died (a panic, a runtime fatal error or
+`os.Exit`) gives no kills at all, since a test's log lines before its panic
+look like failure messages; a clean failure in another package still counts. Mutant runs use `go test -json -failfast`, so a
+package stops at its first red test. Each kill reports its first evidence, the
+first failure message of a failed test: `witness` or `testimony` when the
+message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
+(an error return, exit code, audit row or output). A kill whose first evidence
+is not `witness` rested on the system's own account or its side effects. Tests
+can tag their own messages the same way. `-evidence-dir` keeps every mutant
+run's full `go test -json` output, killed ones included. `-j N` runs N single
+mutants at once, each in its own copy of the module (group runs stay
+sequential); on cross-self it cut 490 s to 135 s at `-j 8` with the same
+verdicts. Load can flip a verdict either way: a polling witness sees less on a
+busy host, turning a kill into a survivor (which fails the run), and a
+timing-sensitive test can fail under contention, turning a survivor into a
+kill. Gate releases on `-j 1`, or confirm kills there. `-select`
+first runs each test alone with coverage, then runs each mutant against only
+the tests that executed its line; a mutant no test executed runs the whole
+suite. A test can reach a line where coverage cannot see it (in a
+subprocess), so every mutant selection did not kill runs again on the whole
+suite, and group runs always use the whole suite. A kill counts only on
+tests that are green without the mutant: a test that fails alone, or a
+selected subset that fails together (tests that depend on each other's
+order), is an error. The coverage pass costs about
+one extra suite run, so it pays off when each mutant's suite is long: on
+cross-self (short suites) `-j 8 -select` took 141 s against 135 s for `-j 8`,
+with the same verdicts. An enforcement point
 with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.
+
+Enforcement that is a condition, not a statement, is marked on the `if` line
+with `//subpoena:enforcement_guard true` (or `false`). The value is the one that
+lets the action through, and the mutant forces the condition to it. The value
+is a reviewed claim, like the markers: a wrong one forces enforcement on, which
+only an allowed-path test notices, and leaves the refusal unexamined. Check it
+in review. Enforcement
+in layers, where an early refusal and a later check each stop the action alone,
+is declared with `group=<name>` on each layer's marker (2 to 8 layers, across
+functions and files). Cross also runs the whole group as one mutant. A layer
+that survives alone, but goes red together with other layers that also
+survived alone, is `enforcement-layer-masked`, and the report names the layer
+whose removal together with it turned the suite red. A layer killed on its own
+never masks another: a run that includes it is red because of it. A masked
+layer fails the run unless it is listed, with a reason, in `cross-masked.txt`
+in the target directory (`<file> | <func> | group=<group> | <removed text> | <reason>`,
+the file relative to the module root). The group is part of the entry, so a
+layer moved to another group needs a fresh review. That file is a reviewed claim. One entry
+accepts one layer: an entry that matches two masked layers (the same text
+twice in one function), an entry listed twice, and an entry that no longer
+matches a masked layer are errors or fail the run. Markers take no free text:
+an unknown argument, a guard marker without its value or off an `if` line, and
+a group of one are errors. So is a marker that would take no effect: a
+statement or guard marker outside an enforcement point, a point marker that is
+not on a function's doc comment, and a misspelt `//subpoena:enforcement...`
+comment. A run whose context is canceled is an error, never a verdict.
 
 Discovery, mutation and restoration use the same saved file bytes. Before each
 mutation, cross-examination checks that the copied file still matches discovery

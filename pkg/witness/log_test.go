@@ -35,7 +35,7 @@ func TestSpawnedReturnsEveryLineOfThatTrace(t *testing.T) {
 		t.Fatalf("want both execs of trace A, got %+v", got)
 	}
 	want := ProcessEvent{
-		PID: 7, PPID: 1, Exe: "/usr/bin/rm", Command: "rm -rf /tmp/x",
+		PID: 7, PPID: 1, Exe: "/usr/bin/rm", Command: "rm -rf /tmp/x", CommandSource: CommandLine,
 		Cgroup: "subpoena/" + traceA, CgroupID: 91, TraceID: traceA,
 		Attribution: ByCgroup, SeenAt: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC),
 	}
@@ -175,5 +175,21 @@ func TestLineRoundTrips(t *testing.T) {
 	}
 	if got := log.Lines(); len(got) != 1 || !reflect.DeepEqual(got[0], l) {
 		t.Fatalf("round trip: %+v", got)
+	}
+}
+
+// A line without argv falls back to the task name, marked name-only, so a
+// rule on the program can still match it.
+func TestLineWithoutArgvIsNameOnly(t *testing.T) {
+	in := `{"time":"2026-10-26T12:00:00Z","pid":7,"ppid":1,"host_pid":7,"comm":"rm","exe":"","command":"","args":[],"cgroup_id":1,"cgroup":"","trace_id":"` + traceA + `","attribution":"cgroup"}
+{"time":"2026-10-26T12:00:01Z","pid":8,"ppid":1,"host_pid":8,"comm":"","exe":"","command":"","args":[],"cgroup_id":1,"cgroup":"","trace_id":"` + traceA + `","attribution":"cgroup"}
+`
+	log, err := ReadLog(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := log.Spawned(traceA)
+	if len(got) != 2 || got[0].Command != "rm" || !got[0].NameOnly() || got[1].Command != "" || got[1].CommandSource != "" {
+		t.Fatalf("want rm name-only, then an empty event with no source; got %+v", got)
 	}
 }

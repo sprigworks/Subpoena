@@ -18,13 +18,17 @@ def test_the_cases_are_there():
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
-def test_harness_case(case):
+def test_harness_case(case, monkeypatch):
+    for k, v in (case.get("env") or {}).items():
+        monkeypatch.setenv(k, v)
     h = Harness(case.get("capacity", 0) or 10000)
     tracer = h.tracer("harness-case")
     ctxs, to_end = {}, []
     for s in case["spans"]:
         parent = ctxs[s["parent"]] if s.get("parent") else Context()
         span = tracer.start_span(s["name"], context=parent)
+        for i in range(s.get("filler", 0)):
+            span.set_attribute(f"filler.{i}", i)
         for k, v in (s.get("attrs") or {}).items():
             span.set_attribute(k, v)
         ctxs[s["id"]] = trace_api.set_span_in_context(span)

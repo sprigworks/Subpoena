@@ -38,8 +38,13 @@ import (
 //     double-forked process or one reparented into a session cgroup, is seen
 //     only by a full scan, which on a busy machine under the race detector can
 //     take 100ms or more; absence of such processes rests on full scans even
-//     when Health is nil. The kernel-side witness (pkg/witness/execbpf) does
-//     not have this gap.
+//     when Health is nil. Coverage reports the longest gap between full scans
+//     in the capture: such a process that lived shorter than that may have
+//     been missed. The kernel-side witness (pkg/witness/execbpf) does not
+//     have this gap.
+//   - Seeing a calibration probe proves the witness observed that probe, not
+//     that capture was complete: a shorter process can still slip between
+//     polls.
 //   - A Go program's first os/exec call forks a throwaway pidfd probe; Start
 //     absorbs it with a warm-up. A process that never ran Start before its first
 //     exec could still see that probe as an extra event.
@@ -65,13 +70,18 @@ type ProcWitness struct {
 	mu           sync.Mutex
 	baseline     map[procKey]bool
 	tracked      map[procKey]*ProcessEvent
+	lineComm     map[procKey]string // the task name when Command's command line was read
+	inherited    map[procKey]bool   // Command is the parent's command line, seen before an exec
 	order        []procKey
 	stop         chan struct{}
 	done         chan struct{}
 	finished     bool
+	stoppedAt    time.Time // when Stop returned; ends the last open window
 	scanErrors   uint64
 	firstScanErr error
 	walkErr      error // why the children walk cannot run; set by Start
+	coverage     Coverage
+	lastScan     time.Time // when the latest successful full scan started
 
 	afterScan func() // test hook: runs in Poll between the scan and recording
 }
@@ -129,11 +139,14 @@ func (w *ProcWitness) Start() error {
 		return fmt.Errorf("witness: already started")
 	}
 	w.finished, w.scanErrors, w.firstScanErr, w.walkErr = false, 0, nil, nil
+	w.coverage = Coverage{}
+	baselineStart := time.Now()
 	procs, err := w.scan(nil)
 	if err != nil {
 		w.scanErrors, w.firstScanErr = 1, err
 		return err
 	}
+	w.lastScan = baselineStart
 	if _, err := w.children(w.RootPID); err != nil {
 		w.walkErr = err
 	}
@@ -142,6 +155,8 @@ func (w *ProcWitness) Start() error {
 		w.baseline[k] = true
 	}
 	w.tracked = map[procKey]*ProcessEvent{}
+	w.lineComm = map[procKey]string{}
+	w.inherited = map[procKey]bool{}
 	w.order = nil
 	w.stop, w.done = make(chan struct{}), make(chan struct{})
 	iv := w.Interval
@@ -170,7 +185,7 @@ func (w *ProcWitness) Stop() {
 	close(stop)
 	<-done
 	w.mu.Lock()
-	w.stop, w.finished = nil, true
+	w.stop, w.finished, w.stoppedAt = nil, true, time.Now()
 	w.mu.Unlock()
 }
 
@@ -352,13 +367,14 @@ func exited(err error) bool {
 func (w *ProcWitness) readSnap(pid int) *procSnap {
 	dir := filepath.Join(w.root(), strconv.Itoa(pid))
 	s := &procSnap{}
+	// The name is read with every command line, and first: an exec between
+	// the two reads then pairs the old name with the new line, which a later
+	// sighting reports as an extra name (see refresh), never the reverse.
+	if b, err := os.ReadFile(filepath.Join(dir, "comm")); err == nil {
+		s.comm = strings.TrimSpace(string(b))
+	}
 	if b, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
 		s.cmdline = strings.Join(strings.Split(strings.TrimRight(string(b), "\x00"), "\x00"), " ")
-	}
-	if s.cmdline == "" {
-		if b, err := os.ReadFile(filepath.Join(dir, "comm")); err == nil {
-			s.comm = strings.TrimSpace(string(b))
-		}
 	}
 	if exe, err := os.Readlink(filepath.Join(dir, "exe")); err == nil {
 		s.exe = exe
@@ -397,16 +413,28 @@ func (w *ProcWitness) Poll() {
 	if baseline == nil {
 		return
 	}
+	start := time.Now()
 	procs, err := w.scan(baseline)
+	w.mu.Lock()
+	// A process can be born just after a scan listed /proc and be gone before
+	// the next scan read it: the window runs from one scan's start to the
+	// next one's end. A failed scan covers nothing, so it neither counts nor
+	// closes the window.
+	if err == nil {
+		w.coverage.FullScans++
+		if gap := time.Since(w.lastScan); gap > w.coverage.MaxFullScanGap {
+			w.coverage.MaxFullScanGap = gap
+		}
+		w.lastScan = start
+	}
 	if err != nil {
-		w.mu.Lock()
 		w.scanErrors++
 		if w.firstScanErr == nil {
 			w.firstScanErr = err
 		}
-		w.mu.Unlock()
 		// Keep positive observations from the readable part of a partial scan.
 	}
+	w.mu.Unlock()
 	if w.afterScan != nil {
 		w.afterScan()
 	}
@@ -491,6 +519,7 @@ func (w *ProcWitness) pollChildren() {
 	if w.tracked == nil {
 		return
 	}
+	w.coverage.ChildrenWalks++
 	if walkErr != nil && w.walkErr == nil {
 		w.walkErr = walkErr
 	}
@@ -548,18 +577,48 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 		ev = &ProcessEvent{PID: p.pid, PPID: p.ppid, SeenAt: time.Now()}
 		w.tracked[k] = ev
 		w.order = append(w.order, k)
+		if p.snap.cmdline != "" && w.inherited != nil && p.snap.cmdline == w.cmdlineOf(p.ppid) {
+			w.inherited[k] = true
+		}
 	}
-	w.refresh(ev, p.snap)
+	w.refresh(k, ev, p.snap)
 }
 
 // refresh updates an event from a later sighting. It is repeated while the
 // process is alive because a forked child briefly shows its parent's cmdline;
 // fields the sighting could not read (an exited process) keep what was seen.
-func (w *ProcWitness) refresh(ev *ProcessEvent, s *procSnap) {
-	if s.cmdline != "" {
-		ev.Command = s.cmdline
-	} else if ev.Command == "" {
-		ev.Command = s.comm
+//
+// A forked child first shows its parent's command line. If a later sighting
+// reads no command line and a task name other than the one read with that
+// line, the process has exec'd (or renamed itself) since, so the stored line
+// may not be what ran. The line is kept, and the name is added as a second,
+// name-only event for the same process, each judged on its own: a rename
+// after the line was read cannot erase it. A later, different command line
+// (an exec such as bash -c's last command, or a process rewriting its argv)
+// likewise keeps the earlier line as an event of its own. Only a forked
+// child's first line, when it equals its parent's, is replaced: that line
+// was never the child's. w.mu must be held.
+//
+//subpoena:enforcement_point
+func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
+	newName, oldLine := "", ""
+	switch {
+	case s.cmdline != "":
+		if ev.CommandSource == CommandLine && ev.Command != s.cmdline && w.inherited != nil {
+			if !w.inherited[k] {
+				oldLine = ev.Command //subpoena:enforcement
+			}
+			delete(w.inherited, k)
+		}
+		ev.Command, ev.CommandSource = s.cmdline, CommandLine
+		if w.lineComm != nil {
+			w.lineComm[k] = s.comm
+		}
+	case s.comm == "":
+	case ev.Command == "":
+		ev.Command, ev.CommandSource = s.comm, CommandName
+	case ev.CommandSource == CommandLine && w.lineComm != nil && s.comm != w.lineComm[k]:
+		newName = s.comm
 	}
 	if s.exe != "" {
 		ev.Exe = s.exe
@@ -571,6 +630,41 @@ func (w *ProcWitness) refresh(ev *ProcessEvent, s *procSnap) {
 	if id, ok := cgroup.SessionTrace(ev.Cgroup, w.cgroupBase()); ok {
 		ev.Attribution, ev.TraceID = ByCgroup, id
 	}
+	// Copied after this sighting's updates, so they carry the current cgroup
+	// and attribution.
+	if newName != "" {
+		w.keepAs(k, ev, "/name:"+newName, newName, CommandName)
+	}
+	if oldLine != "" {
+		w.keepAs(k, ev, "/line:"+oldLine, oldLine, CommandLine)
+	}
+}
+
+// keepAs records, as an event of its own, a command the process k showed
+// before this sighting. w.mu must be held.
+func (w *ProcWitness) keepAs(k procKey, ev *ProcessEvent, tag, command string, src CommandSource) {
+	nk := procKey{pid: k.pid, start: k.start + tag}
+	kept, seen := w.tracked[nk]
+	if !seen {
+		kept = &ProcessEvent{}
+		w.tracked[nk] = kept
+		w.order = append(w.order, nk)
+	}
+	seenAt := kept.SeenAt
+	*kept = *ev
+	kept.Command, kept.CommandSource = command, src
+	if seen {
+		kept.SeenAt = seenAt
+	}
+}
+
+// cmdlineOf reads pid's command line now, or "" if it cannot.
+func (w *ProcWitness) cmdlineOf(pid int) string {
+	b, err := os.ReadFile(filepath.Join(w.root(), strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return ""
+	}
+	return strings.Join(strings.Split(strings.TrimRight(string(b), "\x00"), "\x00"), " ")
 }
 
 // inSessionCgroup reports whether a cgroup file's content names a session cgroup.
@@ -605,6 +699,40 @@ func cgroupHasTrace(cgroup, traceID string) bool {
 	return strings.Contains(strings.ToLower(cgroup), strings.ToLower(traceID))
 }
 
+// Coverage describes how a ProcWitness capture was polled. A process outside
+// the root's children tree (double-forked, reparented, or only in a session
+// cgroup) is seen only by a full scan, so its absence rests on full scans
+// even when Health is nil. One that lived shorter than MaxFullScanGap may
+// have been missed. Log it next to an absence claim, or compare it with how
+// long the refused process would have run.
+type Coverage struct {
+	FullScans      int           // successful full /proc scans after the baseline
+	ChildrenWalks  int           // walks of the root's children lists
+	MaxFullScanGap time.Duration // longest time from one successful scan's start (the baseline's included) to the next one's end, or to Stop (now while running) for the last
+}
+
+// Coverage returns the polling coverage so far.
+//
+//subpoena:enforcement_point
+func (w *ProcWitness) Coverage() Coverage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	c := w.coverage
+	// The window since the last successful scan started is still open:
+	// failed scans did not close it, and nothing has yet. It ends at Stop,
+	// or now while polling runs.
+	if !w.lastScan.IsZero() {
+		end := time.Now()
+		if w.finished {
+			end = w.stoppedAt
+		}
+		if gap := end.Sub(w.lastScan); gap > c.MaxFullScanGap {
+			c.MaxFullScanGap = gap //subpoena:enforcement
+		}
+	}
+	return c
+}
+
 // Events returns every observed event, in discovery order.
 func (w *ProcWitness) Events() []ProcessEvent {
 	w.mu.Lock()
@@ -620,7 +748,9 @@ func (w *ProcWitness) Events() []ProcessEvent {
 // cgroup is returned for that trace only. Otherwise it returns events whose
 // cgroup path merely carries traceID, plus lineage-only events (which cannot
 // be excluded; see the type comment). Events whose cgroup names a different
-// trace are excluded.
+// trace are excluded. These are events, not processes: one process that
+// showed several command lines, or a line and then another name, gives one
+// event for each, so do not count processes by them.
 func (w *ProcWitness) Spawned(traceID string) []ProcessEvent {
 	var out []ProcessEvent
 	for _, ev := range w.Events() {

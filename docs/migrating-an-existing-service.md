@@ -204,6 +204,14 @@ the enforcing. Cross-examination (step 6) deletes that statement and requires th
 to fail. A function with the first marker but not the second makes
 cross-examination exit with an error naming it.
 
+Two more shapes are common in real services. A guard such as
+`if ctx.Err() == nil { runner.Run(cmd) }` gets
+`//subpoena:enforcement_guard true` on the `if` line: cross forces the
+condition to the value that lets the command run. Layered enforcement, such as an
+early refusal plus the runner's own check, gets `group=<name>` on each layer's
+marker, so cross also removes the layers together and tells you which layer
+masks which.
+
 Then ask who can observe the side effect without trusting your code. For the
 gateway the effects are a process exec and an outbound connection, and the
 witnesses are a process observer and a network observer.
@@ -293,8 +301,8 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 | Lint finding | Fix |
 | --- | --- |
 | `unknown-telemetry` | Use a generated constant; if the name is new, add it to the registry (reviewed) |
-| `no-trace-assertion` | The file defines tests but never calls `Collect()`. If it holds only pure-logic tests, mark it `//subpoena:pure_logic` (see "What to delete") |
-| `unguarded-absence` | Call `Collect()` earlier in the same function |
+| `no-trace-assertion` | The file defines tests but never calls `Collect()`. If it holds only pure-logic tests, mark it `//subpoena:pure_logic` (see "What to delete"). A helper that wraps `Collect` counts only if every return hands back the trace from its own harness `Collect` call (`lint/README.md`) |
+| `unguarded-absence` | Call `Collect()`, or a verified wrapper, earlier in the same function |
 | `missing-provenance` | Add the marker (step 5) |
 | `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`, `Dialed`) what happened |
 | `orphan-invariant` | Load the query by name, or add `invariants/<name>.traceql` and regenerate |
@@ -306,7 +314,19 @@ Cross-examination is the check that matters most. It requires a green baseline, 
 each marked enforcement statement in a temporary copy, and runs the tests. A red
 suite is `enforcement-mutant-killed`. A green suite is
 `enforcement-mutant-survived`: your tests cannot tell enforced from unenforced.
-Strengthen them. Never remove the marker to make it pass.
+Strengthen them. Never remove the marker to make it pass. A suite that runs
+past `-timeout` is `enforcement-mutant-timeout`, which fails the run too: make
+the test that should catch the mutant fail fast instead of hanging. A suite
+that goes red only by a crash (a panic, a runtime fatal error, `os.Exit`, or a
+failure with no message) is `enforcement-mutant-crashed` and fails the run: assert on the denial before anything can dereference what the mutant
+broke. Each kill prints its first evidence (`witness`, `testimony` or
+`other`). Where an enforcement point has a witness test, aim for `witness`; an
+`other` kill means an exit code or error check ended the test before the
+witness was read (`harness.WatchSpawns` reads it at cleanup anyway). A layer
+reported as `enforcement-layer-masked` is caught only with another layer of its
+group removed too. It fails the run. Prefer a test that catches it alone; if
+the layer cannot be isolated, list it in `cross-masked.txt` with the reason, for
+review.
 
 On a first run cross-examination will often report a survivor, because the legacy tests
 assert on return values and mocks. That is the finding, not a failure of the

@@ -21,6 +21,7 @@ import (
 	"github.com/cilium/ebpf"
 
 	"github.com/sprigworks/subpoena/pkg/cgroup"
+	"github.com/sprigworks/subpoena/pkg/harness"
 	"github.com/sprigworks/subpoena/pkg/witness"
 )
 
@@ -228,5 +229,42 @@ func TestKernelLossCounterInvalidatesCapture(t *testing.T) {
 	}
 	if err := w.Health(); err == nil {
 		t.Fatal("kernel loss must persist in Health")
+	}
+}
+
+// A full ring buffer drops events in the kernel. The drops must surface:
+// Stop reports them, Health keeps them, and an absence claim on the window is
+// Inconclusive, not Pass. The buffer is shrunk to one page and the reader is
+// held while a burst of execs runs, so reservations fail.
+func TestRingBufferDropsMakeCaptureInconclusive(t *testing.T) {
+	w := New(Config{})
+	w.ringBytes = uint32(os.Getpagesize())
+	w.holdReads = make(chan struct{})
+	if err := w.Start(); err != nil {
+		skipOrFail(t, "cannot load the eBPF program: %v", err)
+	}
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(w.holdReads)
+		}
+		w.Stop()
+	})
+	for i := 0; i < 200; i++ {
+		if err := exec.Command("/bin/true").Run(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(w.holdReads)
+	released = true
+	err := w.Stop()
+	if err == nil || !strings.Contains(err.Error(), "lost") {
+		t.Fatalf("200 execs into a one-page buffer with the reader held: want Stop to report lost events, got %v", err)
+	}
+	if h := w.Health(); h == nil || !strings.Contains(h.Error(), "lost") {
+		t.Fatalf("Health must keep the loss, got %v", h)
+	}
+	if v, verr := harness.NoSpawn(w, "c0de0000000000000000000000000001"); v != harness.Inconclusive {
+		t.Fatalf("absence over a lossy window: want Inconclusive, got %v (%v)", v, verr)
 	}
 }

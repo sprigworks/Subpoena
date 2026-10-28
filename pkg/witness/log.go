@@ -81,8 +81,18 @@ func (l *Log) Spawned(traceID string) []ProcessEvent {
 		if ln.TraceID != traceID {
 			continue
 		}
+		// subpoena-witness writes argv as the command. Without it, the task
+		// name stands in, marked as name-only.
+		cmd, src := ln.Command, CommandLine
+		if cmd == "" {
+			cmd, src = ln.Comm, CommandName
+			if cmd == "" {
+				src = ""
+			}
+		}
 		out = append(out, ProcessEvent{
-			PID: ln.PID, PPID: ln.PPID, Exe: ln.Exe, Command: ln.Command,
+			CommandSource: src,
+			PID:           ln.PID, PPID: ln.PPID, Exe: ln.Exe, Command: cmd,
 			Cgroup: ln.Cgroup, CgroupID: ln.CgroupID, TraceID: ln.TraceID,
 			Attribution: Attribution(ln.Attribution), SeenAt: ln.Time,
 		})

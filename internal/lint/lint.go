@@ -132,6 +132,319 @@ func declaredUnder(f file, c *ast.CallExpr, name, suffix string) (declared, reso
 	return fn.Name() == name && pathUnder(fn.Pkg().Path(), suffix), true
 }
 
+// A Collect wrapper is a test helper that stops the system and the witness,
+// checks capture health and then calls the harness Collect itself, so tests
+// call the helper instead. Rules 2 and 4 count a call to it as a Collect.
+// Only type-checked code qualifies (see isWrapper): every return must hand
+// back the trace from a harness Collect (or another wrapper) called in the
+// helper's own body, either directly or through a variable assigned from that
+// call outside any function literal. A method called Collect that does not,
+// such as a metrics Collect, is not a wrapper whatever its name. Lint does not
+// prove the assignment runs on every path (it may sit under an if); that stays
+// with review.
+
+// collectCall reports whether c calls the harness Collect or a wrapper.
+func (t *tree) collectCall(f file, c *ast.CallExpr) bool {
+	return harnessCall(f, c, "Collect") || t.wrapperCall(f, c)
+}
+
+// callsCollect is callsFrom for Collect, counting wrappers.
+func (t *tree) callsCollect(f file, n ast.Node) bool {
+	if callsFrom(f, n, "Collect", harnessSuffix) {
+		return true
+	}
+	found := false
+	ast.Inspect(n, func(x ast.Node) bool {
+		if c, ok := x.(*ast.CallExpr); ok && t.wrapperCall(f, c) {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+func (t *tree) wrapperCall(f file, c *ast.CallExpr) bool {
+	if f.info == nil || len(t.wrappers) == 0 {
+		return false
+	}
+	fn, ok := typeutil.Callee(f.info, c).(*types.Func)
+	return ok && t.wrappers[fn.Pos()]
+}
+
+// findWrappers returns the declaration positions of the tree's Collect
+// wrappers. A wrapper may call another wrapper, so it repeats until no new
+// one is found.
+func findWrappers(t *tree) map[token.Pos]bool {
+	found := map[token.Pos]bool{}
+	for {
+		added := false
+		for _, f := range t.files {
+			if f.info == nil {
+				continue
+			}
+			for _, d := range f.ast.Decls {
+				fd, ok := d.(*ast.FuncDecl)
+				if !ok || fd.Body == nil || found[fd.Name.Pos()] {
+					continue
+				}
+				if fn, ok := f.info.Defs[fd.Name].(*types.Func); ok && isWrapper(f, fn, fd.Body, found) {
+					found[fn.Pos()] = true
+					added = true
+				}
+			}
+		}
+		if !added {
+			return found
+		}
+	}
+}
+
+// collector returns the trace type a call yields if it calls the harness
+// Collect or a wrapper, else nil.
+func collector(f file, c *ast.CallExpr, wrappers map[token.Pos]bool) types.Type {
+	fn, ok := typeutil.Callee(f.info, c).(*types.Func)
+	if !ok || fn.Pkg() == nil {
+		return nil
+	}
+	if !(fn.Name() == "Collect" && pathUnder(fn.Pkg().Path(), harnessSuffix)) && !wrappers[fn.Pos()] {
+		return nil
+	}
+	res := fn.Type().(*types.Signature).Results()
+	if res.Len() == 0 {
+		return nil
+	}
+	return res.At(0).Type()
+}
+
+// isWrapper reports whether fn, with body, is a Collect wrapper: it has at
+// least one return, and every return outside function literals hands back, in
+// fn's only result of the trace type, either a direct Collect (or wrapper)
+// call or a variable assigned from one in fn's own body. A return of nil, of a
+// parameter, or of anything else disqualifies it. The returned variable must
+// pass onlyReadUses: collected by a top-level statement, then only read.
+func isWrapper(f file, fn *types.Func, body *ast.BlockStmt, wrappers map[token.Pos]bool) bool {
+	var trace types.Type
+	collected := map[types.Object]bool{}
+	var rets []*ast.ReturnStmt
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			// An assignment in a literal may never run. (A deferred or go'd
+			// call cannot assign, so the return rule already excludes it.)
+			return false
+		case *ast.AssignStmt:
+			if len(n.Rhs) == 1 && len(n.Lhs) > 0 {
+				if c, ok := n.Rhs[0].(*ast.CallExpr); ok {
+					if tt := collector(f, c, wrappers); tt != nil {
+						if id, ok := n.Lhs[0].(*ast.Ident); ok {
+							if obj := f.info.ObjectOf(id); obj != nil {
+								collected[obj], trace = true, tt
+							}
+						}
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			if len(n.Values) == 1 && len(n.Names) > 0 {
+				if c, ok := n.Values[0].(*ast.CallExpr); ok {
+					if tt := collector(f, c, wrappers); tt != nil {
+						if obj := f.info.ObjectOf(n.Names[0]); obj != nil {
+							collected[obj], trace = true, tt
+						}
+					}
+				}
+			}
+		case *ast.ReturnStmt:
+			rets = append(rets, n)
+		}
+		return true
+	})
+	sig := fn.Type().(*types.Signature)
+	if !onlyReadUses(f, sig, body, collected) {
+		return false
+	}
+	res := sig.Results()
+	idx := -1
+	for _, r := range rets {
+		// return h.Collect(): the call's results are fn's results.
+		if len(r.Results) == 1 {
+			if c, ok := r.Results[0].(*ast.CallExpr); ok {
+				if tt := collector(f, c, wrappers); tt != nil && res.Len() > 0 && types.Identical(res.At(0).Type(), tt) {
+					trace = tt
+					continue
+				}
+			}
+		}
+		if trace == nil {
+			return false
+		}
+		if idx < 0 {
+			for i := 0; i < res.Len(); i++ {
+				if types.Identical(res.At(i).Type(), trace) {
+					if idx >= 0 {
+						return false // two trace results: a caller could use the other one
+					}
+					idx = i
+				}
+			}
+		}
+		if idx < 0 || idx >= len(r.Results) {
+			return false
+		}
+		id, ok := ast.Unparen(r.Results[idx]).(*ast.Ident)
+		if !ok || !collected[f.info.ObjectOf(id)] {
+			return false
+		}
+	}
+	return len(rets) > 0 && trace != nil
+}
+
+// onlyReadUses keeps in collected only the variables a wrapper may return:
+// locals (not parameters or named results) whose Collect assignment is a
+// top-level statement of body, not under an if, loop or switch, and whose
+// every other use only reads the trace: a return, a method call on it, or a
+// comparison. Any other use (another assignment, an argument, an alias, its
+// address, a write in a closure) could replace or overwrite what was
+// collected. A goto, a label or a defer in body, or named results, disqualify
+// the helper: they can skip the Collect or replace what is returned.
+func onlyReadUses(f file, sig *types.Signature, body *ast.BlockStmt, collected map[types.Object]bool) bool {
+	// Named results can be rewritten by a deferred call after the return
+	// runs, and a defer can recover a panic and return before the Collect:
+	// neither shape is a wrapper.
+	if sig.Results().Len() > 0 && sig.Results().At(0).Name() != "" {
+		return false
+	}
+	jumps := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.BranchStmt:
+			if n.Tok == token.GOTO {
+				jumps = true
+			}
+		case *ast.LabeledStmt, *ast.DeferStmt:
+			jumps = true
+		}
+		return true
+	})
+	if jumps {
+		return false
+	}
+	params := map[types.Object]bool{}
+	for _, tup := range []*types.Tuple{sig.Params(), sig.Results()} {
+		for i := 0; i < tup.Len(); i++ {
+			params[tup.At(i)] = true
+		}
+	}
+	// The top-level statement that collects into each variable.
+	collectAt := map[types.Object]ast.Node{}
+	for _, st := range body.List {
+		var ids []*ast.Ident
+		switch st := st.(type) {
+		case *ast.AssignStmt:
+			if len(st.Rhs) == 1 && len(st.Lhs) > 0 {
+				if id, ok := st.Lhs[0].(*ast.Ident); ok {
+					ids = append(ids, id)
+				}
+			}
+		case *ast.DeclStmt:
+			if gd, ok := st.Decl.(*ast.GenDecl); ok {
+				for _, sp := range gd.Specs {
+					if vs, ok := sp.(*ast.ValueSpec); ok && len(vs.Values) == 1 && len(vs.Names) > 0 {
+						ids = append(ids, vs.Names[0])
+					}
+				}
+			}
+		}
+		for _, id := range ids {
+			if obj := f.info.ObjectOf(id); collected[obj] && collectAt[obj] == nil {
+				collectAt[obj] = st
+			}
+		}
+	}
+	bad := map[types.Object]bool{}
+	var stack []ast.Node
+	ast.Inspect(body, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		defer func() { stack = append(stack, n) }()
+		id, ok := n.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		obj := f.info.ObjectOf(id)
+		if !collected[obj] {
+			return true
+		}
+		if f.info.Defs[id] != nil && !isAssignLHS(stack, id) {
+			return true // a declaration: var tr *Trace, or the Collect's own :=/var
+		}
+		at := collectAt[obj]
+		// Skip parentheses to see what the use really is.
+		i := len(stack) - 1
+		var child ast.Node = id
+		for i >= 0 {
+			if _, ok := stack[i].(*ast.ParenExpr); !ok {
+				break
+			}
+			child, i = stack[i], i-1
+		}
+		if i < 0 {
+			bad[obj] = true
+			return true
+		}
+		switch p := stack[i].(type) {
+		case *ast.ReturnStmt:
+			if at == nil || p.Pos() < at.End() {
+				bad[obj] = true // returned before it was collected
+			}
+		case *ast.BinaryExpr:
+		case *ast.SelectorExpr:
+			sel := f.info.Selections[p]
+			if sel == nil || sel.Kind() != types.MethodVal || i == 0 {
+				bad[obj] = true
+			} else if c, ok := stack[i-1].(*ast.CallExpr); !ok || c.Fun != p {
+				bad[obj] = true // a method value can be called later, from anywhere
+			}
+		case *ast.AssignStmt:
+			if ast.Node(p) != at || child != ast.Node(id) || p.Lhs[0] != child {
+				bad[obj] = true
+			}
+		default: // an alias (var p = tr), an argument, &tr, *tr, a field, ...
+			bad[obj] = true
+		}
+		return true
+	})
+	for obj := range collected {
+		// Only a local declared in this body: a package variable can be
+		// swapped by any other function between the collect and the return.
+		local := obj.Pos() >= body.Pos() && obj.Pos() < body.End()
+		if !local || params[obj] || collectAt[obj] == nil || bad[obj] {
+			delete(collected, obj)
+		}
+	}
+	return true
+}
+
+// isAssignLHS reports whether id is on the left of the assignment directly
+// above it in stack.
+func isAssignLHS(stack []ast.Node, id *ast.Ident) bool {
+	if len(stack) == 0 {
+		return false
+	}
+	as, ok := stack[len(stack)-1].(*ast.AssignStmt)
+	if !ok {
+		return false
+	}
+	for _, l := range as.Lhs {
+		if l == ast.Expr(id) {
+			return true
+		}
+	}
+	return false
+}
+
 func sameName(c *ast.CallExpr, name string) bool {
 	n, _ := calleeName(c)
 	return n == name
@@ -253,6 +566,9 @@ type tree struct {
 	// untyped counts files that were not type-checked, so rules 2 to 4
 	// matched calls there by name and import.
 	untyped int
+	// wrappers are the Collect wrappers found in the tree, by declaration
+	// position (see findWrappers).
+	wrappers map[token.Pos]bool
 }
 
 // Options tune a Run.
@@ -345,6 +661,7 @@ func load(root string) (*tree, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lint: %w", err)
 	}
+	t.wrappers = findWrappers(t)
 	return t, nil
 }
 
@@ -481,7 +798,7 @@ func checkNoTraceAssertion(t *tree) []Finding {
 			}
 			continue
 		}
-		if !definesTests(f.ast) || callsFrom(f, f.ast, "Collect", harnessSuffix) {
+		if !definesTests(f.ast) || t.callsCollect(f, f.ast) {
 			continue
 		}
 		out = append(out, t.finding(RuleNoTraceAssertion, f.ast.Package,
@@ -597,7 +914,7 @@ func checkUnguardedAbsence(t *tree) []Finding {
 					return true
 				}
 				switch {
-				case harnessCall(f, c, "Collect"):
+				case t.collectCall(f, c):
 					collects = append(collects, c.Pos())
 				case harnessCall(f, c, "RequireAbsent"), harnessCall(f, c, "Absent"):
 					absences = append(absences, c.Pos())
