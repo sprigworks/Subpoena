@@ -28,8 +28,9 @@ There is no Weaver registry, no generated names and no invgen.
 - `ProcWitness` polls `/proc`, so it can miss a process that starts and exits
   between two polls. The test keeps the process alive for `sleepArg` seconds
   to outlive the interval; a fast process could still slip past.
-- The names are not registry-checked. A typo in a span name makes an absence
-  query pass for the wrong reason, and nothing here would notice.
+- The names are not registry-checked. Each name an absence query uses here is
+  also required to exist in another test, which catches a typo; a name used
+  only in an absence query would let it pass for the wrong reason.
 - No `subpoena-lint`. Its `unknown-telemetry` and `orphan-invariant` rules
   need a registry and an `invariants/` directory, so lint arrives at Level 1.
 
