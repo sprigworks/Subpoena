@@ -43,13 +43,13 @@
   <reason>`), so a layer moved to another group needs a fresh review. A canceled
   run is an error, not a kill.
 
-- **`harness.WatchSpawns`.** A witness check registered when the witness
+- **`harness.WatchSpawns` (Go).** A witness check registered when the witness
   starts that runs at test cleanup, even after an earlier `Fatal`: it stops the
   witness, fails on commands the `SpawnRule` refuses (`Allowed`, `Never`) and on
   missing or bad capture health, and logs every process seen when the test had
   already failed. Moved from GhostGate's test helpers. A `Never` entry's program
   matches with or without a directory (`sleep 1` refuses `/usr/bin/sleep 1`).
-- **`harness.CheckNoSpawn`, `CheckNoDial`.** Non-fatal forms of the witness
+- **`harness.CheckNoSpawn`, `CheckNoDial` (Go).** Non-fatal forms of the witness
   absence checks. `subpoena-lint` counts them, and `WatchSpawns`, as asking a
   witness.
 - **Name-only sightings are marked.** When `ProcWitness` sees a process only
@@ -66,10 +66,10 @@
   `Collect` for `no-trace-assertion` and `unguarded-absence`, but only when
   every `return` hands back the trace from that call. A same-named method that
   doesn't, such as a metrics `Collect`, still doesn't count (`lint/README.md`).
-- **`ProcWitness.Coverage`.** The number of full scans and children walks, and
-  the longest gap between full scans. Absence of a process outside the root's
-  children tree rests on full scans, so a process shorter than that gap may
-  have been missed. CI now runs the `BenchmarkProc*` benchmarks (report only).
+- **`ProcWitness.Coverage` (Go).** The number of full scans and children walks, and
+  the longest window in which a process outside the root's children tree could
+  have started and exited unseen (from one scan's start to the next one's end,
+  or to Stop). A process shorter than that window may have been missed. CI now runs the `BenchmarkProc*` benchmarks (report only).
 - **Python harness: span limits (fix).** The Python harness now sets its own
   span limits, all unlimited, so `OTEL_*_LIMIT` variables no longer drop or
   truncate attributes (H1). `collect()` raises `IncompleteError` (`.truncated`)

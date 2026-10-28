@@ -145,6 +145,13 @@ ones keep their name and meaning.
 Check: the Go reader `witness.ReadLog` is the reference;
 `pkg/witness/log_test.go` holds the cases a port's reader must also pass.
 
+Go also builds absence checks on the witness: `NoSpawn` and `RequireNoSpawn`
+(Inconclusive when capture health is missing or bad), `WatchSpawns` with a
+`SpawnRule` (`Never`, `Allowed`, name-only sightings), and `NoDial` for the
+network witness. They are not yet part of the port contract, and the Python
+port does not have them: a Python test can list what ran, but no helper turns
+that into a fail-closed verdict.
+
 ## L and G: lint and cross-examination
 
 - **L1.** A port's lint applies the same rules as `lint/README.md`, adapted

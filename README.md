@@ -12,8 +12,9 @@ and cross-examination checks that the suite can tell the difference.
 **Status: alpha** (v0.1.0-alpha.1, see [CHANGELOG.md](CHANGELOG.md)). Go has
 all three tiers, lint and cross-examination. Python is on PyPI
 (`pip install subpoena`) with the harness, TraceQL evaluator and witness
-reader passing the same contract checks as Go, without its own lint or
-cross-examination yet. TypeScript has generated names and is next. The
+file reader, which pass the same contract checks as Go. Python does not yet
+have lint, cross-examination, or the absence checks built on the witness
+(`NoSpawn`, `WatchSpawns`, capture health); see [docs/ports.md](docs/ports.md#w-the-witness). TypeScript has generated names and is next. The
 registry, invariants, witness output and tiers 2–3 are language-neutral, and
 [docs/ports.md](docs/ports.md)
 is the contract a harness in another language must meet, with a check for
