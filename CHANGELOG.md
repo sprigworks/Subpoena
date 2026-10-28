@@ -6,7 +6,8 @@
   starts that runs at test cleanup, even after an earlier `Fatal`: it stops the
   witness, fails on commands the `SpawnRule` refuses (`Allowed`, `Never`) and on
   missing or bad capture health, and logs every process seen when the test had
-  already failed. Moved from GhostGate's test helpers.
+  already failed. Moved from GhostGate's test helpers. A `Never` entry's program
+  matches with or without a directory (`sleep 1` refuses `/usr/bin/sleep 1`).
 - **`harness.CheckNoSpawn`, `CheckNoDial`.** Non-fatal forms of the witness
   absence checks. `subpoena-lint` counts them, and `WatchSpawns`, as asking a
   witness.
