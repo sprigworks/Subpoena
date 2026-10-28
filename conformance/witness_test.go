@@ -7,6 +7,7 @@
 package conformance
 
 import (
+	"bytes"
 	"os"
 	"reflect"
 	"strings"
@@ -35,15 +36,29 @@ func TestWitnessCases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// KnownFields: a misspelt key (no_spwan) must fail, not drop a check.
 	var wc witnessCases
-	if err := yaml.Unmarshal(b, &wc); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&wc); err != nil {
 		t.Fatal(err)
+	}
+	trace := func(t *testing.T, name string) string {
+		t.Helper()
+		id, ok := wc.Traces[name]
+		if !ok {
+			t.Fatalf("unknown trace %q", name)
+		}
+		return id
 	}
 	if len(wc.Cases) < 10 {
 		t.Fatalf("only %d cases", len(wc.Cases))
 	}
 	for _, c := range wc.Cases {
 		t.Run(c.Name, func(t *testing.T) {
+			if (c.ReadError == "") == (c.Health == "") {
+				t.Fatal("a case needs exactly one of read_error and health")
+			}
 			log, err := witness.ReadLog(strings.NewReader(strings.Join(c.Lines, "\n") + "\n"))
 			if c.ReadError != "" {
 				if err == nil || !strings.Contains(err.Error(), c.ReadError) {
@@ -62,7 +77,7 @@ func TestWitnessCases(t *testing.T) {
 			}
 			for name, want := range c.Spawned {
 				var got []int
-				for _, e := range log.Spawned(wc.Traces[name]) {
+				for _, e := range log.Spawned(trace(t, name)) {
 					got = append(got, e.PID)
 				}
 				if len(got) != 0 || len(want) != 0 {
@@ -72,7 +87,7 @@ func TestWitnessCases(t *testing.T) {
 				}
 			}
 			for name, want := range c.NoSpawn {
-				if v, _ := harness.NoSpawn(log, wc.Traces[name]); v.String() != want {
+				if v, _ := harness.NoSpawn(log, trace(t, name)); v.String() != want {
 					t.Errorf("no_spawn %s: got %s, want %s", name, v, want)
 				}
 			}

@@ -143,14 +143,17 @@ ones keep their name and meaning.
   turn an exec into an absence. The empty trace ID matches nothing.
 
 - **W4. Health comes from the file.** The witness writes a `start` record
-  (`{"time", "record": "start"}`) once it is attached and a `stop` record
-  (`"record": "stop"`, `"healthy"`, and `"error"` when unhealthy) when it
-  stops; a line with a `record` field is a record, any other line an exec.
-  The file's capture is healthy only if it has records, every exec lies
-  inside a start..stop window, every window is closed, and every stop says
-  `healthy: true` with no error. Anything else is a capture fault: the execs
-  still count, but no absence rests on the file. An unknown record kind is a
-  read error.
+  (`{"time", "record": "start", "healthy": false}`) once it is attached and a
+  `stop` record (`"record": "stop"`, `"healthy"`, and `"error"` when
+  unhealthy) when it stops; a line with a non-null `record` field is a
+  record, any other line an exec. The file's capture is healthy only if it
+  has exactly one start..stop window, every exec lies inside it, it is
+  closed, and its stop says `healthy: true` with no error. Anything else is
+  a capture fault: the execs still count, but no absence rests on the file.
+  A read error, never a skip: an unknown record kind, a line that is not a
+  JSON object (NaN and Infinity included), a time that is not RFC 3339 with
+  a zone or is the zero time, a field of the wrong type, and a key that
+  differs from a known field only by case.
 - **W5. Absence checks.** `no_spawn(witness, trace_id)` is Fail when the
   witness saw any process for the trace (even from an unhealthy capture),
   Inconclusive when it saw none but its health is bad or unreported, and Pass

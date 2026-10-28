@@ -17,10 +17,16 @@ TRACES, CASES = DOC["traces"], DOC["cases"]
 
 def test_the_cases_are_there():
     assert len(CASES) >= 10
+    assert set(DOC) == {"traces", "cases"}
+
+
+KEYS = {"name", "lines", "read_error", "health", "spawned", "no_spawn"}
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_witness_case(case):
+    assert set(case) <= KEYS, f"unknown keys {set(case) - KEYS}"
+    assert bool(case.get("read_error")) != bool(case.get("health")), "exactly one of read_error and health"
     src = io.StringIO("\n".join(case.get("lines") or []) + "\n")
     if case.get("read_error"):
         with pytest.raises(WitnessError, match=case["read_error"].replace("(", r"\(").replace(")", r"\)")):

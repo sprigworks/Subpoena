@@ -77,10 +77,10 @@ func checkSpawns(tb testing.TB, w witness.Witness, traceID string, rule SpawnRul
 	ok := true
 	for _, p := range w.Spawned(traceID) {
 		switch {
-		case p.NameOnly() && slices.Contains(programs(rule.Never), p.Command):
+		case p.NameOnly() && slices.Contains(programs(rule.Never), taskName(p.Command)):
 			tb.Errorf("%s: refused program seen by name only for %s, arguments unknown: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
-		case p.NameOnly() && rule.Allowed != nil && !(rule.ExcuseNameOnly && slices.Contains(programs(rule.Allowed), p.Command)):
+		case p.NameOnly() && rule.Allowed != nil && !(rule.ExcuseNameOnly && slices.Contains(programs(rule.Allowed), taskName(p.Command))):
 			tb.Errorf("%s: process seen by name only for %s, not identified: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
 		case p.NameOnly() && rule.Allowed != nil:
@@ -127,13 +127,19 @@ func programs(rules []string) []string {
 		if len(f) == 0 {
 			continue
 		}
-		name := path.Base(f[0])
-		if len(name) > 15 {
-			name = name[:15]
-		}
-		out = append(out, name)
+		out = append(out, taskName(path.Base(f[0])))
 	}
 	return out
+}
+
+// taskName cuts s as the kernel cuts a task name, to 15 bytes, and drops a
+// character the cut split (and any replacement character it left), so a
+// rule's program and a sighting's name compare the same way in every port.
+func taskName(s string) string {
+	if len(s) > 15 {
+		s = s[:15]
+	}
+	return strings.TrimRight(strings.ToValidUTF8(s, ""), "\uFFFD")
 }
 
 // matchesAny reports whether cmd's words end with one of rules' words, the

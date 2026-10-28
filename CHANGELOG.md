@@ -22,8 +22,10 @@
   record with the capture's health (lost kernel events, read or write
   failures), which it used to drop. `witness.Log` now reports `Health`, so
   `NoSpawn` over a witness file can Pass; before, it was always Inconclusive.
-  A file with no records, an exec outside a start..stop window, or an
-  unhealthy or missing stop is a capture fault. Python gains the same
+  A file with no records, more than one capture window (nothing watched
+  between them), an exec outside the window, or an unhealthy or missing stop
+  is a capture fault. A malformed line, a time without a zone, NaN, or a key
+  that matches a field only by case is a read error, in Go and Python alike. Python gains the same
   `Log.health()`, `no_spawn`, `require_no_spawn`, `watch_spawns` and
   `SpawnRule`, and `ProcessEvent.name_only`. `conformance/witness.yaml` holds
   the cases both readers pass.
