@@ -327,11 +327,25 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		if o.selected, err = selectTests(ctx, o, primary, pkgs, mutants); err != nil {
 			return nil, err
 		}
+		if err := checkSubsets(ctx, o, primary, pkgs, mutants); err != nil {
+			return nil, err
+		}
 	}
 	single := map[string]int{} // Mutant.Name() -> index in rep.Results
 	results, err := runSingles(ctx, o, workers, pkgs, mutants)
 	if err != nil {
 		return nil, err
+	}
+	if o.Select {
+		// A test can stop a mutant without its coverage showing the line (in
+		// a subprocess, say), so anything but a kill is judged again on the
+		// whole suite. Group runs use the whole suite too: a survivor that
+		// selection made could otherwise come back as an accepted masked layer.
+		results, err = confirmOnWholeSuite(ctx, o, workers, pkgs, mutants, results)
+		if err != nil {
+			return nil, err
+		}
+		o.selected = nil
 	}
 	for i, m := range mutants {
 		single[m.Name()] = len(rep.Results)

@@ -19,11 +19,12 @@ import (
 // Test selection (Options.Select). After the green baseline each test runs
 // alone with a coverage profile of the mutants' packages; a mutant then runs
 // only the tests that executed its line. A test that never runs the mutated
-// line cannot change its result, so leaving it out can turn a kill into a
-// survivor, which fails the run. The reverse needs a test whose result
-// depends on which tests ran before it: one that fails alone is refused, but
-// a subset can still differ from the full suite, so gate releases without
-// selection. A mutant no test was seen to execute runs the whole suite.
+// line cannot change its result, unless it reaches it where coverage cannot
+// see (a subprocess), so every mutant selection did not kill runs again on
+// the whole suite, and group runs always use the whole suite. A kill needs
+// the selected tests to be green without the mutant: a test that fails alone,
+// and a selected subset that fails together, are errors. A mutant no test was
+// seen to execute runs the whole suite.
 
 var moduleRE = regexp.MustCompile(`(?m)^module\s+(\S+)`)
 
@@ -217,4 +218,71 @@ func runFilter(sel map[string][]string, ms []Mutant) string {
 	}
 	sort.Strings(names)
 	return "^(" + strings.Join(names, "|") + ")$"
+}
+
+// checkSubsets runs each distinct selected subset once on the unmutated
+// copy. A subset can fail where the full suite and each test alone pass (one
+// test leaves state another trips on, and the test that resets it was left
+// out); a mutant run on it would be red without the mutant, a kill, so a red
+// subset is an error.
+//
+//subpoena:enforcement_point
+func checkSubsets(ctx context.Context, o Options, sb sandbox, pkgs string, mutants []Mutant) error {
+	seen := map[string]bool{}
+	for _, m := range mutants {
+		f := runFilter(o.selected, []Mutant{m})
+		if f == "" || seen[f] {
+			continue
+		}
+		seen[f] = true
+		out, err := goIn(ctx, o.Timeout, sb, "test", "-count=1", "-run", f, pkgs)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var redErr error
+		if err != nil {
+			redErr = fmt.Errorf("cross: select: the tests %s fail together without any mutant, so they depend on tests left out; fix the tests or drop -select:\n%s", f, tail(out, 20))
+		}
+		if redErr != nil {
+			return redErr //subpoena:enforcement
+		}
+	}
+	return nil
+}
+
+// confirmOnWholeSuite runs again, on the whole suite, every single mutant
+// that selection did not kill, and returns the results with those replaced.
+//
+//subpoena:enforcement_point
+func confirmOnWholeSuite(ctx context.Context, o Options, workers []sandbox, pkgs string, mutants []Mutant, results []Result) ([]Result, error) {
+	var again []Mutant
+	var at []int
+	for i, r := range results {
+		if r.Outcome != Killed && runFilter(o.selected, []Mutant{mutants[i]}) != "" {
+			again = append(again, mutants[i])
+			at = append(at, i)
+		}
+	}
+	if len(again) == 0 {
+		return results, nil
+	}
+	fmt.Fprintf(o.Log, "select: %d mutant(s) not killed by their selected tests; running them on the whole suite\n", len(again))
+	o.selected = nil
+	redo, err := runSingles(ctx, o, workers, pkgs, again)
+	if err != nil {
+		return nil, err
+	}
+	out := results
+	fmt.Fprintf(o.Log, "select: %d mutant(s) judged again on the whole suite\n", len(redo))
+	out = merged(results, at, redo) //subpoena:enforcement
+	return out, nil
+}
+
+// merged returns rs with rs[at[j]] replaced by redo[j].
+func merged(rs []Result, at []int, redo []Result) []Result {
+	out := append([]Result(nil), rs...)
+	for j, i := range at {
+		out[i] = redo[j]
+	}
+	return out
 }

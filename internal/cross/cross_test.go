@@ -1019,3 +1019,94 @@ func TestB(t *testing.T) {
 		t.Fatalf("want a refusal, got %v", err)
 	}
 }
+
+// From review: each test passes alone and the full suite stays green with
+// the mutant, but the selected subset {TestA, TestC} fails without TestReset,
+// mutant or not. Selection must refuse it, not report a kill.
+const orderDependentTest = `package mini
+
+import "testing"
+
+var dirty bool
+
+func TestA(t *testing.T) {
+	_ = Allow(false)
+	dirty = true
+}
+
+func TestReset(t *testing.T) { dirty = false }
+
+func TestC(t *testing.T) {
+	_ = Allow(false)
+	if dirty {
+		t.Fatal("state left by TestA")
+	}
+}
+`
+
+func TestSelectionRefusesASubsetThatFailsWithoutTheMutant(t *testing.T) {
+	_, err := Run(context.Background(), Options{Target: module(t, map[string]string{"auth.go": authOK, "auth_test.go": orderDependentTest}), Select: true})
+	if err == nil || !strings.Contains(err.Error(), "fail together without any mutant") {
+		t.Fatalf("want a refusal, got %v", err)
+	}
+}
+
+// From review: the return layer is caught alone only by a test that checks in
+// a re-exec'd child, whose coverage the parent's profile lacks. Selection
+// leaves that test out; the layer must still be judged on the whole suite,
+// not come back as a masked layer that cross-masked.txt accepts.
+const subprocessTest = `package mini
+
+import (
+	"os"
+	"os/exec"
+	"testing"
+)
+
+func TestRevokedNeverRuns(t *testing.T) {
+	Ran = 0
+	Exec(true)
+	if Ran != 0 {
+		t.Fatal("revoked session ran")
+	}
+}
+
+func TestChild(t *testing.T) {
+	if os.Getenv("PROBE_CHILD") != "1" {
+		return
+	}
+	if Exec(true) != ErrRevoked {
+		os.Exit(3)
+	}
+}
+
+func TestRevokedErrorInChild(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestChild$")
+	cmd.Env = append(os.Environ(), "PROBE_CHILD=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("child: %v\n%s", err, out)
+	}
+}
+`
+
+func TestSelectionConfirmsSurvivorsOnTheWholeSuite(t *testing.T) {
+	files := func() map[string]string {
+		return map[string]string{"exec.go": layeredSrc, "exec_test.go": subprocessTest, MaskedFile: maskedList}
+	}
+	verdicts := func(sel bool) (string, bool) {
+		rep, err := Run(context.Background(), Options{Target: module(t, files()), Select: sel})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range rep.Results {
+			out = append(out, r.Mutant.Name()+" "+string(r.Outcome)+" "+r.Accepted)
+		}
+		return strings.Join(out, ", "), rep.Failed()
+	}
+	full, fullFailed := verdicts(false)
+	sel, selFailed := verdicts(true)
+	if sel != full || !selFailed || !fullFailed {
+		t.Fatalf("selection changed the verdicts:\n full:   %s (failed=%v)\n select: %s (failed=%v)", full, fullFailed, sel, selFailed)
+	}
+}
