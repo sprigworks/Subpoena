@@ -5,10 +5,16 @@
 - **Python cross-examination (G1).** `subpoena-cross <dir>` (console script,
   `subpoena.cross`) forces each `# subpoena:enforcement_guard` condition and
   replaces each `# subpoena:enforcement` statement with `pass`, in a copy, and
-  requires pytest to fail on an assertion. Other exceptions and dead test
-  processes are `crashed`, a mutant that does not import or is shadowed by an
-  installed package is `invalid`, and a hang is `timeout`; all fail the run, as
-  does any marker that takes no effect. `examples/python-quickstart` is now
+  requires pytest to fail on an assertion raised from test code (a test
+  module, a conftest, or a subpoena check such as `watch_spawns`). An assert in
+  the code under test, other exceptions and dead test processes are `crashed`;
+  a mutant that does not import, a collection error, or a module shadowed by an
+  installed package is `invalid`; a hang or a pytest-timeout failure is
+  `timeout`. All fail the run, as does any marker that takes no effect. The
+  point marker is a full-line comment directly above the def, as Go reads a
+  doc comment. Setup faults (a tree that cannot be copied, non-UTF-8 marked
+  source, a copy that drifted from the discovery snapshot) exit 2, and Ctrl-C
+  kills the running suite. `examples/python-quickstart` is now
   cross-examined in CI. Groups, `cross-masked.txt`, `-j` and `-select` are Go
   only for now.
 - **Witness file health (W4), and absence checks in Python (W5).**
@@ -16,8 +22,10 @@
   record with the capture's health (lost kernel events, read or write
   failures), which it used to drop. `witness.Log` now reports `Health`, so
   `NoSpawn` over a witness file can Pass; before, it was always Inconclusive.
-  A file with no records, an exec outside a start..stop window, or an
-  unhealthy or missing stop is a capture fault. Python gains the same
+  A file with no records, more than one capture window (nothing watched
+  between them), an exec outside the window, or an unhealthy or missing stop
+  is a capture fault. A malformed line, a time without a zone, NaN, or a key
+  that matches a field only by case is a read error, in Go and Python alike. Python gains the same
   `Log.health()`, `no_spawn`, `require_no_spawn`, `watch_spawns` and
   `SpawnRule`, and `ProcessEvent.name_only`. `conformance/witness.yaml` holds
   the cases both readers pass.

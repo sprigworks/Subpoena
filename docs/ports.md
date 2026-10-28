@@ -143,14 +143,17 @@ ones keep their name and meaning.
   turn an exec into an absence. The empty trace ID matches nothing.
 
 - **W4. Health comes from the file.** The witness writes a `start` record
-  (`{"time", "record": "start"}`) once it is attached and a `stop` record
-  (`"record": "stop"`, `"healthy"`, and `"error"` when unhealthy) when it
-  stops; a line with a `record` field is a record, any other line an exec.
-  The file's capture is healthy only if it has records, every exec lies
-  inside a start..stop window, every window is closed, and every stop says
-  `healthy: true` with no error. Anything else is a capture fault: the execs
-  still count, but no absence rests on the file. An unknown record kind is a
-  read error.
+  (`{"time", "record": "start", "healthy": false}`) once it is attached and a
+  `stop` record (`"record": "stop"`, `"healthy"`, and `"error"` when
+  unhealthy) when it stops; a line with a non-null `record` field is a
+  record, any other line an exec. The file's capture is healthy only if it
+  has exactly one start..stop window, every exec lies inside it, it is
+  closed, and its stop says `healthy: true` with no error. Anything else is
+  a capture fault: the execs still count, but no absence rests on the file.
+  A read error, never a skip: an unknown record kind, a line that is not a
+  JSON object (NaN and Infinity included), a time that is not RFC 3339 with
+  a zone or is the zero time, a field of the wrong type, and a key that
+  differs from a known field only by case.
 - **W5. Absence checks.** `no_spawn(witness, trace_id)` is Fail when the
   witness saw any process for the trace (even from an unhealthy capture),
   Inconclusive when it saw none but its health is bad or unreported, and Pass
@@ -177,9 +180,10 @@ yet.
 - **G1.** A port's cross-examination removes each statement marked as enforcement and
   requires the suite to fail. A mutant that does not compile or import counts
   as invalid, not killed. As in Go: a guard marker forces an `if` condition;
-  a red suite is a kill only on an assertion failure (a crash, an exception
-  other than an assertion, or a dead test process is `crashed`); a hang is
-  `timeout`; a marker that takes no effect, and an enforcement point with no
+  a red suite is a kill only on an assertion failure in test code (an
+  assertion in the code under test, a crash, an exception other than an
+  assertion, or a dead test process is `crashed`); a hang, or a test-framework
+  timeout, is `timeout`; a marker that takes no effect, and an enforcement point with no
   statement marker, are errors; the baseline must be green. Python's
   `subpoena-cross` also refuses a mutant the suite never imported from the
   copy (an installed package shadowing it) as invalid. Not yet in Python:

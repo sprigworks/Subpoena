@@ -13,7 +13,6 @@ A port of pkg/harness; conformance/harness.yaml holds the cases it must pass.
 from __future__ import annotations
 
 import enum
-import posixpath
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
@@ -311,12 +310,28 @@ class SpawnRule:
     excuse_name_only: bool = False
 
 
+def _base(p: str) -> str:
+    """Go's path.Base: the last element, trailing slashes removed first."""
+    if not p:
+        return "."
+    p = p.rstrip("/")
+    if not p:
+        return "/"
+    return p.rsplit("/", 1)[-1]
+
+
+def _task_name(s: str) -> str:
+    """s cut as the kernel cuts a task name, to 15 bytes, with a character the
+    cut split dropped, so both sides of a comparison read the same."""
+    return s.encode("utf-8")[:15].decode("utf-8", "ignore").rstrip("\ufffd")
+
+
 def _programs(rules: Sequence[str]) -> List[str]:
     out = []
     for r in rules:
         f = r.split()
         if f:
-            out.append(posixpath.basename(f[0])[:15])
+            out.append(_task_name(_base(f[0])))
     return out
 
 
@@ -327,7 +342,7 @@ def _matches_any(cmd: str, rules: Sequence[str]) -> bool:
         if not rw or len(rw) > len(words):
             continue
         tail = words[len(words) - len(rw):]
-        if posixpath.basename(tail[0]) == posixpath.basename(rw[0]) and tail[1:] == rw[1:]:
+        if _base(tail[0]) == _base(rw[0]) and tail[1:] == rw[1:]:
             return True
     return False
 
@@ -342,11 +357,12 @@ def check_spawns(w: Any, trace_id: str, rule: SpawnRule) -> List[str]:
     errs = []
     for p in w.spawned(trace_id):
         name_only = p.command_source == "comm"
-        if name_only and p.command in _programs(rule.never):
+        name = _task_name(p.command) if name_only else ""
+        if name_only and name in _programs(rule.never):
             errs.append(f"witness: refused program seen by name only for {trace_id}, arguments unknown: "
                         f"pid {p.pid} {p.command!r} ({p.attribution})")
         elif name_only and rule.allowed is not None and not (
-                rule.excuse_name_only and p.command in _programs(rule.allowed)):
+                rule.excuse_name_only and name in _programs(rule.allowed)):
             errs.append(f"witness: process seen by name only for {trace_id}, not identified: "
                         f"pid {p.pid} {p.command!r} ({p.attribution})")
         elif name_only and rule.allowed is not None:

@@ -14,30 +14,46 @@ Markers, as comments:
 A mutant replaces the marked statement with `pass`, or the guarded
 condition with True or False. Verdicts:
 
-- killed: a test failed on an assertion (AssertionError or pytest.fail),
-  including a teardown check such as watch_spawns.
+- killed: a test failed on an assertion raised from test code: an
+  AssertionError, pytest.fail or a failed pytest.raises whose innermost frame
+  (past pytest's and subpoena's own helpers) is in a test module (pytest's
+  python_files, conftest.py, or the failing test's own file), or a subpoena
+  teardown check such as watch_spawns. An assert in the code under test is a
+  crash, as a panic is in Go.
 - survived: the suite stayed green. The run fails.
 - crashed: the suite went red only by another exception, or the test process
   died. A crash is not evidence that the enforcement is tested; the run fails.
-- invalid: the mutant does not import, or the suite never imported the
-  mutated module from the copy (an installed copy of the package shadowed
-  it). It proves nothing; the run fails.
-- timeout: the suite ran past the timeout. The run fails.
+- invalid: the mutant does not import (a SyntaxError, or any collection
+  error), or the suite never imported the mutated module from the copy (an
+  installed copy of the package shadowed it). It proves nothing; the run
+  fails.
+- timeout: the suite ran past the timeout, or a test failed by
+  pytest-timeout. The run fails.
 
 A marker that takes no effect is an error, never skipped: a statement or
 guard marker outside an enforcement point, on the wrong kind of line, with
 trailing text, or misspelt; and an enforcement point with no statement or
 guard marker.
+
+The point marker is read as Go reads a doc comment: the run of full-line
+comments directly above the def (or its decorators), any of which mentions
+subpoena:enforcement_point. A trailing comment on the line above is not one.
+
+Setup faults (unreadable or non-UTF-8 marked files, a tree that cannot be
+copied, a copy that drifted from the discovery snapshot) are errors, exit 2,
+never a verdict.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import io
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -45,7 +61,7 @@ import sys
 import tempfile
 import tokenize
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 KILLED = "enforcement-mutant-killed"
 SURVIVED = "enforcement-mutant-survived"
@@ -73,8 +89,9 @@ class Mutant:
     line: int
     removed: str   # the statement or condition text
     bypass: str    # "" for a removed statement, "True"/"False" for a guard
-    start: Tuple[int, int] = (0, 0)  # (line, col) of the replaced text, 1-based line
-    end: Tuple[int, int] = (0, 0)
+    span: Tuple[int, int] = (0, 0)  # byte offsets of the replaced text in the file
+    breaks: int = 0                 # line breaks inside the span, kept by apply
+    digest: str = ""                # sha256 of the file at discovery
 
     def name(self) -> str:
         return f"{self.func} ({self.file}:{self.line})"
@@ -101,13 +118,59 @@ class Report:
 
 # --- discovery -------------------------------------------------------------
 
-def _comments(src: str) -> Dict[int, str]:
-    """Line number -> the comment text on it, without the leading #."""
+def _comments(text: str) -> Dict[int, Tuple[str, bool]]:
+    """Line number -> (the comment text on it without the leading #, whether
+    the comment is the whole line). Lines are counted as ast counts them:
+    universal newlines, and nothing else (not U+2028 or form feed)."""
     out = {}
-    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+    for tok in tokenize.generate_tokens(io.StringIO(text, newline=None).readline):
         if tok.type == tokenize.COMMENT:
-            out[tok.start[0]] = tok.string[1:].strip()
+            out[tok.start[0]] = (tok.string[1:].strip(), not tok.line[:tok.start[1]].strip())
     return out
+
+
+_BREAK = re.compile(rb"\r\n|\r|\n")
+_BOM = b"\xef\xbb\xbf"
+
+
+def _line_starts(data: bytes) -> List[int]:
+    """Byte offset of each line's start, lines numbered as ast numbers them.
+    Line 1 starts after a BOM, which ast's columns do not count."""
+    starts = [len(_BOM) if data.startswith(_BOM) else 0]
+    starts.extend(m.end() for m in _BREAK.finditer(data))
+    return starts
+
+
+def _read_source(path: str, rel: str) -> bytes:
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError as e:
+        raise CrossError(f"cross: {rel}: cannot read: {e}") from None
+
+
+def _decode(data: bytes, rel: str) -> str:
+    # ast's columns are UTF-8 bytes of the line; a file in another encoding
+    # would put every offset somewhere else.
+    try:
+        enc, _ = tokenize.detect_encoding(io.BytesIO(data).readline)
+        if enc not in ("utf-8", "utf-8-sig"):
+            raise SyntaxError(f"declares encoding {enc}")
+        return data.decode("utf-8-sig")
+    except (SyntaxError, UnicodeDecodeError) as e:
+        raise CrossError(f"cross: {rel}: not UTF-8 source, cannot place markers: {e}") from None
+
+
+def _point_marked(comments: Dict[int, Tuple[str, bool]], first: int) -> List[int]:
+    """The lines of the doc block above line first that carry the point
+    marker: the full-line comments directly above, as Go's ast.FuncDecl.Doc,
+    matched loosely as Go's hasPointMarker matches (fail closed)."""
+    lines, line = [], first - 1
+    while line in comments and comments[line][1]:
+        if _POINT in comments[line][0]:
+            lines.append(line)
+        line -= 1
+    return lines
 
 
 def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
@@ -116,43 +179,49 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
     points, mutants = 0, []
     for path in sorted(_python_files(root)):
         rel = os.path.relpath(path, root).replace(os.sep, "/")
-        with open(path, encoding="utf-8") as f:
-            src = f.read()
-        if "subpoena" not in src:
+        data = _read_source(path, rel)
+        if b"subpoena" not in data:
             continue
+        text = _decode(data, rel)
         try:
-            tree = ast.parse(src, filename=rel)
-        except SyntaxError as e:
+            tree = ast.parse(data, filename=rel)
+        except (SyntaxError, ValueError) as e:
             raise CrossError(f"cross: {rel}: {e}") from None
-        comments = _comments(src)
+        comments = _comments(text)
+        starts = _line_starts(data)
+        digest = hashlib.sha256(data).hexdigest()
+
+        def mutant(func: str, line: int, node: ast.AST, bypass: str) -> Mutant:
+            a = starts[node.lineno - 1] + node.col_offset
+            b = starts[node.end_lineno - 1] + node.end_col_offset
+            return Mutant(rel, func, line, data[a:b].decode("utf-8"), bypass, (a, b),
+                          node.end_lineno - node.lineno, digest)
+
         placed = set()
         missing = []  # points with nothing to mutate; reported after stray markers, which explain them
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             first = min([node.lineno] + [d.lineno for d in node.decorator_list])
-            if comments.get(first - 1) != _POINT:
+            doc = _point_marked(comments, first)
+            if not doc:
                 continue
-            placed.add(first - 1)
+            placed.update(doc)
             points += 1
             found = 0
             for st in _statements(node):
-                c = comments.get(st.lineno)
-                if c is None or not _ANY_MARKER.match("#" + c) or st.lineno in placed:
+                c = comments.get(st.lineno, ("", False))[0]
+                if not c or not _ANY_MARKER.match("#" + c) or st.lineno in placed:
                     continue
                 if c == _STATEMENT:
                     if not isinstance(st, _SIMPLE):
                         continue  # an if or a loop starting here: not this marker's line
-                    seg = ast.get_source_segment(src, st)
-                    m = Mutant(rel, node.name, st.lineno, seg, "",
-                               (st.lineno, st.col_offset), (st.end_lineno, st.end_col_offset))
+                    m = mutant(node.name, st.lineno, st, "")
                 elif _GUARD.match(c):
                     if not isinstance(st, ast.If):
                         continue
-                    t = st.test
-                    m = Mutant(rel, node.name, st.lineno, ast.get_source_segment(src, t),
-                               "True" if _GUARD.match(c).group(1) == "true" else "False",
-                               (t.lineno, t.col_offset), (t.end_lineno, t.end_col_offset))
+                    m = mutant(node.name, st.lineno, st.test,
+                               "True" if _GUARD.match(c).group(1) == "true" else "False")
                 else:
                     continue
                 placed.add(st.lineno)
@@ -161,12 +230,13 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
             if found == 0:
                 missing.append(f"cross: {rel}: {node.name} is marked {_POINT} but has no "
                                f"{_STATEMENT} statement, so it cannot be cross-examined")
-        for line, c in sorted(comments.items()):
+        for line, (c, _) in sorted(comments.items()):
             if _ANY_MARKER.match("#" + c) and line not in placed:
                 raise CrossError(
                     f"cross: {rel}:{line}: {'#' + c!r} is not a marker cross applies: statement and guard "
                     f"markers go on a simple statement or an if inside a function marked {_POINT}, the "
-                    f"point marker directly above the def, and markers take no other text")
+                    f"point marker on a full-line comment directly above the def, and markers take no "
+                    f"other text")
         if missing:
             raise CrossError(missing[0])
     return points, mutants
@@ -195,15 +265,13 @@ def _python_files(root: str):
                 yield os.path.join(d, f)
 
 
-def apply(src: str, m: Mutant) -> str:
-    """src with m's text replaced, line numbers kept."""
-    lines = src.splitlines(keepends=True)
-    (l1, c1), (l2, c2) = m.start, m.end
-    head = lines[l1 - 1][:c1]
-    tail = lines[l2 - 1][c2:]
-    repl = m.bypass or "pass"
+def apply(data: bytes, m: Mutant) -> bytes:
+    """The file bytes with m's span replaced, line numbers kept. data must be
+    the discovery snapshot (run checks m.digest first)."""
+    a, b = m.span
+    repl = (m.bypass or "pass").encode()
     # Keep every later line where it was, so tracebacks and markers line up.
-    return "".join(lines[:l1 - 1]) + head + repl + "\n" * (l2 - l1) + tail + "".join(lines[l2:])
+    return data[:a] + repl + b"\n" * m.breaks + data[b:]
 
 
 # --- running ----------------------------------------------------------------
@@ -211,9 +279,16 @@ def apply(src: str, m: Mutant) -> str:
 _PLUGIN = "subpoena._cross_plugin"
 
 
-def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report: str) -> Tuple[Optional[int], str]:
+def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report: str,
+               nonce: str = "") -> Tuple[Optional[int], str]:
+    # The report is created fresh, by cross, before every run: nothing left
+    # from an earlier run (or planted) is read as this one's.
+    if os.path.lexists(report):
+        os.remove(report)
+    os.close(os.open(report, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
     env = dict(os.environ)
     env["SUBPOENA_CROSS_REPORT"] = report
+    env["SUBPOENA_CROSS_NONCE"] = nonce
     env["SUBPOENA_CROSS_MUTATED"] = os.path.join(copy, mutated) if mutated else ""
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = copy + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -225,35 +300,70 @@ def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report:
         return p.returncode, out
     except subprocess.TimeoutExpired:
         # The whole session: pytest and anything the tests started.
-        os.killpg(p.pid, signal.SIGKILL)
+        _kill_group(p)
         out, _ = p.communicate()
         return None, out
+    except BaseException:
+        # Ctrl-C (or any other way out): the suite is in its own session, so
+        # it did not get the SIGINT; never leave it running.
+        _kill_group(p)
+        p.wait()
+        raise
 
 
-def _read_report(path: str) -> List[dict]:
+def _kill_group(p: subprocess.Popen) -> None:
     try:
-        with open(path, encoding="utf-8") as f:
-            return [json.loads(l) for l in f if l.strip()]
+        os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _read_report(path: str, nonce: str = "") -> List[dict]:
+    """The plugin's records. A line that is not a record carrying this run's
+    nonce is kept as a "tampered" record, which classify never reads as a
+    verdict. The nonce raises the bar only: test code runs in the same process
+    as the plugin and can still forge a record if it goes looking."""
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    rec = None
+                if not isinstance(rec, dict) or rec.get("nonce") != nonce:
+                    out.append({"kind": "tampered"})
+                else:
+                    out.append(rec)
     except FileNotFoundError:
-        return []
+        pass
+    return out
 
 
 def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, List[str], str, str]:
     """(outcome, failing tests, evidence, first failure) for one mutant run."""
     if code is None:
         return TIMED_OUT, [], "", ""
+    if any(r.get("kind") == "tampered" for r in records):
+        return CRASHED, [], "", ""  # someone else wrote the report: it proves nothing
     finished = [r for r in records if r.get("kind") == "finished"]
+    fails = [r for r in records if r.get("kind") == "failure"]
+    if any(r.get("verdict") == "timeout" for r in fails):
+        return TIMED_OUT, [r["test"] for r in fails], "", ""
     if any(r.get("kind") == "collect_error" for r in records) or code in (2, 4, 5) and not finished:
         return INVALID, [], "", ""
+    if any(r.get("verdict") == "invalid" for r in fails):
+        return INVALID, [r["test"] for r in fails], "", ""
     if finished and not finished[-1].get("mutated_loaded", True):
         return INVALID, [], "", ""
     if code == 0 and finished:
         return SURVIVED, [], "", ""
     if code != 1 or not finished:
         return CRASHED, [], "", ""  # the process died, or pytest stopped abnormally
-    fails = [r for r in records if r.get("kind") == "failure"]
-    assertion = [r for r in fails if r.get("assertion")]
-    crashed = [r for r in fails if not r.get("assertion")]
+    assertion = [r for r in fails if r.get("verdict") == "assertion"]
+    crashed = [r for r in fails if r.get("verdict") != "assertion"]
     if crashed or not assertion:
         return CRASHED, [r["test"] for r in fails], "", ""
     msg = assertion[0].get("message", "")
@@ -265,8 +375,11 @@ def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, L
     return KILLED, [r["test"] for r in fails], "other", first
 
 
-def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 300.0, log=None) -> Report:
-    """Cross-examine the project at target. Raises CrossError on setup errors."""
+def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 300.0, log=None,
+        _before_mutate: Optional[Callable[[str], None]] = None) -> Report:
+    """Cross-examine the project at target. Raises CrossError on setup errors.
+    _before_mutate (tests only) is called with the copy's root before each
+    mutant is applied."""
     log = log or (lambda s: None)
     target = os.path.abspath(target)
     points, mutants = find_mutants(target)
@@ -276,28 +389,33 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
     args = list(pytest_args or [])
     with tempfile.TemporaryDirectory(prefix="subpoena-cross-") as tmp:
         copy = os.path.join(tmp, os.path.basename(target))
-        shutil.copytree(target, copy, ignore=shutil.ignore_patterns(*_SKIP_DIRS, "*.egg-info"))
+        try:
+            shutil.copytree(target, copy, ignore=shutil.ignore_patterns(*_SKIP_DIRS, "*.egg-info"))
+        except OSError as e:  # shutil.Error too: a dangling symlink, an unreadable file
+            raise CrossError(f"cross: copy tree: {e}") from None
         report = os.path.join(tmp, "report.jsonl")
+        nonce = secrets.token_hex(16)
         log(f"baseline: pytest {' '.join(args)}")
-        code, out = _run_suite(copy, args, timeout, "", report)
+        code, out = _run_suite(copy, args, timeout, "", report, nonce)
         if code != 0:
             raise CrossError("cross: baseline suite is not green, cannot judge mutants:\n" + _tail(out, 40))
         for m in mutants:
+            if _before_mutate is not None:
+                _before_mutate(copy)
             path = os.path.join(copy, m.file)
-            with open(path, encoding="utf-8") as f:
-                src = f.read()
+            snapshot = _read_source(path, m.file)
+            if hashlib.sha256(snapshot).hexdigest() != m.digest:
+                raise CrossError(f"cross: {m.file}: snapshot drift: copy no longer matches discovery bytes")
             log(f"mutant: {m.name()} " + (f"forced {m.removed!r} to {m.bypass}" if m.bypass
                                           else f"removed {m.removed!r}"))
             try:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(apply(src, m))
-                if os.path.exists(report):
-                    os.remove(report)
-                code, out = _run_suite(copy, args, timeout, m.file, report)
+                with open(path, "wb") as f:
+                    f.write(apply(snapshot, m))
+                code, out = _run_suite(copy, args, timeout, m.file, report, nonce)
             finally:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(src)
-            outcome, failing, ev, first = classify(code, _read_report(report), out)
+                with open(path, "wb") as f:
+                    f.write(snapshot)
+            outcome, failing, ev, first = classify(code, _read_report(report, nonce), out)
             rep.results.append(Result(m, outcome, failing, ev, first,
                                       "" if outcome == KILLED else _tail(out, 20)))
     return rep
@@ -315,7 +433,8 @@ _EXPLAIN = {
              "a crash is not a kill:",
     INVALID: "mutant did not import, or the suite never imported it from the copy (an installed copy of "
              "the package shadows it); it proves nothing:",
-    TIMED_OUT: "suite did not finish within the timeout; a hang is not a kill. Make the test fail fast instead:",
+    TIMED_OUT: "suite did not finish within the timeout (or pytest-timeout stopped a test); a hang is not a "
+               "kill. Make the test fail fast instead:",
 }
 
 
@@ -328,7 +447,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     a = ap.parse_args(argv)
     try:
         rep = run(a.target, a.pytest_args, a.timeout, log=lambda s: print(s, file=sys.stderr))
-    except CrossError as e:
+    except (CrossError, OSError) as e:
+        # Exit 1 means a mutant was not killed; a setup fault must never read as that.
         print(f"subpoena-cross: {e}", file=sys.stderr)
         return 2
     print(f"{rep.enforcement_points} enforcement point(s), {len(rep.results)} mutant(s)")
