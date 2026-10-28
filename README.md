@@ -13,8 +13,8 @@ and cross-examination checks that the suite can tell the difference.
 all three tiers, lint and cross-examination. Python is on PyPI
 (`pip install subpoena`) with the harness, TraceQL evaluator, witness file
 reader and witnessed absence checks (`no_spawn`, `watch_spawns`), which pass
-the same contract checks as Go. Python does not yet have lint or
-cross-examination. TypeScript has generated names and is next. The
+the same contract checks as Go, and cross-examination (`subpoena-cross`).
+Python does not yet have lint. TypeScript has generated names and is next. The
 registry, invariants, witness output and tiers 2–3 are language-neutral, and
 [docs/ports.md](docs/ports.md)
 is the contract a harness in another language must meet, with a check for
@@ -77,7 +77,7 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | Tier 3: `examples/gateway/alerts` (`make alerts`) | Runs (needs Docker): provisioned into Grafana 13.2 with Tempo 3.1 and driven through the scheduler. Quiet on silence and on clean traffic, fires on a violation. The first run found the unvalidated rule could never fire; see the rule file's header |
 | `examples/adopter`: adopting Subpoena from a separate module | Runs in CI (`adopter` job): test, lint, cross-examination, and its generated names checked with Weaver |
 | `examples/quickstart`: Level 0, one rule with no registry | Runs in CI (`quickstart` job): test and cross-examination (no lint, which needs a registry) |
-| `examples/python-quickstart`: Level 0 for a Python project, one rule and two pytest tests | Runs in CI (`python-quickstart` job): installs `python/`, runs pytest, then removes the check and requires pytest to fail. No witness or cross-examination at this level |
+| `examples/python-quickstart`: Level 0 for a Python project, one rule and two pytest tests | Runs in CI (`python-quickstart` job): installs `python/`, runs pytest, then `subpoena-cross`, which kills both mutants (the check forced off, the refusal removed). No witness at this level |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
 | Python port, `python/` (`make python`) | Runs, in CI on Python 3.9 and 3.12: the harness passes every `conformance/harness.yaml` case, its native evaluator agrees on all 139 corpus cases, and its witness reader passes the Go reader's cases. No lint or cross-examination yet. On PyPI: `pip install subpoena` (0.1.0a1) |
 | Port checks: `subpoena-traceql`, `subpoena-conform` (`make conform`), the witness file format and reader (`witness.ReadLog`) | Runs, in `make test`: the Go evaluator, through the same protocol a port uses, agrees on all 139 cases (13 queries over 9 fixtures, 22 rejected queries) |

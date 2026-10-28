@@ -21,13 +21,13 @@ The rule: only an admin may delete an account. `delete_account` in
 ## What it does not prove
 
 - The database here is a plain Python object the test owns. It is not the
-  kernel-side witness. The Python port has no live witness and no witness
-  health check, only a reader for the log `subpoena-witness` writes
-  (`subpoena.witness.read_log`).
-- Only one mutant is checked. Python has no lint and no cross-examination
-  yet. CI swaps the check `role != "admin"` for `False` and requires the
-  suite to fail, and it does: the first test goes red. No other mutant of
-  this code is tried.
+  kernel-side witness. For a process effect, run `subpoena-witness` and
+  check its file with `subpoena.harness.require_no_spawn` or
+  `watch_spawns`, which fail closed on bad capture health.
+- Python has no lint yet. Cross-examination (`subpoena-cross .`) tries two
+  mutants: the check `role != "admin"` forced to `False`, and the
+  `return False` refusal removed. CI requires both killed. Nothing else in
+  this code is mutated.
 - Span names are plain strings, with no registry or generated names.
 - Nothing here covers a second code path to the database.
 
@@ -38,6 +38,7 @@ From a checkout of the Subpoena repo:
     python -m venv .venv && . .venv/bin/activate
     pip install -r requirements.txt
     pytest -q
+    subpoena-cross .
 
 Outside the repo, `pip install subpoena pytest` (Python 3.9+, alpha).
 

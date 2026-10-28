@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Python cross-examination (G1).** `subpoena-cross <dir>` (console script,
+  `subpoena.cross`) forces each `# subpoena:enforcement_guard` condition and
+  replaces each `# subpoena:enforcement` statement with `pass`, in a copy, and
+  requires pytest to fail on an assertion. Other exceptions and dead test
+  processes are `crashed`, a mutant that does not import or is shadowed by an
+  installed package is `invalid`, and a hang is `timeout`; all fail the run, as
+  does any marker that takes no effect. `examples/python-quickstart` is now
+  cross-examined in CI. Groups, `cross-masked.txt`, `-j` and `-select` are Go
+  only for now.
 - **Witness file health (W4), and absence checks in Python (W5).**
   `subpoena-witness` writes a `start` record once attached and a `stop`
   record with the capture's health (lost kernel events, read or write

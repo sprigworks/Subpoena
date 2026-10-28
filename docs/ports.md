@@ -176,7 +176,14 @@ yet.
   provenance markers.
 - **G1.** A port's cross-examination removes each statement marked as enforcement and
   requires the suite to fail. A mutant that does not compile or import counts
-  as invalid, not killed.
+  as invalid, not killed. As in Go: a guard marker forces an `if` condition;
+  a red suite is a kill only on an assertion failure (a crash, an exception
+  other than an assertion, or a dead test process is `crashed`); a hang is
+  `timeout`; a marker that takes no effect, and an enforcement point with no
+  statement marker, are errors; the baseline must be green. Python's
+  `subpoena-cross` also refuses a mutant the suite never imported from the
+  copy (an installed package shadowing it) as invalid. Not yet in Python:
+  layer groups, `cross-masked.txt`, `-j` and `-select`.
 
 Neither is needed to start. Until a port has them, it says so.
 

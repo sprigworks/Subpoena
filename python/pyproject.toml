@@ -23,6 +23,9 @@ dependencies = [
     "opentelemetry-sdk>=1.27,<2",
 ]
 
+[project.scripts]
+subpoena-cross = "subpoena.cross:main"
+
 [project.urls]
 Homepage = "https://subpoena.dev"
 Source = "https://github.com/sprigworks/subpoena"
