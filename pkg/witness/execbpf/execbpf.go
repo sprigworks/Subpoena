@@ -87,6 +87,12 @@ type Witness struct {
 	k         *kernel // loaded program; guarded by lifecycle
 	healthErr error
 	finished  bool
+
+	// Test hooks. ringBytes, if set, replaces the ring buffer's size (a
+	// power of two, at least a page); holdReads, if set, holds the reader
+	// until it is closed, so a test can fill the buffer and force drops.
+	ringBytes uint32
+	holdReads chan struct{}
 }
 
 var _ witness.Witness = (*Witness)(nil)
