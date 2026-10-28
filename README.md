@@ -133,7 +133,11 @@ make test-ebpf    # the eBPF witnesses against the real kernel (privileged conta
 make test-cgroup  # real-cgroup tests without root, in a delegated systemd scope
 ```
 
-Needs Go 1.25 or newer. In a sandbox that can't reach the Go module proxy or
+Needs Go 1.25 or newer. `make check` and `make cross-self` take about 15
+minutes, because cross-examination reruns the suite once per mutant; `make test`
+takes about a minute. `make python` needs [uv](https://docs.astral.sh/uv/),
+`make test-cgroup` needs a systemd user session, and `make generate` needs
+Weaver. In a sandbox that can't reach the Go module proxy or
 the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 CI covers each of these on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

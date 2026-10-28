@@ -60,7 +60,10 @@ dropped, never ended, or lost attributes, events or links to span limits. Absenc
 From a checkout of [github.com/sprigworks/subpoena](https://github.com/sprigworks/subpoena):
 
 ```
-make python        # venv (uv), pytest, subpoena-conform
+make python        # venv, pytest, subpoena-conform
 ```
+
+`make python` needs [uv](https://docs.astral.sh/uv/) and Go 1.25+ (for
+`subpoena-conform`).
 
 CI runs Python 3.9 and 3.12.

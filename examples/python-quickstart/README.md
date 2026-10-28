@@ -33,10 +33,12 @@ The rule: only an admin may delete an account. `delete_account` in
 
 ## Run it
 
-From a checkout of the Subpoena repo:
+From a checkout of the Subpoena repo, with Python 3.9+ (on Debian or Ubuntu,
+`python3 -m venv` needs the `python3-venv` package):
 
-    python -m venv .venv && . .venv/bin/activate
-    pip install -r requirements.txt
+    cd examples/python-quickstart
+    python3 -m venv .venv && . .venv/bin/activate
+    pip install -r requirements.txt   # installs ../../python in editable mode, plus pytest
     pytest -q
     subpoena-cross .
 
