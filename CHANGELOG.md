@@ -12,6 +12,11 @@
   witness.
 - **Tagged failure messages.** Harness witness failures start with `witness:`,
   telemetry assertion failures with `testimony:` (Go and Python).
+- **Lint: verified `Collect` wrappers.** A test helper that stops the system
+  and witness, checks health and calls the harness `Collect` counts as
+  `Collect` for `no-trace-assertion` and `unguarded-absence`, but only when
+  every `return` hands back the trace from that call. A same-named method that
+  doesn't, such as a metrics `Collect`, still doesn't count (`lint/README.md`).
 
 ## Python 0.1.0a1 (2026-10-26)
 
