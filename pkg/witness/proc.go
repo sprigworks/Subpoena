@@ -38,8 +38,13 @@ import (
 //     double-forked process or one reparented into a session cgroup, is seen
 //     only by a full scan, which on a busy machine under the race detector can
 //     take 100ms or more; absence of such processes rests on full scans even
-//     when Health is nil. The kernel-side witness (pkg/witness/execbpf) does
-//     not have this gap.
+//     when Health is nil. Coverage reports the longest gap between full scans
+//     in the capture: such a process that lived shorter than that may have
+//     been missed. The kernel-side witness (pkg/witness/execbpf) does not
+//     have this gap.
+//   - Seeing a calibration probe proves the witness observed that probe, not
+//     that capture was complete: a shorter process can still slip between
+//     polls.
 //   - A Go program's first os/exec call forks a throwaway pidfd probe; Start
 //     absorbs it with a warm-up. A process that never ran Start before its first
 //     exec could still see that probe as an extra event.
@@ -71,9 +76,12 @@ type ProcWitness struct {
 	stop         chan struct{}
 	done         chan struct{}
 	finished     bool
+	stoppedAt    time.Time // when Stop returned; ends the last open window
 	scanErrors   uint64
 	firstScanErr error
 	walkErr      error // why the children walk cannot run; set by Start
+	coverage     Coverage
+	lastScan     time.Time // when the latest successful full scan started
 
 	afterScan func() // test hook: runs in Poll between the scan and recording
 }
@@ -131,11 +139,14 @@ func (w *ProcWitness) Start() error {
 		return fmt.Errorf("witness: already started")
 	}
 	w.finished, w.scanErrors, w.firstScanErr, w.walkErr = false, 0, nil, nil
+	w.coverage = Coverage{}
+	baselineStart := time.Now()
 	procs, err := w.scan(nil)
 	if err != nil {
 		w.scanErrors, w.firstScanErr = 1, err
 		return err
 	}
+	w.lastScan = baselineStart
 	if _, err := w.children(w.RootPID); err != nil {
 		w.walkErr = err
 	}
@@ -174,7 +185,7 @@ func (w *ProcWitness) Stop() {
 	close(stop)
 	<-done
 	w.mu.Lock()
-	w.stop, w.finished = nil, true
+	w.stop, w.finished, w.stoppedAt = nil, true, time.Now()
 	w.mu.Unlock()
 }
 
@@ -402,16 +413,28 @@ func (w *ProcWitness) Poll() {
 	if baseline == nil {
 		return
 	}
+	start := time.Now()
 	procs, err := w.scan(baseline)
+	w.mu.Lock()
+	// A process can be born just after a scan listed /proc and be gone before
+	// the next scan read it: the window runs from one scan's start to the
+	// next one's end. A failed scan covers nothing, so it neither counts nor
+	// closes the window.
+	if err == nil {
+		w.coverage.FullScans++
+		if gap := time.Since(w.lastScan); gap > w.coverage.MaxFullScanGap {
+			w.coverage.MaxFullScanGap = gap
+		}
+		w.lastScan = start
+	}
 	if err != nil {
-		w.mu.Lock()
 		w.scanErrors++
 		if w.firstScanErr == nil {
 			w.firstScanErr = err
 		}
-		w.mu.Unlock()
 		// Keep positive observations from the readable part of a partial scan.
 	}
+	w.mu.Unlock()
 	if w.afterScan != nil {
 		w.afterScan()
 	}
@@ -496,6 +519,7 @@ func (w *ProcWitness) pollChildren() {
 	if w.tracked == nil {
 		return
 	}
+	w.coverage.ChildrenWalks++
 	if walkErr != nil && w.walkErr == nil {
 		w.walkErr = walkErr
 	}
@@ -673,6 +697,40 @@ func cgroupHasTrace(cgroup, traceID string) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(cgroup), strings.ToLower(traceID))
+}
+
+// Coverage describes how a ProcWitness capture was polled. A process outside
+// the root's children tree (double-forked, reparented, or only in a session
+// cgroup) is seen only by a full scan, so its absence rests on full scans
+// even when Health is nil. One that lived shorter than MaxFullScanGap may
+// have been missed. Log it next to an absence claim, or compare it with how
+// long the refused process would have run.
+type Coverage struct {
+	FullScans      int           // successful full /proc scans after the baseline
+	ChildrenWalks  int           // walks of the root's children lists
+	MaxFullScanGap time.Duration // longest time from one successful scan's start (the baseline's included) to the next one's end, or to Stop (now while running) for the last
+}
+
+// Coverage returns the polling coverage so far.
+//
+//subpoena:enforcement_point
+func (w *ProcWitness) Coverage() Coverage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	c := w.coverage
+	// The window since the last successful scan started is still open:
+	// failed scans did not close it, and nothing has yet. It ends at Stop,
+	// or now while polling runs.
+	if !w.lastScan.IsZero() {
+		end := time.Now()
+		if w.finished {
+			end = w.stoppedAt
+		}
+		if gap := end.Sub(w.lastScan); gap > c.MaxFullScanGap {
+			c.MaxFullScanGap = gap //subpoena:enforcement
+		}
+	}
+	return c
 }
 
 // Events returns every observed event, in discovery order.

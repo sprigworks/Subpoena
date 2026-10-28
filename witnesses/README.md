@@ -98,7 +98,15 @@ cannot read the root's children lists, `Health` fails with
 `witness.ErrChildrenWalkUnavailable`: full scans alone miss most short-lived
 children on a busy host. Processes outside the root's children tree
 (double-forked, reparented, moved into a session cgroup) are seen only by full
-scans even when `Health` is nil. Use the eBPF witness where that gap matters.
+scans even when `Health` is nil. `ProcWitness.Coverage()` reports how many
+full scans and children walks ran and the longest gap between full scans. An
+out-of-tree process that lived shorter than that gap may have been missed, so
+log it next to an absence claim. Use the eBPF witness where that gap matters.
+Seeing a calibration probe proves the witness saw that probe, not that capture
+was complete: a shorter process can still slip between polls. The
+`BenchmarkProc*` benchmarks (`pkg/witness/proc_bench_test.go`) measure full-scan
+and walk cost and short-process capture on the host they run on; CI runs them
+for the record, with no pass bar.
 
 The eBPF witness counts failed ring-buffer reservations for both exec and fork
 hooks in a per-CPU map. `Stop` detaches, drains, sums the counters and returns

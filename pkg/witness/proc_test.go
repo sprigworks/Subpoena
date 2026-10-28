@@ -598,3 +598,52 @@ func TestForkedChildsInheritedLineIsReplaced(t *testing.T) {
 		t.Fatalf("got %s", brief(w.Events()))
 	}
 }
+
+// Coverage counts both pollers and reports the longest gap between full
+// scans: the window in which a process outside the children tree can slip by.
+func TestCoverageReportsFullScanGap(t *testing.T) {
+	w, _ := freshFake(t, nil)
+	before := w.Coverage()
+	if before.FullScans == 0 || before.ChildrenWalks == 0 {
+		t.Fatalf("Start and Stop poll with both pollers; got %+v", before)
+	}
+	w.Poll()
+	time.Sleep(30 * time.Millisecond)
+	w.Poll()
+	w.pollChildren()
+	got := w.Coverage()
+	if got.FullScans != before.FullScans+2 || got.ChildrenWalks != before.ChildrenWalks+1 {
+		t.Fatalf("want 2 more full scans and 1 more walk than %+v, got %+v", before, got)
+	}
+	if got.MaxFullScanGap < 30*time.Millisecond {
+		t.Fatalf("a 30ms pause between full scans must show in MaxFullScanGap, got %v", got.MaxFullScanGap)
+	}
+}
+
+// Scans that fail after the last good one leave its window open until Stop:
+// Coverage must count it, though no later scan closed it.
+func TestCoverageCountsTheWindowLeftOpenByFailedScans(t *testing.T) {
+	w, root := freshFake(t, func(w *ProcWitness) { w.Interval = time.Hour })
+	must(t, w.Start())
+	must(t, os.Rename(root, root+".gone"))
+	defer os.Rename(root+".gone", root)
+	time.Sleep(50 * time.Millisecond)
+	w.Poll()
+	w.Stop()
+	if c := w.Coverage(); c.MaxFullScanGap < 50*time.Millisecond {
+		t.Fatalf("a 50ms window closed by no scan must show in MaxFullScanGap, got %+v", c)
+	}
+}
+
+// A new Start resets coverage.
+func TestCoverageResetsOnStart(t *testing.T) {
+	w, _ := freshFake(t, nil)
+	for i := 0; i < 100; i++ {
+		w.Poll()
+	}
+	must(t, w.Start())
+	w.Stop()
+	if c := w.Coverage(); c.FullScans >= 100 {
+		t.Fatalf("coverage carried over from the previous capture: %+v", c)
+	}
+}
