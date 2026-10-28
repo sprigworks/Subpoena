@@ -9,13 +9,14 @@ that kind of code in three ways.
    integration stack and as a production alert.
 2. **An independent witness checks what really happened.** The code that
    enforces a rule is also the code that reports it did, so its spans only
-   count as testimony. A witness the app doesn't control (`/proc` or eBPF for
-   process execs, eBPF for outbound connections) records what actually ran.
-   An incomplete capture fails the test. It never passes.
+   count as testimony. A witness the app doesn't control (`/proc` polling, or
+   eBPF probes in the Linux kernel, for process execs and outbound connections)
+   records what actually ran. A capture the witness can't vouch for fails the
+   test.
 3. **Cross-examination checks that the tests can tell.** `subpoena-cross`
-   removes each marked enforcement statement in turn and requires the suite to
-   go red. A mutant that survives means the tests would pass with the
-   protection deleted.
+   deletes each marked enforcement statement in turn (each deletion is a
+   mutant) and requires the suite to go red. A mutant that survives means the
+   tests would still pass with the protection gone.
 
 **Status: alpha, v0.1.0-alpha.1.** APIs will change. Go is the reference
 implementation, and Python is a port (see [Languages](#languages)).
@@ -27,6 +28,7 @@ delete is refused, and the purge process never runs.
 
 ```go
 func TestNonAdminDeleteNeverPurges(t *testing.T) {
+	ctx := context.Background()
 	h, d, w := rig(t) // harness, handler under test, process witness
 	harness.WatchSpawns(t, w, "", harness.SpawnRule{Never: []string{"sleep " + sleepArg}})
 
@@ -41,7 +43,7 @@ func TestNonAdminDeleteNeverPurges(t *testing.T) {
 		t.Fatal(err)
 	}
 	harness.RequireExists(t, tr, refused)    // the denial is on the record
-	harness.RequireAbsent(t, tr, purgeAfter) // no purge span after it (testimony)
+	harness.RequireAbsent(t, tr, purgeAfter) // no purge span follows the denial (testimony)
 	harness.RequireNoSpawn(t, w, tr.TraceIDs()[0]) // and the witness saw no process (evidence)
 }
 ```
@@ -59,13 +61,14 @@ cd subpoena/examples/quickstart
 make check
 ```
 
-The last lines are cross-examination deleting the refusal and the suite
-catching it:
+The tests pass, then cross-examination deletes the refusal and the suite
+catches it. The end of the output:
 
 ```
 enforcement-mutant-killed Authorize
   at handler.go:71, removed: return ctx, fmt.Errorf("%w: %s", ErrRefused, r.AccountID)
   suite went red; failing: TestNonAdminDeleteNeverPurges
+  first evidence (other): want ErrRefused, got <nil>
 ```
 
 To adopt it in a service of your own, follow
@@ -108,7 +111,7 @@ Details in [docs/architecture.md](docs/architecture.md).
 | Network absence checks (`RequireNoDial`) | yes | not yet |
 | Cross-examination (`subpoena-cross`) | yes, plus layer groups, `-j` and `-select` | yes, for pytest |
 | Lint (`subpoena-lint`) | yes | not yet |
-| Tiers 2 and 3 (OATS, alert rules) | language-neutral | language-neutral |
+| Tiers 2 and 3 (OATS, alert rules) | same files, any language | same files, any language |
 
 The Python package is `pip install subpoena`; see [python/README.md](python/README.md).
 The PyPI release (0.1.0a1) predates the absence checks and cross-examination,
@@ -117,7 +120,7 @@ TypeScript is next, and has generated names already. Every port meets the
 contract in [docs/ports.md](docs/ports.md), and shared conformance cases check
 each part.
 
-## Working on Subpoena
+## Running the checks
 
 ```
 make test         # tier 1: harness, TraceQL, witness, lint, cross-examination, the gateway example
@@ -132,22 +135,22 @@ make test-cgroup  # real-cgroup tests without root, in a delegated systemd scope
 
 Needs Go 1.25 or newer. In a sandbox that can't reach the Go module proxy or
 the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
-CI runs all of these on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
+CI covers each of these on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Examples
 
 | Example | What it shows |
 | --- | --- |
-| [`examples/quickstart`](examples/quickstart) | Level 0 in Go: one rule, no registry, a witness and cross-examination |
-| [`examples/python-quickstart`](examples/python-quickstart) | Level 0 in Python: one rule, two pytest tests, cross-examination |
+| [`examples/quickstart`](examples/quickstart) | The smallest setup in Go: one rule, no registry, a witness and cross-examination |
+| [`examples/python-quickstart`](examples/python-quickstart) | The smallest setup in Python: one rule, two pytest tests, cross-examination |
 | [`examples/adopter`](examples/adopter) | A separate module adopting Subpoena: Weaver registry, generated names, lint, cross |
-| [`examples/platform`](examples/platform) | Level 3: one shared registry across two services |
+| [`examples/platform`](examples/platform) | Several services sharing one registry |
 | [`examples/gateway`](examples/gateway) | The reference app: all three tiers, kernel witnesses, OATS stack and alert rule |
 
 ## Design notes
 
-- TraceQL is a documented subset (`docs/traceql-subset.md`), not Tempo's engine,
-  by design: Tempo is AGPL-3.0, and linking its `pkg/traceql` into this
+- Subpoena evaluates a documented subset of TraceQL (`docs/traceql-subset.md`)
+  with its own evaluator, by design: Tempo is AGPL-3.0, and linking its `pkg/traceql` into this
   Apache-2.0 library would put the combined work under AGPL. Querying a
   running Tempo over HTTP carries no such obligation, which is how the
   conformance suite (`conformance/README.md`) keeps the subset honest.
@@ -167,7 +170,7 @@ CI runs all of these on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.m
 - `docs/architecture.md` — what was actually built, in text.
 - `docs/traceql-subset.md`, `docs/migrating-an-existing-service.md` — the subset grammar and the migration playbook.
 - `docs/ports.md` — the contract for a Python or TypeScript harness, and how each part is checked.
-- `docs/background/tdd-vs-telemetry.md` — the analysis that started the project: whether OTel assertions can replace test suites (they can't; this is what they can do).
+- `docs/background/tdd-vs-telemetry.md` — the analysis that started the project: whether OTel assertions can replace test suites, and what they can do instead.
 
 ## Layout
 
