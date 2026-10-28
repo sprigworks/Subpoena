@@ -10,6 +10,13 @@
 - **`harness.CheckNoSpawn`, `CheckNoDial`.** Non-fatal forms of the witness
   absence checks. `subpoena-lint` counts them, and `WatchSpawns`, as asking a
   witness.
+- **Name-only sightings are marked.** When `ProcWitness` sees a process only
+  by its kernel task name (it exited before its arguments were read),
+  `ProcessEvent.CommandSource` is `comm` and `NameOnly()` is true. `WatchSpawns`
+  fails on a name-only sighting whose name is a `Never` program, and, with an
+  `Allowed` list, on any name-only sighting unless `SpawnRule.ExcuseNameOnly`
+  is set and the name is an `Allowed` program. Before, a bare name could slip
+  past `Never`.
 - **Tagged failure messages.** Harness witness failures start with `witness:`,
   telemetry assertion failures with `testimony:` (Go and Python).
 - **Lint: verified `Collect` wrappers.** A test helper that stops the system

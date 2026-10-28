@@ -50,8 +50,40 @@ the test has already failed it logs every process the witness saw. `Never`
 matches a command line equal to the entry or ending with it after a space, so
 it still fires when `timeout` or `env` wraps the command. `Allowed` matches the
 whole command line exactly, so `sh -c "x; sleep 0.6"` is not allowed by
-`"sleep 0.6"`. A process whose arguments the witness cannot read shows up under
-its bare name, which `Never` may not match; an `Allowed` list catches it.
+`"sleep 0.6"`.
+
+A process that exits before `ProcWitness` reads its arguments is seen by name
+only: `ProcessEvent.Command` is the kernel task name (cut to 15 bytes) and
+`NameOnly()` is true (`CommandSource` is `comm`, not `cmdline`). `touch` could
+have been an allowed `touch approved` or a refused `touch rejected`, so the
+rule treats it as seen but not identified. It fails when the name is the
+program of a `Never` entry (its first word, without the directory). With an
+`Allowed` list it also fails as unidentified, unless `ExcuseNameOnly` is set
+and the name is the program of an `Allowed` entry; then it is logged. Set
+`ExcuseNameOnly` only when the test runs commands too short-lived to read, and
+keep refused probes long-lived so a refused one is always seen whole. A child
+first seen with its parent's command line (just forked) that is later seen
+with no arguments and a different name has exec'd (or renamed itself) since:
+its command line is kept, and the name is added as a second, name-only event
+for the same process. A later, different command line (`bash -c` replacing
+itself with its last command, or a process rewriting its own argv) likewise
+keeps the earlier line as an event of its own; only a child's first line that
+equals its parent's is replaced by its exec, since it was never the child's.
+`/proc` cannot tell that fork image from a child that exec'd its parent's exact
+command line, so such a child that later rewrites its argv loses the first
+line when its parent is not itself tracked (the root, or a process older than
+`Start`). One process can therefore give several events: count events, not
+processes.
+A fork that execs a program with the same name
+(`sh` running `sh -c ...`) is not caught this way: the parent's line stays.
+Keep refused commands distinguishable by program where that matters. With an
+`Allowed` list, a forked child seen before its exec and then only by name keeps
+its parent's command line, which `Allowed` must list (or the test fails as not
+allowed); `ExcuseNameOnly` does not excuse a command line. Never entries must start with the program
+(`rm -rf /tmp/x`, not `/tmp/x` or `env rm ...`) to match a name. The kernel
+witness (`execbpf`) reads arguments at exec; when that read fails it, and the
+witness-file reader, report the task name as name-only rather than an empty
+command.
 
 `ProcWitness.Health` retains the first scan error and number of failed scans,
 including the final poll. Permission/I/O errors and malformed process stat
