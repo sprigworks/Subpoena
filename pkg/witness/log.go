@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"strings"
 	"time"
 )
 
@@ -58,15 +60,19 @@ var (
 )
 
 // ReadLog reads subpoena-witness JSON lines. Blank lines and unknown fields
-// are ignored. A line that does not decode, or has no time, is an error
-// naming its line number: skipping it could turn an exec into an absence.
+// are ignored. A line that does not decode, has no time, or has a key that
+// differs from a known one only by case is an error naming its line number:
+// skipping it could turn an exec into an absence, and Go's case-insensitive
+// decoding would read such a key where another language's reader would not.
 // Capture faults in the file (see Health) do not stop the read: the execs
 // are still evidence that something ran.
+//
+//subpoena:enforcement_point
 func ReadLog(r io.Reader) (*Log, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	l := &Log{}
-	open, records := 0, 0 // open: line of the start record of the open window
+	open, records, windows := 0, 0, 0 // open: line of the start record of the open window
 	fault := func(err error) {
 		if l.health == nil {
 			l.health = err
@@ -77,37 +83,39 @@ func ReadLog(r io.Reader) (*Log, error) {
 		if len(b) == 0 {
 			continue
 		}
-		var kind struct {
-			Record *string `json:"record"`
-		}
-		if err := json.Unmarshal(b, &kind); err != nil {
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal(b, &keys); err != nil {
 			return nil, fmt.Errorf("witness: line %d: %w", n, err)
 		}
-		if kind.Record != nil {
+		if err := caseVariant(keys); err != nil {
+			return nil, fmt.Errorf("witness: line %d: %w", n, err) //subpoena:enforcement
+		}
+		if rec, ok := keys["record"]; ok && string(rec) != "null" {
 			var rec Record
 			if err := json.Unmarshal(b, &rec); err != nil {
 				return nil, fmt.Errorf("witness: line %d: %w", n, err)
 			}
 			if rec.Time.IsZero() {
-				return nil, fmt.Errorf("witness: line %d: no time", n)
+				return nil, fmt.Errorf("witness: line %d: no time", n) //subpoena:enforcement
 			}
 			records++
 			switch rec.Record {
 			case RecordStart:
 				if open != 0 {
-					fault(fmt.Errorf("witness: line %d: a capture started while the one from line %d was still open", n, open))
+					fault(fmt.Errorf("witness: line %d: a capture started while the one from line %d was still open", n, open)) //subpoena:enforcement
 				}
 				open = n
+				windows++
 			case RecordStop:
 				switch {
 				case open == 0:
-					fault(fmt.Errorf("witness: line %d: a stop with no capture open", n))
+					fault(fmt.Errorf("witness: line %d: a stop with no capture open", n)) //subpoena:enforcement
 				case !rec.Healthy || rec.Error != "":
-					fault(fmt.Errorf("witness: line %d: capture unhealthy: %s", n, rec.Error))
+					fault(fmt.Errorf("witness: line %d: capture unhealthy: %s", n, rec.Error)) //subpoena:enforcement
 				}
 				open = 0
 			default:
-				return nil, fmt.Errorf("witness: line %d: unknown record %q", n, rec.Record)
+				return nil, fmt.Errorf("witness: line %d: unknown record %q", n, rec.Record) //subpoena:enforcement
 			}
 			continue
 		}
@@ -116,10 +124,10 @@ func ReadLog(r io.Reader) (*Log, error) {
 			return nil, fmt.Errorf("witness: line %d: %w", n, err)
 		}
 		if ln.Time.IsZero() {
-			return nil, fmt.Errorf("witness: line %d: no time", n)
+			return nil, fmt.Errorf("witness: line %d: no time", n) //subpoena:enforcement
 		}
 		if open == 0 {
-			fault(fmt.Errorf("witness: line %d: an exec outside any capture window", n))
+			fault(fmt.Errorf("witness: line %d: an exec outside any capture window", n)) //subpoena:enforcement
 		}
 		l.lines = append(l.lines, ln)
 	}
@@ -129,11 +137,44 @@ func ReadLog(r io.Reader) (*Log, error) {
 	switch {
 	case records == 0:
 		// Every exec was outside a window too; say why, once.
-		l.health = errNoRecords
+		l.health = errNoRecords //subpoena:enforcement
 	case open != 0:
-		fault(fmt.Errorf("witness: the capture from line %d never stopped: the witness was killed, or the file was read before it stopped", open))
+		fault(fmt.Errorf("witness: the capture from line %d never stopped: the witness was killed, or the file was read before it stopped", open)) //subpoena:enforcement
+	case windows > 1:
+		// Execs are tied to a window by file order, not time, and Spawned
+		// filters by trace: a process that ran between two windows (the
+		// witness restarted mid-test) is in neither, so nothing vouches for
+		// its absence.
+		fault(fmt.Errorf("witness: the file holds %d capture windows, and nothing watched between them; use one witness run per file", windows)) //subpoena:enforcement
 	}
 	return l, nil
+}
+
+// knownKeys are the field names of Line and Record.
+var knownKeys = func() []string {
+	var out []string
+	for _, v := range []any{Line{}, Record{}} {
+		t := reflect.TypeOf(v)
+		for i := 0; i < t.NumField(); i++ {
+			name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+			out = append(out, name)
+		}
+	}
+	return out
+}()
+
+// caseVariant refuses a key that differs from a known field name only by
+// case ("Healthy", "TRACE_ID"): encoding/json would read it as that field,
+// and a reader in another language would not.
+func caseVariant(keys map[string]json.RawMessage) error {
+	for k := range keys {
+		for _, known := range knownKeys {
+			if k != known && strings.EqualFold(k, known) {
+				return fmt.Errorf("key %q is %q in another case", k, known)
+			}
+		}
+	}
+	return nil
 }
 
 var errNoRecords = errors.New("witness: the file has no start or stop records, so its capture health is unknown (an older subpoena-witness wrote it, or it was cut short)")

@@ -97,12 +97,12 @@ cases:
       - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false}'
       - '{"time":"2026-10-28T12:01:01Z","pid":9,"ppid":1,"host_pid":4009,"comm":"curl","exe":"/usr/bin/x","command":"curl x","args":["curl","x"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:01:09Z","record":"stop","healthy":true}'
-    health: "ok"
+    health: "2 capture windows"
     spawned:
       A: [7, 9]
     no_spawn:
       A: Fail
-      C: Pass
+      C: Inconclusive
 
   # An exec after one stop and before the next start.
   - name: exec_between_windows
@@ -153,3 +153,94 @@ cases:
     lines:
       - '{"record": "start"}'
     read_error: "no time"
+
+  # healthy of the wrong type: the read fails.
+  - name: healthy_not_a_boolean
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":"yes"}'
+    read_error: "line 2"
+
+  # A line cut mid-object: the read fails, it is never skipped.
+  - name: malformed_line
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # NaN is not JSON: the read fails.
+  - name: nan_value
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":NaN,"ppid":1,"trace_id":"c0de00000000000000000000000000a1"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # A record at the zero time has no time.
+  - name: zero_time
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"0001-01-01T00:00:00Z","record":"stop","healthy":true}'
+    read_error: "no time"
+
+  # A time without a zone is not RFC 3339: the read fails.
+  - name: time_without_zone
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # A numeric time: the read fails.
+  - name: time_not_a_string
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":5,"record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # A key that differs from a known one only by case is refused, so no reader takes it for that field.
+  - name: key_in_another_case
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","Record":"stop","healthy":true}'
+    read_error: "another case"
+
+  # A stop that does not say healthy is unhealthy.
+  - name: stop_without_healthy
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop"}'
+    health: "capture unhealthy"
+    no_spawn:
+      C: Inconclusive
+
+  # A stop with healthy null is unhealthy.
+  - name: healthy_null
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":null}'
+    health: "capture unhealthy"
+    no_spawn:
+      C: Inconclusive
+
+  # A healthy second window does not clear the first window's fault.
+  - name: unhealthy_then_healthy
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:05Z","record":"stop","healthy":false,"error":"ring buffer lost 3 events"}'
+      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:01:09Z","record":"stop","healthy":true}'
+    health: "capture unhealthy"
+    no_spawn:
+      C: Inconclusive
+
+  # A start after the last stop: that capture never stopped.
+  - name: trailing_start
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false}'
+    health: "never stopped"
+    no_spawn:
+      C: Inconclusive

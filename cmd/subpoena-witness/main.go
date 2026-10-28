@@ -85,13 +85,17 @@ func run(root string, all bool, out, ready string) error {
 			}
 		},
 	})
-	if err := w.Start(); err != nil {
-		return err
-	}
 	// The start and stop records bound the capture. A reader trusts an
 	// absence only inside a window closed by a healthy stop, so a witness
 	// killed before it could write one leaves a file that proves nothing.
+	// mu is held from Start until the start record is written: Start hands
+	// events to a reader goroutine, and an exec line written before the
+	// start record would read as outside the window and fail a healthy run.
 	mu.Lock()
+	if err := w.Start(); err != nil {
+		mu.Unlock()
+		return err
+	}
 	err := enc.Encode(witness.Record{Time: time.Now().UTC(), Record: witness.RecordStart})
 	mu.Unlock()
 	if err != nil {
