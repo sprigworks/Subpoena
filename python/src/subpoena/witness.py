@@ -40,7 +40,11 @@ class WitnessError(ValueError):
     pass
 
 
-_INT_FIELDS = ("pid", "ppid", "host_pid", "cgroup_id")
+# The integer fields and the range Go's reader decodes each into (int64 for
+# the PIDs, uint64 for cgroup_id). A value outside it is an error there, so it
+# is one here. null is the same as an absent field, as in Go.
+_INT_FIELDS = {"pid": (-(2**63), 2**63 - 1), "ppid": (-(2**63), 2**63 - 1),
+               "host_pid": (-(2**63), 2**63 - 1), "cgroup_id": (0, 2**64 - 1)}
 _STR_FIELDS = ("comm", "exe", "command", "cgroup", "trace_id", "attribution")
 
 
@@ -183,9 +187,14 @@ def read_log(f: IO[str]) -> Log:
                     raise ValueError(f"unknown record {rec!r}")
                 records += 1
                 continue
-            for k in _INT_FIELDS:
-                if k in l and (isinstance(l[k], bool) or not isinstance(l[k], int)):
+            for k, (lo, hi) in _INT_FIELDS.items():
+                v = l.get(k)
+                if v is None:
+                    continue
+                if isinstance(v, bool) or not isinstance(v, int):
                     raise ValueError(f"{k} is not an integer")
+                if not lo <= v <= hi:
+                    raise ValueError(f"{k} {v} is out of range")
             for k in _STR_FIELDS:
                 if l.get(k) is not None and not isinstance(l[k], str):
                     raise ValueError(f"{k} is not a string")

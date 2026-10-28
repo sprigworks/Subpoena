@@ -115,13 +115,13 @@ the command's output and the schema in step.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `time` | RFC 3339 string | when the exec was seen |
-| `pid`, `ppid` | integer | in the process's own PID namespace |
-| `host_pid` | integer | in the initial PID namespace |
+| `pid`, `ppid` | integer (int64) | in the process's own PID namespace |
+| `host_pid` | integer (int64) | in the initial PID namespace |
 | `comm` | string | kernel task name (truncated to 15 bytes) |
 | `exe` | string | the path passed to execve (may be relative) |
 | `command` | string | `args` joined with spaces |
 | `args` | array of strings | argv |
-| `cgroup_id` | integer | kernel cgroup ID |
+| `cgroup_id` | integer (uint64) | kernel cgroup ID |
 | `cgroup` | string | cgroup path without the hierarchy root, such as `subpoena/<trace id>` |
 | `trace_id` | string, optional | the session's trace ID, from its cgroup name |
 | `attribution` | `"cgroup"`, optional | present when `trace_id` is |
@@ -152,8 +152,9 @@ ones keep their name and meaning.
   a capture fault: the execs still count, but no absence rests on the file.
   A read error, never a skip: an unknown record kind, a line that is not a
   JSON object (NaN and Infinity included), a time that is not RFC 3339 with
-  a zone or is the zero time, a field of the wrong type, and a key that
-  differs from a known field only by case.
+  a zone or is the zero time, a field of the wrong type, an integer outside
+  its field's range, and a key that differs from a known field only by
+  case. A null field is the same as an absent one.
 - **W5. Absence checks.** `no_spawn(witness, trace_id)` is Fail when the
   witness saw any process for the trace (even from an unhealthy capture),
   Inconclusive when it saw none but its health is bad or unreported, and Pass

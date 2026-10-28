@@ -244,3 +244,44 @@ cases:
     health: "never stopped"
     no_spawn:
       C: Inconclusive
+
+  # An integer outside the range its field is decoded into (uint64 for cgroup_id): the read fails.
+  - name: cgroup_id_negative
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","cgroup_id":-1}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # int64 for the PIDs: one past its maximum fails the read.
+  - name: pid_past_int64
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":9223372036854775808,"trace_id":"c0de00000000000000000000000000a1"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # The largest cgroup ID is still a cgroup ID.
+  - name: cgroup_id_max
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,"cgroup_id":18446744073709551615,"trace_id":"c0de00000000000000000000000000a1"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    spawned:
+      A: [7]
+    no_spawn:
+      A: Fail
+
+  # A null integer is the same as an absent one: the exec still counts.
+  - name: integer_null
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":null,"cgroup_id":null,"trace_id":"c0de00000000000000000000000000a1"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    spawned:
+      A: [0]
+    no_spawn:
+      A: Fail
+      C: Pass
