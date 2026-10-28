@@ -43,9 +43,9 @@ Each piece exists somewhere. What Subpoena adds is the combination, with witness
 | --- | --- | --- | --- |
 | Domain semconv registry + codegen | [OpenTelemetry Weaver](https://github.com/open-telemetry/weaver) | Custom YAML registries that import upstream semconv; `registry check`, `diff`, `generate` | Generates constants and docs, not assertions |
 | Registry → compile-time enforcement | [Qyl.OpenTelemetry.SemanticConventions](https://github.com/ANcpLua/Qyl.OpenTelemetry.SemanticConventions) (.NET) | Weaver-generated constants plus Roslyn analyzers | .NET only; no test harness |
-| In-memory capture for unit tests | OTel SDKs: Java [`opentelemetry-sdk-testing`](https://tessl.io/registry/tessl/maven-io-opentelemetry--opentelemetry-sdk-testing), Python/Node `InMemorySpanExporter` | Deterministic, no collector | Nothing checks completeness before an absence assertion |
+| In-memory capture for unit tests | OTel SDKs: Java [`opentelemetry-sdk-testing`](https://central.sonatype.com/artifact/io.opentelemetry/opentelemetry-sdk-testing), Python/Node `InMemorySpanExporter` | Deterministic, no collector | Nothing checks completeness before an absence assertion |
 | Trace-based integration tests | [Tracetest](https://docs.tracetest.io/concepts/tests) | Trigger, wait for trace, assert with selectors | Collector-backed only; repo [quiet since June 2025](https://gittrend.io/repo/kubeshop/tracetest) |
-| Acceptance tests against a real stack | [Grafana OATS](https://beta.pkg.go.dev/github.com/grafana/oats@v0.1.1) | YAML cases with TraceQL/PromQL/LogQL against LGTM | No unit tier, no witnesses |
+| Acceptance tests against a real stack | [Grafana OATS](https://github.com/grafana/oats) | YAML cases with TraceQL/PromQL/LogQL against LGTM | No unit tier, no witnesses |
 | Assert on traces for AI agents | [agentevals](https://pypi.org/project/agentevals-cli/), [Microsoft ASSERT](https://github.com/responsibleai/ASSERT/releases) | Score agent behaviour from OTel traces | Score behaviour; do not verify enforcement or external effects |
 | Independent witness for process execution | [Cilium Tetragon](https://tetragon.io/docs/concepts/) | eBPF `process_exec` events with lineage; can kill on policy | No trace correlation; outside Kubernetes it does not report the session cgroup |
 | Formal lineage | [Runtime verification](https://cris.biu.ac.il/en/publications/runtime-verification-from-propositional-to-first-order-temporal-l-2/) | Temporal logic over finite traces with a third verdict, *inconclusive* | Academic |
@@ -139,7 +139,7 @@ harness.RequireNoSpawn(t, r.w, tr.TraceIDs()[0])                              //
 
 The three assertions check different things: the structure of the trace, the recorded decision, and what actually ran. Only the last one is evidence. The first two are the application's own account.
 
-**Tier 2, integration** ([`oats-case.yaml`](../examples/gateway/oats/oats-case.yaml)). The same invariant runs on Tempo, next to a control request that is allowed. `subpoena-witness` (the `execbpf` witness) reads each exec's cgroup in the kernel and ships its events to Loki. Exactly one exec inside a session cgroup must appear for the whole run: one proves the pipeline is live, and two would mean the denied session ran something. No argument matching is involved.
+**Tier 2, integration** ([`oats-case.yaml`](../examples/gateway/oats/oats-case.yaml)). The same invariant runs on Tempo, next to a control request that is allowed. `subpoena-witness` (the `execbpf` witness) reads each exec's cgroup in the kernel and ships its events to Loki. Exactly one exec inside a session cgroup must appear for the whole run: one proves the pipeline is live, and two would mean the denied session ran something. This case needs no argument matching. A second case, [`oats-case-argument.yaml`](../examples/gateway/oats/oats-case-argument.yaml), runs the gateway unprivileged, where it cannot create session cgroups, and tells the witness's events apart by a unique command-line argument instead.
 
 **Tier 3, production** ([`no_exec_after_deny.yaml`](../examples/gateway/alerts/no_exec_after_deny.yaml)). The same string with `| count_over_time()` becomes a Grafana alert. A second rule alerts when authorize spans stop arriving, because "no violations" and "no telemetry" look the same to the invariant. `make alerts` drives both through silence, clean traffic, and a violation. Production has no test witness, so this tier checks the application's own report only. A kernel exec backstop for production is decided but not built ([decisions.md](decisions.md)).
 
@@ -149,10 +149,10 @@ The three assertions check different things: the structure of the trace, the rec
 
 - **Cross-service registry migration.** `weaver registry diff` shows a breaking rename at review time, and CODEOWNERS approves it. How services on different registry versions move together is a team decision that no tool makes.
 - **Whether the provenance markers hold up.** Lint requires every test file to say whether it was written from the spec or from the implementation. Nothing yet checks that the label is true, and nothing counts spec-derived tests apart.
-- **What cross-examination costs on a large suite.** It runs the suite once per enforcement mutant, one after another. That is seconds on the example gateway. On the first outside adopter, measured on 2026-10-27, it was about 21 minutes for a suite that takes about three and a half minutes on its own. Running mutants in parallel and only re-examining enforcement points a change touches are the obvious next steps.
+- **What cross-examination costs on a large suite.** It runs the suite once per enforcement mutant, one after another. That is seconds on the example gateway. On the first outside adopter, measured on 2026-10-27, it was about 21 minutes for a suite that takes about three and a half minutes on its own. `-j` now runs mutants in parallel and `-select` runs each mutant against only the tests that cover it. Re-examining only the enforcement points a change touches is still open.
 - **SDK-level trust.** Everything assumes spans reach the harness. `provider-override` catches a tracer provider installed outside `main`. It cannot catch code that patches the SDK at runtime.
 
-The proposal this document grew from is in the repository history ([`3587cce:docs/design.md`](https://github.com/sprigworks/subpoena/blob/3587cce/docs/design.md)).
+The proposal this document grew from is in the repository history ([`7a11727:docs/design.md`](https://github.com/sprigworks/subpoena/blob/7a11727/docs/design.md)).
 
 ## Sources
 

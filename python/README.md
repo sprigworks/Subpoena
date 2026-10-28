@@ -1,7 +1,9 @@
 # Subpoena for Python
 
-The Python port of Subpoena's tier-1 harness. It meets the contract in
-[docs/ports.md](https://github.com/sprigworks/subpoena/blob/main/docs/ports.md), checked the same way as the Go reference.
+The Python port of Subpoena's tier-1 harness. It implements the parts of the
+contract in [docs/ports.md](https://github.com/sprigworks/subpoena/blob/main/docs/ports.md)
+listed below, checked by the same shared cases as the Go reference. Lint is
+not ported yet.
 
 | Part | Module | Checked by |
 | --- | --- | --- |

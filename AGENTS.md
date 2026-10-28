@@ -66,7 +66,7 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   Docker; tier 2 needs rootful Docker, cgroup v2 and kernel BTF. Where those are missing (cloud
   sandboxes), say the target was not run; never claim it passes. Run OATS only
   through `make oats`: run directly from an agent session, gcx's agent mode
-  makes `absent` and `count` assertions meaningless (oats/README.md).
+  makes `absent` and `count` assertions meaningless (examples/gateway/oats/README.md).
 - `make test-ebpf` (the eBPF witnesses against the real kernel) needs Docker
   and runs privileged; elsewhere its kernel tests skip, so do not claim they
   passed. After editing `pkg/witness/execbpf/bpf/exec.c` or

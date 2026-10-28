@@ -12,10 +12,10 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 
 | Layer | What it holds | License |
 | --- | --- | --- |
-| Subpoena | Registry format, harness, evaluator, observe-only witnesses, lint, cross-examination, conformance suite, and an optional exec backstop | Apache-2.0 |
+| Subpoena | Registry format, harness, evaluator, observe-only witnesses, lint, cross-examination, conformance suite, and an optional exec backstop (decided, not built) | Apache-2.0 |
 | Petiole | Mapping agents and routing tokens to sessions, the signed provenance chain, evidence reports, confinement beyond exec (Landlock, seccomp, microVM) | Source-available, not final |
 
-**Where the line is.** Subpoena holds generic, application-agnostic primitives: observing execs and connections, and an optional exec backstop that kills processes in a session's cgroup. Petiole holds anything agent-aware, including guardrails and runtime protection for AI agents. Keeping the witnesses and backstop in Subpoena also lets Petiole use them.
+**Where the line is.** Subpoena holds generic, application-agnostic primitives: observing execs and connections, and an optional exec backstop, decided but not yet built, that would kill processes in a session's cgroup. Petiole holds anything agent-aware, including guardrails and runtime protection for AI agents. Keeping the witnesses and backstop in Subpoena also lets Petiole use them.
 
 ## The TraceQL evaluator
 
@@ -86,7 +86,7 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 
 **Decision:** Go first, then Python, then TypeScript. The registry is language-neutral, so names are generated for every language.
 
-**Status:** Go has all three tiers, lint and cross-examination. Python has the harness, the evaluator and a witness reader, without lint or cross-examination ([ports.md](ports.md)). TypeScript has generated names only.
+**Status:** Go has all three tiers, lint and cross-examination. Python has the harness, the evaluator, the witness reader with its absence checks, and cross-examination for pytest. Lint is not ported yet ([ports.md](ports.md)). TypeScript has generated names only.
 
 ## A distribution, not an SDK
 
