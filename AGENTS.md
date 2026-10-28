@@ -11,7 +11,10 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
 ## Telemetry names
 
 - Span names and attribute keys come only from `generated/go/semconv`. Never
-  write a telemetry string literal in application or test code.
+  write a telemetry string literal in application or test code. The one
+  exception: the Level 0 quickstarts (`examples/quickstart`,
+  `examples/python-quickstart`) declare plain-string names on purpose, to show
+  the smallest setup with no registry. Nowhere else.
 - `generated/` is produced from `registry/` by Weaver (`make generate`). Never
   edit it by hand.
 - Never add or change a registry entry to make a test pass. The registry is the

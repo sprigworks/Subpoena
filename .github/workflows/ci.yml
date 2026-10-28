@@ -88,3 +88,20 @@ jobs:
         run: go generate ./invariants && git diff --exit-code invariants/
       - name: test, lint, cross-examination
         run: make check
+
+  # examples/quickstart is Level 0 of the adoption ladder: one rule, no
+  # registry, no Weaver. Test and cross-examination only (lint needs a registry).
+  quickstart:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/quickstart
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+          cache-dependency-path: examples/quickstart/go.sum
+      - name: test, cross-examination
+        run: make check

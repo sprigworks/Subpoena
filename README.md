@@ -75,6 +75,7 @@ the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
 | `pkg/production`: test-tier attributes kept out of production | Runs, in `make test`; the generated Collector config was validated and run on otelcol-contrib 0.116.1 |
 | Tier 3: `examples/gateway/alerts` (`make alerts`) | Runs (needs Docker): provisioned into Grafana 13.2 with Tempo 3.1 and driven through the scheduler. Quiet on silence and on clean traffic, fires on a violation. The first run found the unvalidated rule could never fire; see the rule file's header |
 | `examples/adopter`: adopting Subpoena from a separate module | Runs in CI (`adopter` job): test, lint, cross-examination, and its generated names checked with Weaver |
+| `examples/quickstart`: Level 0, one rule with no registry | Runs in CI (`quickstart` job): test and cross-examination (no lint, which needs a registry) |
 | Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
 | Python port, `python/` (`make python`) | Runs, in CI on Python 3.9 and 3.12: the harness passes every `conformance/harness.yaml` case, its native evaluator agrees on all 139 corpus cases, and its witness reader passes the Go reader's cases. No lint or cross-examination yet. On PyPI: `pip install subpoena` (0.1.0a1) |
 | Port checks: `subpoena-traceql`, `subpoena-conform` (`make conform`), the witness file format and reader (`witness.ReadLog`) | Runs, in `make test`: the Go evaluator, through the same protocol a port uses, agrees on all 139 cases (13 queries over 9 fixtures, 22 rejected queries) |
@@ -129,6 +130,7 @@ cmd/subpoena-conform/ checks any language's evaluator against the corpus
 python/               the Python port: harness, TraceQL subset, witness reader
 examples/gateway/     toy agent gateway, tests, OATS stack, alert rule
 examples/adopter/     separate module adopting Subpoena from outside (CI keeps it working)
+examples/quickstart/  Level 0: one rule, no registry, in its own module (test + cross)
 conformance/          fixtures + expected results, subset-vs-Tempo conformance test
 docs/                 architecture, TraceQL subset, migrating an existing service
 ```
