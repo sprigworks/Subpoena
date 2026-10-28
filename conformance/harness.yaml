@@ -10,7 +10,9 @@
 #   - `capacity` (default: the harness default) is how many finished spans the
 #     recorder keeps; further spans count as dropped;
 #   - `filler: N` sets N integer attributes filler.0 .. filler.N-1 on the span
-#     before its `attrs`.
+#     before its `attrs`;
+#   - `env` (optional) sets environment variables before the harness is
+#     created, and restores them afterwards.
 # Attribute values are YAML scalars (string, bool, integer) or a list of
 # strings (a string-array attribute).
 #
@@ -68,6 +70,26 @@ cases:
     collect: { complete: true, dropped: 0, unfinished: [], traces: 1 }
     assertions:
       - { absent: '{ name = "authorize" && span.allowed = false } >> { name = "exec" }', verdict: Fail, require: fails }
+
+  # H1: the OTEL_* limit variables do not reach the harness. Under these an
+  # SDK would keep 2 attributes and truncate "deny" to "de"; the harness sets
+  # its own limits, so the decision is still captured, whole, and the capture
+  # is complete. OTEL_SDK_DISABLED would make an SDK record nothing, and every
+  # absence pass; the harness records anyway.
+  - name: env_limits_ignored
+    env:
+      OTEL_SDK_DISABLED: "true"
+      OTEL_ATTRIBUTE_COUNT_LIMIT: "2"
+      OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT: "2"
+      OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT: "2"
+      OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT: "2"
+    spans:
+      - { id: a, name: authorize, attrs: { decision: deny, allowed: false } }
+      - { id: b, parent: a, name: exec, filler: 10 }
+    collect: { complete: true, dropped: 0, unfinished: [], traces: 1 }
+    assertions:
+      - { exists: '{ name = "authorize" && span.decision = "deny" }', verdict: Pass, require: passes }
+      - { absent: '{ span.allowed = false } >> { name = "exec" && span.filler.9 = 9 }', verdict: Fail, require: fails }
 
   # H4: a query that does not parse is an error, never a verdict.
   - name: invalid_query

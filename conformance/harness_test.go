@@ -20,8 +20,9 @@ import (
 )
 
 type harnessCase struct {
-	Name     string `yaml:"name"`
-	Capacity int    `yaml:"capacity"`
+	Name     string            `yaml:"name"`
+	Capacity int               `yaml:"capacity"`
+	Env      map[string]string `yaml:"env"`
 	Spans    []struct {
 		ID     string         `yaml:"id"`
 		Parent string         `yaml:"parent"`
@@ -112,6 +113,9 @@ func requireFails(tb *testing.T, fn func(testing.TB)) (failed bool) {
 func TestHarnessCases(t *testing.T) {
 	for _, c := range loadHarnessCases(t) {
 		t.Run(c.Name, func(t *testing.T) {
+			for k, v := range c.Env {
+				t.Setenv(k, v)
+			}
 			h := harness.NewWithCapacity(c.Capacity)
 			defer h.Shutdown(context.Background())
 			tracer := h.Tracer("harness-case")

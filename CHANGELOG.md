@@ -29,6 +29,14 @@
   the longest gap between full scans. Absence of a process outside the root's
   children tree rests on full scans, so a process shorter than that gap may
   have been missed. CI now runs the `BenchmarkProc*` benchmarks (report only).
+- **Python harness: span limits (fix).** The Python harness now sets its own
+  span limits, all unlimited, so `OTEL_*_LIMIT` variables no longer drop or
+  truncate attributes (H1). `collect()` raises `IncompleteError` (`.truncated`)
+  when a span lost attributes, events or links (H3). In 0.1.0a1, a span with
+  more than 128 attributes silently lost its oldest ones, and
+  `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT` truncated values. Both still reported a
+  complete capture. `conformance/harness.yaml` gains an `env` field and an
+  `env_limits_ignored` case, and the Python runner now applies `filler`.
 
 ## Python 0.1.0a1 (2026-10-26)
 

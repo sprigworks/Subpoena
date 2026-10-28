@@ -19,18 +19,32 @@ from typing import Any, Dict, List, Optional, Sequence
 from opentelemetry import trace as trace_api
 from opentelemetry.context import Context
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor, TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, Span, SpanLimits, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
 from . import traceql
 
 DEFAULT_CAPACITY = 10000
 
+# The harness owns its span limits: all unlimited, so OTEL_* environment
+# variables cannot drop or truncate an attribute the test asserts on (H1).
+_SPAN_LIMITS = SpanLimits(
+    max_attributes=SpanLimits.UNSET,
+    max_events=SpanLimits.UNSET,
+    max_links=SpanLimits.UNSET,
+    max_span_attributes=SpanLimits.UNSET,
+    max_event_attributes=SpanLimits.UNSET,
+    max_link_attributes=SpanLimits.UNSET,
+    max_attribute_length=SpanLimits.UNSET,
+    max_span_attribute_length=SpanLimits.UNSET,
+)
+
 
 class Recorder(SpanProcessor):
     """Records finished spans synchronously (no queue that could overflow),
-    and remembers which spans started but never ended and how many finished
-    spans it dropped for lack of capacity."""
+    and remembers which spans started but never ended, how many finished
+    spans it dropped for lack of capacity, and which spans were recorded with
+    attributes, events or links dropped by their span limits."""
 
     def __init__(self, capacity: int = 0):
         self._capacity = capacity if capacity > 0 else DEFAULT_CAPACITY
@@ -39,6 +53,7 @@ class Recorder(SpanProcessor):
         self._ended: List[ReadableSpan] = []
         self._dropped = 0
         self._late_ends = 0
+        self._lossy: set = set()
         self._closed = False
 
     def on_start(self, span: Span, parent_context: Optional[Context] = None) -> None:
@@ -48,6 +63,8 @@ class Recorder(SpanProcessor):
     def on_end(self, span: ReadableSpan) -> None:
         with self._lock:
             self._started.pop(span.context.span_id, None)
+            if _lossy(span):
+                self._lossy.add(span.name)
             if self._closed:
                 self._late_ends += 1
             elif len(self._ended) >= self._capacity:
@@ -65,21 +82,40 @@ class Recorder(SpanProcessor):
 
     def _snapshot(self):
         with self._lock:
-            return list(self._ended), self._dropped + self._late_ends, sorted(self._started.values())
+            return (list(self._ended), self._dropped + self._late_ends,
+                    sorted(self._started.values()), sorted(self._lossy))
+
+
+def _lossy(span: ReadableSpan) -> bool:
+    """Whether span limits dropped any attribute, event or link of span."""
+    if span.dropped_attributes or span.dropped_events or span.dropped_links:
+        return True
+    for e in span.events:
+        if getattr(e.attributes, "dropped", 0):
+            return True
+    for link in span.links:
+        if getattr(link.attributes, "dropped", 0):
+            return True
+    return False
 
 
 class IncompleteError(Exception):
     """collect() could not capture everything: absence claims on the snapshot
     are Inconclusive. The snapshot is on .trace."""
 
-    def __init__(self, trace: "Trace", dropped: int, unfinished: List[str]):
+    def __init__(self, trace: "Trace", dropped: int, unfinished: List[str],
+                 truncated: Optional[List[str]] = None):
+        truncated = truncated or []
         parts = []
         if dropped:
             parts.append(f"{dropped} span(s) dropped")
         if unfinished:
             parts.append(f"{len(unfinished)} span(s) never ended: {', '.join(unfinished)}")
+        if truncated:
+            parts.append("spans lost attributes, events or links: " + ", ".join(truncated))
         super().__init__("harness: capture incomplete: " + "; ".join(parts))
         self.trace, self.dropped, self.unfinished = trace, dropped, unfinished
+        self.truncated = truncated
 
 
 class Verdict(enum.Enum):
@@ -135,7 +171,17 @@ class Harness:
 
     def __init__(self, capacity: int = DEFAULT_CAPACITY):
         self._rec = Recorder(capacity)
-        self.tracer_provider = TracerProvider(sampler=ALWAYS_ON, resource=Resource.get_empty())
+        self.tracer_provider = TracerProvider(
+            sampler=ALWAYS_ON, resource=Resource.get_empty(), span_limits=_SPAN_LIMITS)
+        # OTEL_SDK_DISABLED=true makes the SDK hand out no-op tracers: nothing
+        # is recorded, and every absence would pass. The harness owns its
+        # provider, as with the span limits, so the variable is ignored; if
+        # the SDK still hands out a no-op tracer, refuse to start.
+        if hasattr(self.tracer_provider, "_disabled"):
+            self.tracer_provider._disabled = False
+        if isinstance(self.tracer_provider.get_tracer("subpoena.harness"), trace_api.NoOpTracer):
+            raise RuntimeError("subpoena: the TracerProvider is disabled (OTEL_SDK_DISABLED?) "
+                               "and would record nothing; refusing to run")
         self.tracer_provider.add_span_processor(self._rec)
 
     def tracer(self, name: str) -> trace_api.Tracer:
@@ -143,13 +189,14 @@ class Harness:
 
     def collect(self) -> Trace:
         """Force-flush and return a snapshot. Raises IncompleteError (carrying
-        the snapshot) if a span was dropped or a started span has not ended."""
+        the snapshot) if a span was dropped, a started span has not ended, or
+        a span lost attributes, events or links to span limits."""
         self.tracer_provider.force_flush()
-        spans, dropped, unfinished = self._rec._snapshot()
-        complete = dropped == 0 and not unfinished
+        spans, dropped, unfinished, truncated = self._rec._snapshot()
+        complete = dropped == 0 and not unfinished and not truncated
         t = Trace(_convert(spans), complete)
         if not complete:
-            raise IncompleteError(t, dropped, unfinished)
+            raise IncompleteError(t, dropped, unfinished, truncated)
         return t
 
     def shutdown(self) -> None:
