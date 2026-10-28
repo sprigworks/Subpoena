@@ -24,11 +24,7 @@ func NoDial(w witness.NetworkWitness, traceID string, match func(witness.Network
 	if len(hits) != 0 {
 		return Fail, fmt.Errorf("witness saw connection attempts for %s: %+v", traceID, hits) //subpoena:enforcement
 	}
-	h, ok := w.(witness.HealthReporter)
-	if !ok {
-		return Inconclusive, fmt.Errorf("witness does not report capture health") //subpoena:enforcement
-	}
-	if err := h.Health(); err != nil {
+	if err := captureHealth(w); err != nil {
 		return Inconclusive, err //subpoena:enforcement
 	}
 	return Pass, nil

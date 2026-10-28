@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **Cross: evidence per kill, and crashes.** Each killed mutant reports its
+  first evidence, from the first failure message of a failed test: `witness`,
+  `testimony` (the harness tags) or `other`. A suite that goes red only by a
+  crash (a panic, a runtime fatal error, `os.Exit`, or a failure with no
+  message) is `enforcement-mutant-crashed` and fails the run. `-evidence-dir` keeps
+  every mutant run's full `go test -json` output.
+- **Cross: `-j N` parallel mutants.** Single mutants run N at a time, each in
+  its own copy of the module. cross-self: 490 s at `-j 1`, 135 s at `-j 8`, same
+  verdicts. Load can flip a verdict either way, so gate on `-j 1`.
+- **Cross: `-select` test selection.** Each mutant runs only the tests that
+  executed its line in a per-test coverage pass after the baseline. Opt-in: it
+  pays off on long suites, not on short ones. A mutant its selected tests do
+  not kill runs again on the whole suite, and group runs use the whole suite. A
+  test that fails alone, or a selected subset that fails together without any
+  mutant, is an error.
+
+- **Guard and layered mutants in `subpoena-cross`.**
+  `//subpoena:enforcement_guard true|false` on an `if` forces its condition to
+  the bypass value. `group=<name>` on enforcement markers declares layers of one
+  guarantee: cross also mutates the whole group, and a layer that survives alone
+  but is caught with its group is `enforcement-layer-masked`, naming the masking
+  layer. A masked layer fails the run unless `cross-masked.txt` lists it with a
+  reason; a stale entry fails too.
+- **Breaking:** enforcement markers no longer accept trailing text.
+  `//subpoena:enforcement because ...` is now a discovery error; only
+  `group=<name>` may follow the marker. A marker that would take no effect (a
+  statement or guard marker outside an enforcement point, or a misspelt one) is
+  an error too; before, it was ignored and its statement went unexamined.
+- **Cross run hygiene.** A timed-out mutant names the packages and tests still
+  running at `-timeout`. Ctrl-C (or SIGTERM) cancels the run, killing the
+  mutant's test processes and removing the copies. Where a timeout cannot kill
+  the test binary (not unix), the run stops at the first timeout. A guard
+  marker on a line whose outermost statement is not the `if` (an `if` inside
+  an inline closure) is an error.
+
+- **Cross refuses ambiguous `cross-masked.txt` entries.** One entry accepts one
+  masked layer; an entry matching two, or listed twice, is an error. An entry
+  names the layer's group (`<file> | <func> | group=<group> | <removed text> |
+  <reason>`), so a layer moved to another group needs a fresh review. A canceled
+  run is an error, not a kill.
+
 - **`harness.WatchSpawns`.** A witness check registered when the witness
   starts that runs at test cleanup, even after an earlier `Fatal`: it stops the
   witness, fails on commands the `SpawnRule` refuses (`Allowed`, `Never`) and on

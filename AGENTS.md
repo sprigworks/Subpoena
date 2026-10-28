@@ -48,7 +48,8 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   fails before its witness assertion. The system's own spans are testimony, not proof.
 - `go run ./cmd/subpoena-cross ./examples/gateway` must report every mutant
   killed. If a mutant survives, strengthen the tests; never remove the
-  enforcement marker.
+  enforcement marker. Never add or widen a `group=` to turn a survivor into a
+  masked layer, and never list a layer in `cross-masked.txt` that a test could catch alone.
 - Subpoena's own fail-closed guards (Inconclusive on bad witness health,
   refusing Pass on a truncated capture, lost kernel events, cross's own
   refusals) are enforcement points too. `make cross-self` cross-examines
