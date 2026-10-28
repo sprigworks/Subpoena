@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -522,6 +523,9 @@ func TestHangingMutantTimesOutNotKilled(t *testing.T) {
 	if len(rep.Results) != 1 || rep.Results[0].Outcome != TimedOut || !rep.Failed() {
 		t.Fatalf("want timed out, got %+v", rep.Results)
 	}
+	if u := rep.Results[0].Unfinished; !slices.Contains(u, "mini TestDeny") {
+		t.Fatalf("the report must name the hung test, got %q", u)
+	}
 	// The timeout kills the test binary too, not only the go command. A
 	// killed process may linger unreaped as a zombie, which is not running.
 	pid, err := os.ReadFile(pidFile)
@@ -627,11 +631,12 @@ func TestForcedGuardSurvivesAWeakSuite(t *testing.T) {
 
 func TestBadMarkersAreRefused(t *testing.T) {
 	for name, tc := range map[string]struct{ line, want string }{
-		"guard without value": {"if !revoked { //subpoena:enforcement_guard", "needs the bypass value"},
-		"guard bad value":     {"if !revoked { //subpoena:enforcement_guard yes", "needs the bypass value"},
-		"unknown argument":    {"if !revoked { //subpoena:enforcement_guard true grop=x", "want at most one group"},
-		"two groups":          {"if !revoked { //subpoena:enforcement_guard true group=a group=b", "want at most one group"},
-		"guard not on an if":  {"if !revoked {\n\t\tRan = true //subpoena:enforcement_guard true\n\t\t_ = 0", "is not on an if line"},
+		"guard without value":             {"if !revoked { //subpoena:enforcement_guard", "needs the bypass value"},
+		"guard bad value":                 {"if !revoked { //subpoena:enforcement_guard yes", "needs the bypass value"},
+		"unknown argument":                {"if !revoked { //subpoena:enforcement_guard true grop=x", "want at most one group"},
+		"two groups":                      {"if !revoked { //subpoena:enforcement_guard true group=a group=b", "want at most one group"},
+		"guard not on an if":              {"if !revoked {\n\t\tRan = true //subpoena:enforcement_guard true\n\t\t_ = 0", "is not on an if line"},
+		"guard on an inline closure's if": {"f := func() { if revoked { Ran = true } } //subpoena:enforcement_guard true\n\tf()\n\tif !revoked {", "is not on an if line"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			src := strings.Replace(guardSrc, "if !revoked { //subpoena:enforcement_guard true", tc.line, 1)
@@ -716,8 +721,8 @@ func TestMaskedLayersNameEachOther(t *testing.T) {
 }
 
 const maskedList = `# accepted masked layers
-exec.go | Exec | return ErrRevoked | the runner re-checks; tested together
-exec.go | run | !revoked | the early refusal covers this; tested together
+exec.go | Exec | group=revoke | return ErrRevoked | the runner re-checks; tested together
+exec.go | run | group=revoke | !revoked | the early refusal covers this; tested together
 `
 
 func TestListedMaskedLayersAreAccepted(t *testing.T) {
@@ -741,7 +746,7 @@ func TestListedMaskedLayersAreAccepted(t *testing.T) {
 }
 
 func TestStaleMaskedEntryFails(t *testing.T) {
-	list := maskedList + "exec.go | Exec | return nil | no such masked layer\n"
+	list := maskedList + "exec.go | Exec | group=revoke | return nil | no such masked layer\n"
 	dir := module(t, map[string]string{"exec.go": layeredSrc, "exec_test.go": layeredTest, MaskedFile: list})
 	rep, err := run(t, dir)
 	if err != nil {
@@ -752,8 +757,31 @@ func TestStaleMaskedEntryFails(t *testing.T) {
 	}
 }
 
+// The entry names the layer's group: a layer moved to another group is
+// masked by other layers, so its acceptance does not carry over.
+func TestMaskedEntryNamesTheGroup(t *testing.T) {
+	layer := Mutant{File: "exec.go", Func: "Exec", Group: "moved", Removed: "return ErrNo"}
+	rep := &Report{Results: []Result{{Mutant: layer, Outcome: Masked}}}
+	path := filepath.Join(t.TempDir(), MaskedFile)
+	if err := os.WriteFile(path, []byte("exec.go | Exec | group=g | return ErrNo | covered together\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := acceptMasked(rep, path); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Results[0].Accepted != "" || len(rep.StaleAccepted) != 1 || !rep.Failed() {
+		t.Fatalf("an entry for another group must not accept the layer: %+v stale=%v", rep.Results, rep.StaleAccepted)
+	}
+	if err := os.WriteFile(path, []byte("exec.go | Exec | return ErrNo | no group\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := acceptMasked(rep, path); err == nil || !strings.Contains(err.Error(), "group=<group>") {
+		t.Fatalf("an entry without its group must be refused, got %v", err)
+	}
+}
+
 func TestMalformedMaskedFileIsAnError(t *testing.T) {
-	dir := module(t, map[string]string{"exec.go": layeredSrc, "exec_test.go": layeredTest, MaskedFile: "exec.go | Exec | return ErrRevoked |\n"})
+	dir := module(t, map[string]string{"exec.go": layeredSrc, "exec_test.go": layeredTest, MaskedFile: "exec.go | Exec | group=revoke | return ErrRevoked |\n"})
 	if _, err := run(t, dir); err == nil || !strings.Contains(err.Error(), "want <file>") {
 		t.Fatalf("missing reason: %v", err)
 	}
@@ -870,10 +898,10 @@ func TestCancelInAWatcherGoroutineIsAMutant(t *testing.T) {
 // layers (the same text twice in one function) is refused, and so is an
 // entry listed twice.
 func TestMaskedEntryAcceptsOneLayer(t *testing.T) {
-	layer := Mutant{File: "exec.go", Func: "Exec", Removed: "return ErrNo"}
+	layer := Mutant{File: "exec.go", Func: "Exec", Group: "g", Removed: "return ErrNo"}
 	twoLayers := &Report{Results: []Result{{Mutant: layer, Outcome: Masked}, {Mutant: layer, Outcome: Masked}}}
 	path := filepath.Join(t.TempDir(), MaskedFile)
-	if err := os.WriteFile(path, []byte("exec.go | Exec | return ErrNo | covered together\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("exec.go | Exec | group=g | return ErrNo | covered together\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := acceptMasked(twoLayers, path); err == nil || !strings.Contains(err.Error(), "matches 2 masked layers") {
@@ -885,7 +913,7 @@ func TestMaskedEntryAcceptsOneLayer(t *testing.T) {
 		}
 	}
 	oneLayer := &Report{Results: []Result{{Mutant: layer, Outcome: Masked}}}
-	if err := os.WriteFile(path, []byte("exec.go | Exec | return ErrNo | one\nexec.go | Exec | return ErrNo | two\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("exec.go | Exec | group=g | return ErrNo | one\nexec.go | Exec | group=g | return ErrNo | two\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := acceptMasked(oneLayer, path); err == nil || !strings.Contains(err.Error(), "each layer listed once") {

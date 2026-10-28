@@ -139,8 +139,9 @@ survived alone, is `enforcement-layer-masked`, and the report names the layer
 whose removal together with it turned the suite red. A layer killed on its own
 never masks another: a run that includes it is red because of it. A masked
 layer fails the run unless it is listed, with a reason, in `cross-masked.txt`
-in the target directory (`<file> | <func> | <removed text> | <reason>`, the
-file relative to the module root). That file is a reviewed claim. One entry
+in the target directory (`<file> | <func> | group=<group> | <removed text> | <reason>`,
+the file relative to the module root). The group is part of the entry, so a
+layer moved to another group needs a fresh review. That file is a reviewed claim. One entry
 accepts one layer: an entry that matches two masked layers (the same text
 twice in one function), an entry listed twice, and an entry that no longer
 matches a masked layer are errors or fail the run. Markers take no free text:

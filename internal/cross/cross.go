@@ -118,6 +118,10 @@ type Result struct {
 	// Options.EvidenceDir is set.
 	EvidenceFile string
 	Output       string // tail of go output, for Survived/Invalid
+	// Unfinished names, for TimedOut, each package and test that had started
+	// and not ended when the timeout hit: go test buffers a package's output,
+	// so Output alone is often empty.
+	Unfinished []string
 	// MaskedBy names, for Masked, each layer whose removal together with this
 	// one turned the suite red. Empty when only the layers together did.
 	MaskedBy []string
@@ -537,6 +541,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			switch {
 			case timedOut(out, err):
 				res.Outcome, res.Output = TimedOut, tail(out, 20) //subpoena:enforcement
+				res.Unfinished = unfinished(raw)
 			case buildFailed(out):
 				res.Outcome, res.Output = Invalid, tail(out, 20)
 			default:
@@ -551,6 +556,9 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 		} else {
 			res.Outcome, res.Output = Survived, tail(out, 20)
 		}
+	}
+	if res.Outcome == TimedOut && orphansOnTimeout {
+		return res, fmt.Errorf("cross: %s timed out, and on this platform its test binary may still be running and could fail later mutants; rerun with a larger -timeout or on a unix host", ms[0].Name())
 	}
 	return res, nil
 }
@@ -639,6 +647,36 @@ func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
 
 // crashRE matches the first line of a panic or a runtime fatal error.
 var crashRE = regexp.MustCompile(`^(panic|fatal error): `)
+
+// unfinished lists, from go test -json output, the packages and tests that
+// started and never passed, failed or skipped.
+func unfinished(raw string) []string {
+	var order []string
+	open := map[string]bool{}
+	for _, line := range strings.Split(raw, "\n") {
+		var e struct{ Action, Package, Test string }
+		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
+			continue
+		}
+		name := strings.TrimSpace(e.Package + " " + e.Test)
+		switch e.Action {
+		case "start", "run":
+			if !open[name] {
+				open[name] = true
+				order = append(order, name)
+			}
+		case "pass", "fail", "skip":
+			delete(open, name)
+		}
+	}
+	var out []string
+	for _, name := range order {
+		if open[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
 
 // keepEvidence writes raw to Options.EvidenceDir, if set, and returns the path.
 func keepEvidence(o Options, ms []Mutant, raw string) (string, error) {
@@ -812,6 +850,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 				}
 			}
 		}
+		offIf := map[int]bool{} // guard lines whose outermost statement is not an if
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			st, ok := n.(ast.Stmt)
 			if !ok {
@@ -822,7 +861,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 			}
 			line := fset.Position(st.Pos()).Line
 			mk, marked := lines[line]
-			if !marked {
+			if !marked || offIf[line] {
 				return true
 			}
 			// Take the outermost statement that starts on the marked line. A
@@ -833,6 +872,10 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 			if mk.guard {
 				ifs, isIf := st.(*ast.IfStmt)
 				if !isIf {
+					// An if further in (in a closure on this line) is not
+					// the statement the marker sits on: leave the line
+					// unplaced, which is an error below.
+					offIf[line] = true //subpoena:enforcement
 					return true
 				}
 				node = ifs.Cond
@@ -1223,28 +1266,28 @@ func acceptMasked(rep *Report, path string) error {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		f := strings.SplitN(line, " | ", 4)
-		if len(f) != 4 || strings.TrimSpace(f[3]) == "" {
+		f := strings.SplitN(line, " | ", 5)
+		if len(f) != 5 || !strings.HasPrefix(strings.TrimSpace(f[2]), "group=") || strings.TrimSpace(f[4]) == "" {
 			bad = i + 1
 			break
 		}
-		key := maskedKey(strings.TrimSpace(f[0]), strings.TrimSpace(f[1]), f[2])
+		key := maskedKey(strings.TrimSpace(f[0]), strings.TrimSpace(f[1]), strings.TrimPrefix(strings.TrimSpace(f[2]), "group="), f[3])
 		if _, dup := reasons[key]; dup {
 			bad = i + 1
 			break
 		}
-		reasons[key] = strings.TrimSpace(f[3])
+		reasons[key] = strings.TrimSpace(f[4])
 		order = append(order, key)
 	}
 	if bad > 0 {
-		return fmt.Errorf("cross: %s:%d: want <file> | <func> | <removed text> | <reason>, each layer listed once", MaskedFile, bad) //subpoena:enforcement
+		return fmt.Errorf("cross: %s:%d: want <file> | <func> | group=<group> | <removed text> | <reason>, each layer listed once", MaskedFile, bad) //subpoena:enforcement
 	}
 	// One entry accepts one layer. Two masked layers with the same key (the
 	// same text twice in one function) cannot be told apart, so neither is.
 	layers := map[string]int{}
 	for _, r := range rep.Results {
 		if r.Outcome == Masked {
-			layers[maskedKey(r.Mutant.File, r.Mutant.Func, r.Mutant.Removed)]++
+			layers[maskedKey(r.Mutant.File, r.Mutant.Func, r.Mutant.Group, r.Mutant.Removed)]++
 		}
 	}
 	for key := range reasons {
@@ -1261,7 +1304,7 @@ func acceptMasked(rep *Report, path string) error {
 		if r.Outcome != Masked {
 			continue
 		}
-		key := maskedKey(r.Mutant.File, r.Mutant.Func, r.Mutant.Removed)
+		key := maskedKey(r.Mutant.File, r.Mutant.Func, r.Mutant.Group, r.Mutant.Removed)
 		if reason, ok := reasons[key]; ok {
 			rep.Results[i].Accepted = reason
 			used[key] = true
@@ -1275,6 +1318,6 @@ func acceptMasked(rep *Report, path string) error {
 	return nil
 }
 
-func maskedKey(file, fn, removed string) string {
-	return file + " | " + fn + " | " + oneLine(removed)
+func maskedKey(file, fn, group, removed string) string {
+	return file + " | " + fn + " | group=" + group + " | " + oneLine(removed)
 }

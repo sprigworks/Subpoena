@@ -19,7 +19,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sprigworks/subpoena/internal/cross"
@@ -38,7 +40,12 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	rep, err := cross.Run(context.Background(), cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr, EvidenceDir: *evidenceDir, Jobs: *jobs, Select: *sel})
+	// Mutant runs have their own process groups, so a terminal's Ctrl-C reaches
+	// only this process: cancel the run, which kills them and removes the
+	// copies.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	rep, err := cross.Run(ctx, cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr, EvidenceDir: *evidenceDir, Jobs: *jobs, Select: *sel})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-cross:", err)
 		os.Exit(2)
@@ -81,7 +88,10 @@ func main() {
 			fmt.Println("  suite went red by a crash, with no clean failure message; a crash is not a kill:")
 			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
 		case cross.TimedOut:
-			fmt.Println("  suite did not finish within -timeout; a hang is not a kill. Make the test fail fast instead:")
+			fmt.Printf("  suite did not finish within -timeout %s; a hang is not a kill. Make the test fail fast instead.\n", *timeout)
+			if len(r.Unfinished) > 0 {
+				fmt.Printf("  still running: %s\n", strings.Join(r.Unfinished, ", "))
+			}
 			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
 		case cross.Invalid:
 			fmt.Println("  mutant did not compile, so it proves nothing; fix the marker placement:")

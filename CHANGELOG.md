@@ -30,8 +30,17 @@
   `group=<name>` may follow the marker. A marker that would take no effect (a
   statement or guard marker outside an enforcement point, or a misspelt one) is
   an error too; before, it was ignored and its statement went unexamined.
+- **Cross run hygiene.** A timed-out mutant names the packages and tests still
+  running at `-timeout`. Ctrl-C (or SIGTERM) cancels the run, killing the
+  mutant's test processes and removing the copies. Where a timeout cannot kill
+  the test binary (not unix), the run stops at the first timeout. A guard
+  marker on a line whose outermost statement is not the `if` (an `if` inside
+  an inline closure) is an error.
+
 - **Cross refuses ambiguous `cross-masked.txt` entries.** One entry accepts one
-  masked layer; an entry matching two, or listed twice, is an error. A canceled
+  masked layer; an entry matching two, or listed twice, is an error. An entry
+  names the layer's group (`<file> | <func> | group=<group> | <removed text> |
+  <reason>`), so a layer moved to another group needs a fresh review. A canceled
   run is an error, not a kill.
 
 - **`harness.WatchSpawns`.** A witness check registered when the witness
