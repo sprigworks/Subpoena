@@ -13,11 +13,22 @@ import (
 // TestMain turns off any workspace for the whole package. The fixtures are
 // standalone modules in temp dirs; under `make SANDBOX=1` GOWORK points at
 // go.work.sandbox, which doesn't list them, so they wouldn't type-check and
-// the typed rules would silently fall back to names.
+// the typed rules would silently fall back to names. Tests that lint this
+// repository's own examples put the caller's GOWORK back with inRepo.
 func TestMain(m *testing.M) {
-	os.Setenv("GOWORK", "off")
+	callerGOWORK = os.Getenv("GOWORK")
+	if err := os.Setenv("GOWORK", "off"); err != nil {
+		panic(err)
+	}
 	os.Exit(m.Run())
 }
+
+var callerGOWORK string // empty means unset: the go command then finds go.work itself
+
+// inRepo restores the caller's GOWORK for a test that lints code in this
+// repository: under SANDBOX=1 its dependencies resolve only through the
+// sandbox workspace.
+func inRepo(t *testing.T) { t.Setenv("GOWORK", callerGOWORK) }
 
 func registry(t *testing.T) *Registry {
 	t.Helper()
@@ -275,6 +286,7 @@ func TestSkipsTestdataAndSortsFindings(t *testing.T) {
 
 // TestGatewayExampleIsClean pins the acceptance criterion: the example lints clean.
 func TestGatewayExampleIsClean(t *testing.T) {
+	inRepo(t)
 	_, here, _, _ := runtime.Caller(0)
 	gw := filepath.Join(filepath.Dir(here), "..", "..", "examples", "gateway")
 	fs, err := Run([]string{gw}, registry(t))
