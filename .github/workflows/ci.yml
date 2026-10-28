@@ -39,7 +39,9 @@ jobs:
   # The Python port (python/): its own tests over the shared corpus, then the
   # evaluator through subpoena-conform, the protocol every port is checked by.
   python:
-    runs-on: ubuntu-latest
+    # ubuntu-latest is Ubuntu 26.04 and actions/setup-python has no CPython
+    # 3.9 for it, so the required python (3.9) check cannot start.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.9", "3.12"]
