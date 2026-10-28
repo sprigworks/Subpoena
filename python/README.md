@@ -13,27 +13,40 @@ The Python port of Subpoena's tier-1 harness. It meets the contract in
 | Cross-examination (G1) | `subpoena-cross <dir>` (`subpoena.cross`) | `tests/test_cross.py`: every verdict on real pytest runs; CI runs it on `examples/python-quickstart` |
 | Lint (L1) | not yet | — |
 
-```python
-from subpoena.harness import Harness, require_absent, require_exists
-
-def test_denied_session_never_execs():
-    h = Harness()
-    gateway = Gateway(tracer_provider=h.tracer_provider)  # inject; never install another provider
-    gateway.handle(denied_request)
-    tr = h.collect()                                        # before any assertion
-    require_absent(tr, NO_EXEC_AFTER_DENY)                  # Inconclusive fails, too
-```
-
-`collect()` raises `IncompleteError` (carrying the snapshot) if a span was
-dropped, never ended, or lost attributes, events or links to span limits. Absence on an incomplete snapshot is Inconclusive, and
-`require_absent` fails on it unless `allow_inconclusive=True` is passed.
-
 ```
 pip install subpoena
 ```
 
 Python 3.9+; depends on `opentelemetry-api` and `opentelemetry-sdk` only.
 Alpha: APIs will change.
+
+```python
+from subpoena.harness import Harness, require_absent, require_exists
+
+from accounts import Database, delete_account
+
+FORBIDDEN = '{ name = "db.erase" }'
+DENIAL = '{ name = "delete_account.denied" && span.role = "viewer" }'
+
+
+def test_viewer_cannot_delete_an_account():
+    h = Harness()
+    db = Database({"acct-1": "alice"})
+
+    delete_account(db, h.tracer_provider, "viewer", "acct-1")  # inject the harness provider
+
+    tr = h.collect()                 # before any assertion
+    require_exists(tr, DENIAL)       # the denial is on the record
+    require_absent(tr, FORBIDDEN)    # no erase span; Inconclusive fails too
+    assert db.rows == {"acct-1": "alice"}
+```
+
+Trimmed from [`examples/python-quickstart`](https://github.com/sprigworks/subpoena/tree/main/examples/python-quickstart),
+which runs as written and is cross-examined in CI.
+
+`collect()` raises `IncompleteError` (carrying the snapshot) if a span was
+dropped, never ended, or lost attributes, events or links to span limits. Absence on an incomplete snapshot is Inconclusive, and
+`require_absent` fails on it unless `allow_inconclusive=True` is passed.
 
 ## Development
 
@@ -44,10 +57,3 @@ make python        # venv (uv), pytest, subpoena-conform
 ```
 
 CI runs Python 3.9 and 3.12.
-
-## Releasing
-
-Bump `version` in `pyproject.toml`, merge, then push a tag `python/v<version>`
-(for example `python/v0.1.0a1`) to GitHub and Buzz. The `publish-python`
-workflow reruns the port checks, builds, and uploads to PyPI through Trusted
-Publishing; no token is involved.

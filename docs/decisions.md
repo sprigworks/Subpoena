@@ -8,14 +8,14 @@ The decisions behind Subpoena, and why they were made. [design.md](design.md) ex
 
 Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL evaluator, witnesses, lint and cross-examination. It is infrastructure, and developer-tool adoption runs on trust and contributions, which a restrictive license would kill. The agent-session registry could also be proposed upstream as an OpenTelemetry semantic convention.
 
-Petiole, a separate product, holds the agent-aware layer. Its license is not final.
+[Petiole](https://petiole.dev), a separate product from the same team, holds the agent-aware layer. Its license is not final.
 
 | Layer | What it holds | License |
 | --- | --- | --- |
 | Subpoena | Registry format, harness, evaluator, observe-only witnesses, lint, cross-examination, conformance suite, and an optional exec backstop | Apache-2.0 |
 | Petiole | Mapping agents and routing tokens to sessions, the signed provenance chain, evidence reports, confinement beyond exec (Landlock, seccomp, microVM) | Source-available, not final |
 
-**Where the line is.** Subpoena holds generic, application-agnostic primitives: observing execs and connections, and an optional exec backstop that kills processes in a session's cgroup. Petiole holds anything agent-aware. Subpoena's docs and site never describe the backstop as an agent guardrail or runtime protection for AI agents. That is Petiole's lane. Petiole's side was consulted and sees no overlap. Keeping the witnesses and backstop in Subpoena also lets Petiole use them.
+**Where the line is.** Subpoena holds generic, application-agnostic primitives: observing execs and connections, and an optional exec backstop that kills processes in a session's cgroup. Petiole holds anything agent-aware, including guardrails and runtime protection for AI agents. Keeping the witnesses and backstop in Subpoena also lets Petiole use them.
 
 ## The TraceQL evaluator
 

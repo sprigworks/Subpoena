@@ -1,28 +1,77 @@
 # Subpoena
 
-Trace-native testing for OpenTelemetry. The application's own instrumentation
-is the primary way tests observe it, and the same assertion, written once as a
-TraceQL string, runs in unit tests, in an integration environment and in
-production. The distinctive part: a system's spans are testimony, not proof.
-The code that enforces a policy is also the code that reports having enforced
-it, so enforcement is only proven by an independent witness, an observer of
-process execs and outbound connections that the application does not control,
-and cross-examination checks that the suite can tell the difference.
+Subpoena is a testing framework for code that enforces a rule: an auth check,
+a sandbox, a policy that says a denied request never runs a command. It tests
+that kind of code in three ways.
 
-**Status: alpha** (v0.1.0-alpha.1, see [CHANGELOG.md](CHANGELOG.md)). Go has
-all three tiers, lint and cross-examination. Python is on PyPI
-(`pip install subpoena`) with the harness, TraceQL evaluator, witness file
-reader and witnessed absence checks (`no_spawn`, `watch_spawns`), which pass
-the same contract checks as Go, and cross-examination (`subpoena-cross`).
-Python does not yet have lint. TypeScript has generated names and is next. The
-registry, invariants, witness output and tiers 2–3 are language-neutral, and
-[docs/ports.md](docs/ports.md)
-is the contract a harness in another language must meet, with a check for
-each part. APIs will change.
+1. **The app's own OpenTelemetry spans are the test interface.** You write the
+   rule once as a TraceQL query, and the same string runs in unit tests, in an
+   integration stack and as a production alert.
+2. **An independent witness checks what really happened.** The code that
+   enforces a rule is also the code that reports it did, so its spans only
+   count as testimony. A witness the app doesn't control (`/proc` or eBPF for
+   process execs, eBPF for outbound connections) records what actually ran.
+   An incomplete capture fails the test. It never passes.
+3. **Cross-examination checks that the tests can tell.** `subpoena-cross`
+   removes each marked enforcement statement in turn and requires the suite to
+   go red. A mutant that survives means the tests would pass with the
+   protection deleted.
 
-To use it in a service of your own, follow
-[docs/migrating-an-existing-service.md](docs/migrating-an-existing-service.md);
-`examples/adopter` is a separate module doing exactly that.
+**Status: alpha, v0.1.0-alpha.1.** APIs will change. Go is the reference
+implementation, and Python is a port (see [Languages](#languages)).
+
+## What a test looks like
+
+Trimmed from [`examples/quickstart`](examples/quickstart). The rule: a non-admin
+delete is refused, and the purge process never runs.
+
+```go
+func TestNonAdminDeleteNeverPurges(t *testing.T) {
+	h, d, w := rig(t) // harness, handler under test, process witness
+	harness.WatchSpawns(t, w, "", harness.SpawnRule{Never: []string{"sleep " + sleepArg}})
+
+	err := d.Delete(ctx, quickstart.Request{AccountID: "acct-1", Command: "sleep", Args: []string{sleepArg}})
+	if !errors.Is(err, quickstart.ErrRefused) {
+		t.Fatalf("want ErrRefused, got %v", err)
+	}
+
+	w.Stop()
+	tr, err := h.Collect(ctx) // flush; fails if any span was dropped or truncated
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.RequireExists(t, tr, refused)    // the denial is on the record
+	harness.RequireAbsent(t, tr, purgeAfter) // no purge span after it (testimony)
+	harness.RequireNoSpawn(t, w, tr.TraceIDs()[0]) // and the witness saw no process (evidence)
+}
+```
+
+Here `refused` and `purgeAfter` are TraceQL strings, for example
+`{ name = "account.delete.authorize" && span.account.delete.allowed = false } >> { name = "account.delete.purge" }`.
+`RequireNoSpawn` returns Inconclusive, and fails the test, when the witness
+can't vouch for its capture.
+
+Run it, Go 1.25+ on Linux, no privileges needed:
+
+```
+git clone https://github.com/sprigworks/subpoena
+cd subpoena/examples/quickstart
+make check
+```
+
+The last lines are cross-examination deleting the refusal and the suite
+catching it:
+
+```
+enforcement-mutant-killed Authorize
+  at handler.go:71, removed: return ctx, fmt.Errorf("%w: %s", ErrRefused, r.AccountID)
+  suite went red; failing: TestNonAdminDeleteNeverPurges
+```
+
+To adopt it in a service of your own, follow
+[docs/migrating-an-existing-service.md](docs/migrating-an-existing-service.md).
+[`examples/adopter`](examples/adopter) is a separate module that does exactly
+that, with a Weaver registry, generated names and lint.
 
 ## The three tiers
 
@@ -48,42 +97,54 @@ Any matching trace is a violation. It is evaluated three times:
 Promotion between tiers is copy and paste; a test checks the strings match.
 Details in [docs/architecture.md](docs/architecture.md).
 
-## Quickstart
+## Languages
+
+| | Go | Python |
+| --- | --- | --- |
+| Harness: capture, completeness, Pass / Fail / Inconclusive | yes | yes |
+| TraceQL subset evaluator | yes | yes, native (agrees on all 139 shared cases) |
+| Witnessed absence checks (`RequireNoSpawn`, `WatchSpawns`, capture health) | yes | yes, over the witness file |
+| Running a witness (`/proc`, eBPF exec, eBPF network) | yes | reads the file `subpoena-witness` writes |
+| Network absence checks (`RequireNoDial`) | yes | not yet |
+| Cross-examination (`subpoena-cross`) | yes, plus layer groups, `-j` and `-select` | yes, for pytest |
+| Lint (`subpoena-lint`) | yes | not yet |
+| Tiers 2 and 3 (OATS, alert rules) | language-neutral | language-neutral |
+
+The Python package is `pip install subpoena`; see [python/README.md](python/README.md).
+The PyPI release (0.1.0a1) predates the absence checks and cross-examination,
+which are on `main` and arrive with the next release.
+TypeScript is next, and has generated names already. Every port meets the
+contract in [docs/ports.md](docs/ports.md), and shared conformance cases check
+each part.
+
+## Working on Subpoena
 
 ```
-make test      # tier 1: harness, traceql, witness, lint, cross-examination and gateway tests
-make check     # build + vet + test + subpoena-lint + subpoena-cross over examples/gateway, then cross-self
-make conformance  # subset vs a real Tempo in Docker (optional)
-make oats         # tier 2: OATS + the eBPF witness (rootful Docker, cgroup v2, BTF)
-make test-ebpf    # the eBPF witness against the real kernel, in a privileged container
+make test         # tier 1: harness, TraceQL, witness, lint, cross-examination, the gateway example
+make check        # build, vet, test, subpoena-lint, subpoena-cross over examples/gateway, cross-self, examples/platform
+make python       # the Python port: pytest and the shared conformance cases
+make conformance  # the TraceQL subset against a real Tempo (Docker)
+make oats         # tier 2: OATS with the eBPF witness (rootful Docker, cgroup v2, BTF)
+make alerts       # tier 3: the alert rule in Grafana and Tempo (Docker)
+make test-ebpf    # the eBPF witnesses against the real kernel (privileged container)
 make test-cgroup  # real-cgroup tests without root, in a delegated systemd scope
 ```
 
-Needs Go 1.25 or newer. In a sandbox that cannot reach the Go module proxy or
+Needs Go 1.25 or newer. In a sandbox that can't reach the Go module proxy or
 the vanity module hosts, use `make SANDBOX=1 test` (see the Makefile header).
+CI runs all of these on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## What runs here, and what does not
+## Examples
 
-| Piece | Status |
+| Example | What it shows |
 | --- | --- |
-| Registry (`registry/`), Weaver check and Go generation | Runs. Weaver 0.28 checked the registry and generated `generated/go/semconv` |
-| `pkg/harness`, `pkg/traceql`, `pkg/witness` (`ProcWitness`, `Sinkhole`), `pkg/cgroup` | Runs, in `make test`. Cgroup tests use a real cgroup v2 when the machine allows it and skip that part otherwise |
-| `examples/gateway` tier-1 tests | Runs, in `make test` |
-| `subpoena-lint`, `subpoena-cross` | Runs; cross-examination kills both gateway mutants (`Authorize` and `Fetch`) |
-| Tier 2: `examples/gateway/oats` (`make oats`) | Runs (needs rootful Docker, cgroup v2, BTF): both cases pass, cgroup-correlated and argument-correlated, and both fail against the enforcement mutant |
-| Kernel-side witnesses, `pkg/witness/execbpf`, `pkg/witness/netbpf`, `cmd/subpoena-witness` | Runs: unit tests in `make test`, kernel tests in `make test-ebpf` (privileged container); `execbpf` with `cmd/subpoena-witness` is the tier-2 witness |
-| Tetragon policy, `witnesses/tetragon` | Loads on Tetragon v1.7.1; kept for enforcement, not used. Not the witness: outside Kubernetes its events lack the session cgroup |
-| `pkg/production`: test-tier attributes kept out of production | Runs, in `make test`; the generated Collector config was validated and run on otelcol-contrib 0.116.1 |
-| Tier 3: `examples/gateway/alerts` (`make alerts`) | Runs (needs Docker): provisioned into Grafana 13.2 with Tempo 3.1 and driven through the scheduler. Quiet on silence and on clean traffic, fires on a violation. The first run found the unvalidated rule could never fire; see the rule file's header |
-| `examples/adopter`: adopting Subpoena from a separate module | Runs in CI (`adopter` job): test, lint, cross-examination, and its generated names checked with Weaver |
-| `examples/quickstart`: Level 0, one rule with no registry | Runs in CI (`quickstart` job): test and cross-examination (no lint, which needs a registry) |
-| `examples/python-quickstart`: Level 0 for a Python project, one rule and two pytest tests | Runs in CI (`python-quickstart` job): installs `python/`, runs pytest, then `subpoena-cross`, which kills both mutants (the check forced off, the refusal removed). No witness at this level |
-| Conformance, fixtures and expected results (`conformance/`) | Runs, in `make test` |
-| Python port, `python/` (`make python`) | Runs, in CI on Python 3.9 and 3.12: the harness passes every `conformance/harness.yaml` case, its native evaluator agrees on all 139 corpus cases, and its witness reader passes the Go reader's cases. No lint or cross-examination yet. On PyPI: `pip install subpoena` (0.1.0a1) |
-| Port checks: `subpoena-traceql`, `subpoena-conform` (`make conform`), the witness file format and reader (`witness.ReadLog`) | Runs, in `make test`: the Go evaluator, through the same protocol a port uses, agrees on all 139 cases (13 queries over 9 fixtures, 22 rejected queries) |
-| Conformance, subset vs real Tempo (`make conformance`) | Runs (needs Docker): 0 divergences against Tempo 2.8.2. The first run found Tempo's `&&`/`\|\|` precedence differs; the subset now requires parentheses. Array values are refused: Tempo's answers on them follow no rule the subset could copy (measured; see `docs/traceql-subset.md`) |
+| [`examples/quickstart`](examples/quickstart) | Level 0 in Go: one rule, no registry, a witness and cross-examination |
+| [`examples/python-quickstart`](examples/python-quickstart) | Level 0 in Python: one rule, two pytest tests, cross-examination |
+| [`examples/adopter`](examples/adopter) | A separate module adopting Subpoena: Weaver registry, generated names, lint, cross |
+| [`examples/platform`](examples/platform) | Level 3: one shared registry across two services |
+| [`examples/gateway`](examples/gateway) | The reference app: all three tiers, kernel witnesses, OATS stack and alert rule |
 
-Other things to know:
+## Design notes
 
 - TraceQL is a documented subset (`docs/traceql-subset.md`), not Tempo's engine,
   by design: Tempo is AGPL-3.0, and linking its `pkg/traceql` into this
@@ -112,11 +173,11 @@ Other things to know:
 
 ```
 registry/             Weaver registry: manifest + model/ (tier annotation per attribute)
-weaver-templates/     Weaver template that generates the Go constants
-generated/go/semconv/ generated constants
-pkg/harness/          in-memory exporter, Collect, Trace, Verdict
+weaver-templates/     Weaver templates that generate the Go, Python and TypeScript names
+generated/            generated names: go/semconv, python, ts
+pkg/harness/          in-memory exporter, Collect, Trace, Verdict, witness checks
 pkg/traceql/          TraceQL subset evaluator
-pkg/witness/          Witness and NetworkWitness interfaces, ProcWitness, Sinkhole
+pkg/witness/          Witness and NetworkWitness interfaces, ProcWitness, Sinkhole, witness file reader
 pkg/witness/execbpf/  kernel-side exec witness (eBPF)
 pkg/witness/netbpf/   kernel-side network witness (eBPF)
 pkg/cgroup/           one cgroup per session, named with the trace ID
@@ -124,18 +185,15 @@ pkg/production/       drop test-tier attributes in production (exporter, Collect
 witnesses/            witness design notes, Tetragon policy (enforcement)
 invariants/           *.traceql invariants (+ embedded loader)
 cmd/subpoena-lint/    static checks (see lint/README.md)
-cmd/subpoena-cross/    cross-examination
-cmd/subpoena-witness/ runs the kernel-side witness, JSON lines out
+cmd/subpoena-cross/   cross-examination
+cmd/subpoena-witness/ runs a witness, JSON lines out
 cmd/subpoena-invgen/  writes invariants/names.go (also for other modules)
 cmd/subpoena-traceql/ the Go evaluator as a command (the port protocol)
 cmd/subpoena-conform/ checks any language's evaluator against the corpus
-python/               the Python port: harness, TraceQL subset, witness reader
-examples/gateway/     toy agent gateway, tests, OATS stack, alert rule
-examples/adopter/     separate module adopting Subpoena from outside (CI keeps it working)
-examples/quickstart/  Level 0: one rule, no registry, in its own module (test + cross)
-examples/python-quickstart/  Level 0 for Python: one rule, two pytest tests
-conformance/          fixtures + expected results, subset-vs-Tempo conformance test
-docs/                 architecture, TraceQL subset, migrating an existing service
+python/               the Python port: harness, TraceQL subset, witness reader and checks, cross
+examples/             quickstart, python-quickstart, adopter, platform, gateway (see above)
+conformance/          shared cases for every port, and the subset-vs-Tempo test
+docs/                 design, decisions, architecture, TraceQL subset, ports, migration
 ```
 
 Licensed under Apache-2.0.

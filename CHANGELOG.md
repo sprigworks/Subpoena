@@ -66,7 +66,7 @@
   starts that runs at test cleanup, even after an earlier `Fatal`: it stops the
   witness, fails on commands the `SpawnRule` refuses (`Allowed`, `Never`) and on
   missing or bad capture health, and logs every process seen when the test had
-  already failed. Moved from GhostGate's test helpers. A `Never` entry's program
+  already failed. A `Never` entry's program
   matches with or without a directory (`sleep 1` refuses `/usr/bin/sleep 1`).
 - **`harness.CheckNoSpawn`, `CheckNoDial` (Go).** Non-fatal forms of the witness
   absence checks. `subpoena-lint` counts them, and `WatchSpawns`, as asking a
@@ -107,7 +107,7 @@ Tagged `python/v0.1.0a1`; published from CI through PyPI Trusted Publishing.
 
 ## v0.1.0-alpha.1 (2026-10-26)
 
-First alpha. Go only; APIs will change. Everything listed under "Verified" has
+First alpha. Go only at this release; APIs will change. Everything listed under "Verified" has
 run, on a real machine and in CI; anything else says what it is.
 
 ### What you get
@@ -174,7 +174,7 @@ On Linux 6.17 with rootful Docker, and in CI on GitHub's ubuntu runners:
 
 ### Known limits
 
-- Go only. Python and TypeScript harnesses are not written; their contract,
+- Go only at this release. Python and TypeScript harnesses were not yet written; their contract,
   checks and generated names are.
 - No instrumentation helper library yet: spans are written with the OTel API
   and the generated constants.

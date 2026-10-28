@@ -12,8 +12,7 @@ export GOSUMDB := off
 endif
 
 # Weaver is a Rust binary: https://github.com/open-telemetry/weaver/releases
-# Its git dependency fetch needs the CA bundle in proxied environments:
-#   SSL_CERT_FILE=/root/.ccr/ca-bundle.crt make generate
+# Behind a TLS-intercepting proxy, point SSL_CERT_FILE at the proxy's CA bundle.
 WEAVER ?= weaver
 REGISTRY := registry
 

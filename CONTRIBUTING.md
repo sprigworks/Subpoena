@@ -25,8 +25,9 @@ Use Go 1.25 or newer. From the repository root:
 make check
 ```
 
-This builds, vets, runs the Go suite, lints the gateway, and checks that its
-suite catches removed enforcement. If you change the adopter or public APIs,
+This builds, vets, runs the Go suite, lints the gateway, checks that its
+suite catches removed enforcement, cross-examines Subpoena's own guards and
+runs `examples/platform`. If you change the adopter or public APIs,
 also run the separate module's checks:
 
 ```sh
@@ -47,3 +48,10 @@ the README and Makefile. A skipped privileged test is not a passing test.
 For the supported sandbox workaround, see AGENTS.md and `make SANDBOX=1 check`.
 Do not weaken capture completeness, accept Inconclusive, or remove enforcement
 markers to make checks pass.
+
+## Releasing the Python package
+
+Bump `version` in `pyproject.toml`, merge, then push a tag `python/v<version>`
+(for example `python/v0.1.0a1`) to GitHub. The `publish-python`
+workflow reruns the port checks, builds, and uploads to PyPI through Trusted
+Publishing; no token is involved.
