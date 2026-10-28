@@ -159,7 +159,7 @@ type Report struct {
 // MaskedFile, in the target directory, lists masked layers accepted as
 // covered only together with their group, one per line, each with a reason:
 //
-//	<file> | <func> | <removed text or condition> | <reason>
+//	<file> | <func> | group=<group> | <removed text or condition> | <reason>
 //
 // It is a reviewed claim, like a marker. Lines starting with # are comments.
 const MaskedFile = "cross-masked.txt"

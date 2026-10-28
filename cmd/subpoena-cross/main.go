@@ -42,9 +42,10 @@ func main() {
 	}
 	// Mutant runs have their own process groups, so a terminal's Ctrl-C reaches
 	// only this process: cancel the run, which kills them and removes the
-	// copies.
+	// copies. A second Ctrl-C during that cleanup quits at once.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() { <-ctx.Done(); stop() }()
 	rep, err := cross.Run(ctx, cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr, EvidenceDir: *evidenceDir, Jobs: *jobs, Select: *sel})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-cross:", err)
