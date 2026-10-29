@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Python pytest plugin.** Installing `subpoena` registers a pytest11
+  plugin with `subpoena_harness`, `subpoena_watch_spawns` and
+  `subpoena_sinkhole` fixtures, so a test no longer wires `Harness`,
+  `addfinalizer` or the sinkhole's teardown by hand.
 - **Python network absence (W6).** `subpoena.witness.Sinkhole` is the
   loopback network witness: it records every connection that reaches it,
   drains its accept queue on `stop()`, and reports health only once stopped.

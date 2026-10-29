@@ -26,6 +26,9 @@ dependencies = [
 [project.scripts]
 subpoena-cross = "subpoena.cross:main"
 
+[project.entry-points.pytest11]
+subpoena = "subpoena.pytest_plugin"
+
 [project.urls]
 Homepage = "https://subpoena.dev"
 Source = "https://github.com/sprigworks/subpoena"

@@ -3,5 +3,7 @@
 
 import pathlib
 
+pytest_plugins = ["pytester"]
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONFORMANCE = ROOT / "conformance"
