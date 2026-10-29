@@ -169,8 +169,21 @@ Check: `conformance/witness.yaml` holds files and what a reader must report
 for each (read error, health, spawned PIDs, the no-spawn verdict); the Go
 runner is `conformance/witness_test.go`. `pkg/witness/log_test.go` and
 `pkg/harness/watch_test.go` hold the reader and `SpawnRule` cases a port must
-also pass. Go's network witness (`NoDial`) is not part of the port contract
-yet.
+also pass.
+
+- **W6. Network absence.** `no_dial(witness, trace_id, match)` follows W5's
+  rule over `dialed(trace_id)`: one attempt that `match` selects (none: any
+  attempt) is Fail even from an unhealthy capture; with none, missing or bad
+  health is Inconclusive. `dial_to(addrs)` matches a destination address, a
+  zero port matching every port and an IPv4-mapped address matching its IPv4
+  form. A rule about a host name needs the test to pin what the name
+  resolves to. A port ships the loopback sinkhole: a listener that records
+  every arrival for every trace, drains its accept queue when stopped, and is
+  healthy only once stopped with no accept or drain error. Go's eBPF network
+  witness (`netbpf`) is not ported.
+
+Check: `pkg/witness/sinkhole_test.go` and `pkg/harness/network_test.go`
+hold the cases; the Python runner is `python/tests/test_network.py`.
 
 ## L and G: lint and cross-examination
 

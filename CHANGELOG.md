@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Python network absence (W6).** `subpoena.witness.Sinkhole` is the
+  loopback network witness: it records every connection that reaches it,
+  drains its accept queue on `stop()`, and reports health only once stopped.
+  `subpoena.harness` gains `no_dial`, `require_no_dial`, `check_no_dial` and
+  `dial_to`, under the same verdict rules as Go's `NoDial`, plus
+  `check_no_spawn`. `docs/ports.md` makes network absence part of the port
+  contract.
+
 ## v0.1.0-alpha.2 and Python 0.1.0a2 (2026-10-28)
 
 Tagged `v0.1.0-alpha.2` and `python/v0.1.0a2`. Python gains the witnessed

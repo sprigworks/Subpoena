@@ -115,7 +115,7 @@ Details in [docs/architecture.md](docs/architecture.md).
 | TraceQL subset evaluator | yes | yes, native (agrees on all 139 shared cases) |
 | Witnessed absence checks (`RequireNoSpawn`, `WatchSpawns`, capture health) | yes | yes, over the witness file |
 | Running a witness (`/proc`, eBPF exec, eBPF network) | yes | reads the file `subpoena-witness` writes |
-| Network absence checks (`RequireNoDial`) | yes | not yet |
+| Network absence checks (`RequireNoDial`, `Sinkhole`) | yes | yes, with the loopback `Sinkhole` |
 | Cross-examination (`subpoena-cross`) | yes, plus layer groups, `-j` and `-select` | yes, for pytest |
 | Lint (`subpoena-lint`) | yes | not yet |
 | Tiers 2 and 3 (OATS, alert rules) | same files, any language | same files, any language |
