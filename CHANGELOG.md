@@ -9,6 +9,13 @@
   `dial_to`, under the same verdict rules as Go's `NoDial`, plus
   `check_no_spawn`. `docs/ports.md` makes network absence part of the port
   contract.
+- **Python invariants by name.** `subpoena.invariants.load(name)` reads
+  `invariants/<name>.traceql` from the nearest `invariants/` above the
+  caller (or a given directory), as Go's `invariants.Load` does; an unknown
+  or path-shaped name raises `InvariantError`. `names()` lists them.
+- **Python `Trace.query` returns a `Result`** with `matches`, `complete` and
+  `count()`, as in Go; iterating or `len()` still goes over the matches.
+  `Trace.spans(trace_id)` returns one trace's spans.
 
 ## v0.1.0-alpha.2 and Python 0.1.0a2 (2026-10-28)
 

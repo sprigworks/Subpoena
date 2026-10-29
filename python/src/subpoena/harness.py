@@ -130,6 +130,25 @@ class Verdict(enum.Enum):
         return self.value
 
 
+@dataclass
+class Result:
+    """The outcome of a query: the matching traces, and whether the snapshot
+    they came from was complete. Iterating or taking len() goes over the
+    matches."""
+
+    matches: List[traceql.Match]
+    complete: bool
+
+    def count(self) -> int:
+        return len(self.matches)
+
+    def __len__(self) -> int:
+        return len(self.matches)
+
+    def __iter__(self):
+        return iter(self.matches)
+
+
 class Trace:
     """An immutable, queryable snapshot of the captured spans."""
 
@@ -146,10 +165,18 @@ class Trace:
     def span_count(self) -> int:
         return sum(len(t.spans) for t in self._traces)
 
-    def query(self, q: str) -> List[traceql.Match]:
+    def spans(self, trace_id: str) -> List[traceql.Span]:
+        """The captured spans of one trace (empty if it is not in the
+        snapshot)."""
+        for t in self._traces:
+            if t.id == trace_id:
+                return list(t.spans)
+        return []
+
+    def query(self, q: str) -> Result:
         """Raises traceql.ParseError, or traceql.UnsupportedValueError if q reads
         an attribute that holds an array value in the snapshot."""
-        return traceql.parse(q).eval(self._traces)
+        return Result(traceql.parse(q).eval(self._traces), self._complete)
 
     def absent(self, q: str) -> Verdict:
         """Fail on any match, even from an incomplete capture; Pass on none from
