@@ -12,8 +12,8 @@ jobs:
   tier1:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25"
           cache: true
@@ -46,11 +46,11 @@ jobs:
       matrix:
         python-version: ["3.9", "3.12"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25"
           cache: true
@@ -69,8 +69,8 @@ jobs:
       run:
         working-directory: examples/python-quickstart
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: install
@@ -90,9 +90,10 @@ jobs:
         working-directory: examples/adopter
     env:
       WEAVER_VERSION: v0.28.0
+      WEAVER_SHA256: 9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25"
           cache: true
@@ -101,6 +102,7 @@ jobs:
         run: |
           curl -fsSL -o /tmp/weaver.tar.xz \
             "https://github.com/open-telemetry/weaver/releases/download/${WEAVER_VERSION}/weaver-x86_64-unknown-linux-gnu.tar.xz"
+          echo "${WEAVER_SHA256}  /tmp/weaver.tar.xz" | sha256sum -c -
           tar -xf /tmp/weaver.tar.xz -C /tmp
           sudo install /tmp/weaver-x86_64-unknown-linux-gnu/weaver /usr/local/bin/weaver
       - name: generated/ matches registry/ (Weaver)
@@ -118,8 +120,8 @@ jobs:
       run:
         working-directory: examples/quickstart
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25"
           cache: true
@@ -133,9 +135,10 @@ jobs:
         working-directory: examples/platform/shared
     env:
       WEAVER_VERSION: v0.28.0
+      WEAVER_SHA256: 9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25"
           cache-dependency-path: examples/platform/shared/go.sum
@@ -143,6 +146,7 @@ jobs:
         run: |
           curl -fsSL -o /tmp/weaver.tar.xz \
             "https://github.com/open-telemetry/weaver/releases/download/${WEAVER_VERSION}/weaver-x86_64-unknown-linux-gnu.tar.xz"
+          echo "${WEAVER_SHA256}  /tmp/weaver.tar.xz" | sha256sum -c -
           tar -xf /tmp/weaver.tar.xz -C /tmp
           sudo install /tmp/weaver-x86_64-unknown-linux-gnu/weaver /usr/local/bin/weaver
       - name: Validate and regenerate the shared contract
@@ -163,8 +167,8 @@ jobs:
       run:
         working-directory: examples/platform/services/${{ matrix.service }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25"
           cache-dependency-path: |

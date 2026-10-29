@@ -4,6 +4,7 @@ name: registry
 # is checked, diffed against main, and needs a CODEOWNERS review.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - "registry/**"
       - "weaver-templates/**"
@@ -16,16 +17,17 @@ permissions:
 
 env:
   WEAVER_VERSION: v0.28.0
+  WEAVER_SHA256: 9878e2d56ad82ae441b0b527377a4f6001ae19f4af362fb0a4d951884f59ab61
 
 jobs:
   weaver:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Check out main as the diff baseline
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: baseline
@@ -33,6 +35,7 @@ jobs:
         run: |
           curl -fsSL -o weaver.tar.xz \
             "https://github.com/open-telemetry/weaver/releases/download/${WEAVER_VERSION}/weaver-x86_64-unknown-linux-gnu.tar.xz"
+          echo "${WEAVER_SHA256}  weaver.tar.xz" | sha256sum -c -
           tar -xf weaver.tar.xz
           sudo install weaver-x86_64-unknown-linux-gnu/weaver /usr/local/bin/weaver
           weaver --version
@@ -58,7 +61,7 @@ jobs:
       - name: Require approval label for breaking registry changes
         if: env.BREAKING == '1' && !contains(github.event.pull_request.labels.*.name, 'registry-breaking-approved')
         run: |
-          echo "This PR removes or obsoletes registry entries. A maintainer must add the 'registry-breaking-approved' label." >&2
+          echo "This PR removes or obsoletes registry entries. A maintainer must add the 'registry-breaking-approved' label; adding or removing the label starts a fresh check." >&2
           exit 1
       - name: generate (Go, Python, TypeScript)
         run: |
@@ -68,7 +71,7 @@ jobs:
           weaver registry generate -r registry --templates weaver-templates ts generated/ts
       - name: Upload what Weaver generated
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: generated
           path: generated/
