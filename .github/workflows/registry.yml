@@ -21,11 +21,11 @@ jobs:
   weaver:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Check out main as the diff baseline
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: baseline
@@ -68,7 +68,7 @@ jobs:
           weaver registry generate -r registry --templates weaver-templates ts generated/ts
       - name: Upload what Weaver generated
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: generated
           path: generated/
