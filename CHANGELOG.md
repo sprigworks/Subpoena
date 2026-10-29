@@ -20,6 +20,13 @@
 - **Python `Trace.query` returns a `Result`** with `matches`, `complete` and
   `count()`, as in Go; iterating or `len()` still goes over the matches.
   `Trace.spans(trace_id)` returns one trace's spans.
+- **Python session cgroups (W2).** `subpoena.cgroup` ports `pkg/cgroup`, so
+  a Python service can run a session's processes in
+  `<root>/<trace id>`, the cgroup the witness attributes by. On a real cgroup
+  the child places itself between fork and exec (Python has no
+  `CLONE_INTO_CGROUP`). Otherwise the PID is written after start, and a
+  failed placement comes back as `place_err` so the caller can fall back to
+  lineage.
 
 ## v0.1.0-alpha.2 and Python 0.1.0a2 (2026-10-28)
 
