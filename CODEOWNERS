@@ -6,3 +6,19 @@
 
 # Platform team stand-in for the multi-module example's shared contract.
 /examples/platform/shared/ @nickhenggeler
+
+# Release and CI: a workflow change can publish to PyPI or weaken a gate.
+/.github/    @nickhenggeler
+/CODEOWNERS  @nickhenggeler
+
+# Enforcement: the witnesses, the harness verdicts and the tools that check them.
+/pkg/witness/    @nickhenggeler
+/pkg/harness/    @nickhenggeler
+/pkg/cgroup/     @nickhenggeler
+/witnesses/      @nickhenggeler
+/cmd/            @nickhenggeler
+/internal/       @nickhenggeler
+/conformance/    @nickhenggeler
+
+# Python enforcement and package/release configuration.
+/python/         @nickhenggeler

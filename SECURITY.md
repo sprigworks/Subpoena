@@ -18,6 +18,12 @@ get a false Pass is a security bug. For example:
 
 Ordinary vulnerabilities in the code (the witness runs privileged) count too.
 
+## What to expect
+
+Subpoena is maintained by a small team. We aim to acknowledge a report within
+three business days and to send a first assessment within ten business days. We will agree a
+disclosure date with you, and we credit reporters unless they ask us not to.
+
 ## Supported versions
 
 Subpoena is alpha. Fixes go to `main` and the next release. Older releases do
