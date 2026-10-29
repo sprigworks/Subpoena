@@ -27,6 +27,7 @@
   `CLONE_INTO_CGROUP`). Otherwise the PID is written after start, and a
   failed placement comes back as `place_err` so the caller can fall back to
   lineage.
+- **Python production tiers.** `subpoena.production` ports `pkg/production`: `Exporter` wraps a span exporter and removes test-tier attributes from spans, events and links without mutating the originals; `collector_config` emits the same collector transform processor as Go. `test_tier_keys` lists the test-tier keys.
 
 ## v0.1.0-alpha.2 and Python 0.1.0a2 (2026-10-28)
 
