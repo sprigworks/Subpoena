@@ -1,5 +1,12 @@
 # Subpoena
 
+[![ci](https://github.com/sprigworks/Subpoena/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sprigworks/Subpoena/actions/workflows/ci.yml)
+[![kernel](https://github.com/sprigworks/Subpoena/actions/workflows/kernel.yml/badge.svg?branch=main)](https://github.com/sprigworks/Subpoena/actions/workflows/kernel.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/sprigworks/subpoena.svg)](https://pkg.go.dev/github.com/sprigworks/subpoena)
+[![PyPI](https://img.shields.io/pypi/v/subpoena)](https://pypi.org/project/subpoena/)
+[![Release](https://img.shields.io/github/v/release/sprigworks/Subpoena?include_prereleases)](https://github.com/sprigworks/Subpoena/releases)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 Subpoena is a testing framework for code that enforces a rule: an auth check,
 a sandbox, a policy that says a denied request never runs a command. It tests
 that kind of code in three ways.
