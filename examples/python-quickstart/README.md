@@ -42,7 +42,9 @@ From a checkout of the Subpoena repo, with Python 3.9+ (on Debian or Ubuntu,
     pytest -q
     subpoena-cross .
 
-Outside the repo, `pip install subpoena pytest` (Python 3.9+, alpha).
+Outside the repo, copy `accounts.py`, `test_accounts.py` and `pytest.ini` into
+a directory, run `pip install subpoena pytest` (Python 3.9+, alpha), then the
+same `pytest -q` and `subpoena-cross .`.
 
 ## When to move up
 
