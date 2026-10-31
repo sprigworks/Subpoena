@@ -125,3 +125,40 @@ def test_collector_config_matches_the_example():
         assert 'delete_key(attributes, "%s")' % k in cfg
     path = ROOT / "examples" / "gateway" / "production" / "otelcol.yaml"
     assert cfg in path.read_text(), "%s is out of step with the registry tiers; it must contain:\n%s" % (path, cfg)
+
+
+def test_exporter_keeps_nonzero_dropped_counts():
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import SpanLimits, TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from subpoena.production import Exporter
+
+    raw, filtered = InMemorySpanExporter(), InMemorySpanExporter()
+    tp = TracerProvider(span_limits=SpanLimits(max_attributes=2, max_events=1, max_links=1,
+                                              max_event_attributes=1, max_link_attributes=1))
+    tp.add_span_processor(SimpleSpanProcessor(raw))
+    tp.add_span_processor(SimpleSpanProcessor(Exporter(filtered, {"private": "test"})))
+    try:
+        tracer = tp.get_tracer("t")
+        with tracer.start_as_current_span("parent") as parent:
+            ctx = parent.get_span_context()
+            links = [trace.Link(ctx, {"a": 1, "b": 2}), trace.Link(ctx, {"a": 3, "b": 4})]
+            child = tracer.start_span("child", attributes={"a": 1, "b": 2, "private": "x"}, links=links)
+            child.add_event("old", {"a": 1, "b": 2})
+            child.add_event("new", {"a": 3, "b": 4})
+            child.end()
+        original = next(s for s in raw.get_finished_spans() if s.name == "child")
+        exported = next(s for s in filtered.get_finished_spans() if s.name == "child")
+
+        def counts(s):
+            return (s.dropped_attributes, s.dropped_events, s.dropped_links,
+                    s.events[0].dropped_attributes, s.links[0].dropped_attributes)
+
+        assert counts(original) == (1, 1, 1, 1, 1)
+        assert counts(exported) == counts(original)
+        assert "private" not in exported.attributes
+        assert original.attributes["private"] == "x"
+    finally:
+        tp.shutdown()

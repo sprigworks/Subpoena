@@ -249,6 +249,19 @@ class AddrPort:
     addr: Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
     port: int
 
+    def __post_init__(self) -> None:
+        # Normalize here, not only in of(): a directly constructed mapped
+        # address would otherwise compare unequal to the same IPv4 address,
+        # and a filter could miss a connection the witness saw.
+        addr, port = self.addr, self.port
+        if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
+            raise ValueError(f"port {port!r} is not 0 to 65535")
+        if not isinstance(addr, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            addr = ipaddress.ip_address(addr)
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
+        object.__setattr__(self, "addr", addr)
+
     @staticmethod
     def of(a: Union["AddrPort", str, Tuple[str, int]]) -> "AddrPort":
         """An AddrPort from itself, a (host, port) pair, or "host:port"
@@ -261,12 +274,7 @@ class AddrPort:
                 raise ValueError(f"{a!r} is not host:port ([host]:port for IPv6)")
             a = (m.group(1) or m.group(2), int(m.group(3)))
         host, port = a
-        if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
-            raise ValueError(f"port {port!r} is not 0 to 65535")
-        ip = ipaddress.ip_address(host)
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-            ip = ip.ipv4_mapped
-        return AddrPort(ip, int(port))
+        return AddrPort(ipaddress.ip_address(host), port)
 
     def __str__(self) -> str:
         if isinstance(self.addr, ipaddress.IPv6Address):

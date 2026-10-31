@@ -12,6 +12,7 @@ A port of pkg/harness; conformance/harness.yaml holds the cases it must pass.
 
 from __future__ import annotations
 
+import copy
 import enum
 import threading
 from dataclasses import dataclass, field
@@ -170,13 +171,15 @@ class Trace:
         snapshot)."""
         for t in self._traces:
             if t.id == trace_id:
-                return list(t.spans)
+                return copy.deepcopy(t.spans)
         return []
 
     def query(self, q: str) -> Result:
         """Raises traceql.ParseError, or traceql.UnsupportedValueError if q reads
         an attribute that holds an array value in the snapshot."""
-        return Result(traceql.parse(q).eval(self._traces), self._complete)
+        # Matches hold the snapshot's own spans; hand out copies so a caller
+        # cannot edit the evidence a later verdict reads.
+        return Result(copy.deepcopy(traceql.parse(q).eval(self._traces)), self._complete)
 
     def absent(self, q: str) -> Verdict:
         """Fail on any match, even from an incomplete capture; Pass on none from

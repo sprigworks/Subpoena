@@ -21,6 +21,7 @@ from typing import Any, List, Mapping, Sequence
 from opentelemetry.attributes import BoundedAttributes
 from opentelemetry.sdk.trace import Event, ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+from opentelemetry.sdk.util import BoundedList
 from opentelemetry.trace import Link
 
 TEST_TIER = "test"
@@ -38,12 +39,20 @@ def test_tier_keys(tiers: Mapping[str, Any]) -> List[str]:
 test_tier_keys.__test__ = False  # not a pytest test
 
 
-def _keep(attrs: Any, drop: frozenset) -> Any:
+def _keep(attrs: Any, drop: frozenset, dropped: int) -> Any:
     if attrs is None:
         return None
     kept = {k: v for k, v in attrs.items() if k not in drop}
     out = BoundedAttributes(attributes=kept, immutable=True)
-    out.dropped = getattr(attrs, "dropped", 0)
+    out.dropped = dropped
+    return out
+
+
+def _bounded(items: Sequence[Any], dropped: int) -> BoundedList:
+    # ReadableSpan reports dropped events and links only from a BoundedList.
+    out = BoundedList(None)
+    out.extend(items)
+    out.dropped = dropped
     return out
 
 
@@ -67,16 +76,18 @@ class Exporter(SpanExporter):
     def _filter(self, s: ReadableSpan) -> ReadableSpan:
         events = []
         for ev in s.events:
-            events.append(Event(ev.name, _keep(ev.attributes, self._drop), ev.timestamp))
-        links = [Link(l.context, _keep(l.attributes, self._drop)) for l in s.links]
+            events.append(Event(ev.name, _keep(ev.attributes, self._drop, ev.dropped_attributes), ev.timestamp))
+        links = [Link(l.context, _keep(l.attributes, self._drop, l.dropped_attributes)) for l in s.links]
         out = ReadableSpan(
             name=s.name,
             context=s.get_span_context(),
             parent=s.parent,
             resource=s.resource,
-            attributes=_keep(s.attributes, self._drop),
-            events=_Dropped(events, getattr(s._events, "dropped", 0)),
-            links=_Dropped(links, getattr(s._links, "dropped", 0)),
+            # s.attributes is a read-only view without the drop count; the
+            # dropped_* properties are the SDK's public record of the loss.
+            attributes=_keep(s.attributes, self._drop, s.dropped_attributes),
+            events=_bounded(events, s.dropped_events),
+            links=_bounded(links, s.dropped_links),
             kind=s.kind,
             status=s.status,
             start_time=s.start_time,
@@ -84,14 +95,6 @@ class Exporter(SpanExporter):
             instrumentation_scope=s.instrumentation_scope,
         )
         return out
-
-
-class _Dropped(list):
-    """A list that also reports how many items the original span dropped."""
-
-    def __init__(self, items: Sequence[Any], dropped: int) -> None:
-        super().__init__(items)
-        self.dropped = dropped
 
 
 def _quote(s: str) -> str:

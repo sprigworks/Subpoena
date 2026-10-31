@@ -189,3 +189,37 @@ def test_concurrent_stops_agree():
     for t in ts:
         t.join()
     assert results == [None] * 8 and s.health() is None and len(s.dialed("")) == 2
+
+
+def test_addrport_normalizes_a_directly_constructed_mapped_address():
+    import ipaddress
+
+    from subpoena.witness import AddrPort
+
+    mapped = AddrPort(ipaddress.ip_address("::ffff:127.0.0.1"), 0)
+    assert mapped == AddrPort.of("127.0.0.1:0")
+    assert isinstance(mapped.addr, ipaddress.IPv4Address)
+    with pytest.raises(ValueError):
+        AddrPort(ipaddress.ip_address("127.0.0.1"), 65536)
+
+
+def test_a_mapped_filter_still_sees_a_real_connection():
+    import ipaddress
+    import socket
+
+    from subpoena.harness import Verdict, dial_to, no_dial, require_no_dial
+    from subpoena.witness import AddrPort, Sinkhole
+
+    s = Sinkhole()
+    try:
+        socket.create_connection((str(s.addr.addr), s.addr.port), timeout=1).close()
+    finally:
+        s.stop()
+    assert s.health() is None
+    assert len(s.dialed("trace")) == 1
+    for port in (s.addr.port, 0):
+        mapped = AddrPort(ipaddress.ip_address("::ffff:" + str(s.addr.addr)), port)
+        verdict, _ = no_dial(s, "trace", dial_to(mapped))
+        assert verdict is Verdict.FAIL
+        with pytest.raises(AssertionError):
+            require_no_dial(s, "trace", dial_to(mapped))
