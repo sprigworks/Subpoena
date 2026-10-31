@@ -28,6 +28,17 @@
   failed placement comes back as `place_err` so the caller can fall back to
   lineage.
 - **Python production tiers.** `subpoena.production` ports `pkg/production`: `Exporter` wraps a span exporter and removes test-tier attributes from spans, events and links without mutating the originals; `collector_config` emits the same collector transform processor as Go. `test_tier_keys` lists the test-tier keys.
+- **Python lint (L1).** `subpoena-lint <dir>` (console script,
+  `subpoena.lint`) runs the eight `internal/lint` rules over Python source
+  with `ast`, resolving imports and aliases, so a renamed `require_absent`
+  is still the harness call. Unreadable files, invalid Python, missing
+  explicit configuration and star imports fail the run with exit 2.
+  Registry-drift stays a Go-only subcommand.
+- **Python cross-examination catches up with Go.** Layer groups with a
+  reviewed `cross-masked.txt`, parallel mutant runs (`-j`), `-select` with a
+  clean-baseline fallback to the full suite, and a per-result evidence file
+  under `-evidence-dir`. A grouped survivor never counts as killed, and a
+  masked layer stays listed.
 
 ## v0.1.0-alpha.2 and Python 0.1.0a2 (2026-10-28)
 

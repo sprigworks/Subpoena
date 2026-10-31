@@ -86,7 +86,7 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 
 **Decision:** Go first, then Python, then TypeScript. The registry is language-neutral, so names are generated for every language.
 
-**Status:** Go has all three tiers, lint and cross-examination. Python has the harness, the evaluator, the witness reader with its absence checks, and cross-examination for pytest. Python AST lint covers the eight L1 rules; registry-drift remains Go-only ([ports.md](ports.md)). TypeScript has generated names only.
+**Status:** Go has all three tiers, lint and cross-examination. Python has the harness, the evaluator, the witness reader with its process and network absence checks, session cgroups, the production exporter, cross-examination for pytest with layer groups, and AST lint for the eight L1 rules; registry-drift remains Go-only ([ports.md](ports.md)). TypeScript has generated names only.
 
 ## A distribution, not an SDK
 
