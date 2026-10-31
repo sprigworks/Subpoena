@@ -24,6 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
+subpoena-lint = "subpoena.lint:main"
 subpoena-cross = "subpoena.cross:main"
 
 [project.entry-points.pytest11]

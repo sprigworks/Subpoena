@@ -11,7 +11,7 @@ progress, and it says so.
 
 | Port | Status |
 | --- | --- |
-| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W and G pass: harness cases, 139 evaluator cases, witness reader and absence checks, cross-examination for pytest. L not yet |
+| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader and absence checks, Python AST lint, cross-examination for pytest |
 | TypeScript | generated names only (`generated/ts/semconv.ts`: `SPAN_AGENT_SESSION_EXEC`, `ATTR_SESSION_ID`, `ATTRIBUTE_TIERS`). Harness not started |
 
 ## What a port is, and what it reuses
@@ -190,7 +190,9 @@ hold the cases; the Python runner is `python/tests/test_network.py`.
 - **L1.** A port's lint applies the same rules as `lint/README.md`, adapted
   to the language: no telemetry string literals, `collect()` before
   telemetry assertions, a witness call in every enforcement-point test, and
-  provenance markers.
+  provenance markers. Python runs `subpoena-lint <dir>` (or
+  `python -m subpoena.lint <dir>`); its eight rules are tested in
+  `python/tests/test_lint.py`. Registry-drift remains a Go-only subcommand.
 - **G1.** A port's cross-examination removes each statement marked as enforcement and
   requires the suite to fail. A mutant that does not compile or import counts
   as invalid, not killed. As in Go: a guard marker forces an `if` condition;
