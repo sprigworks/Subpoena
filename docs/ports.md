@@ -11,7 +11,7 @@ progress, and it says so.
 
 | Port | Status |
 | --- | --- |
-| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader and absence checks, Python AST lint, cross-examination for pytest |
+| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader and absence checks, Python AST lint, cross-examination for pytest with groups, selection and parallel runs |
 | TypeScript | generated names only (`generated/ts/semconv.ts`: `SPAN_AGENT_SESSION_EXEC`, `ATTR_SESSION_ID`, `ATTRIBUTE_TIERS`). Harness not started |
 
 ## What a port is, and what it reuses
@@ -202,8 +202,9 @@ hold the cases; the Python runner is `python/tests/test_network.py`.
   timeout, is `timeout`; a marker that takes no effect, and an enforcement point with no
   statement marker, are errors; the baseline must be green. Python's
   `subpoena-cross` also refuses a mutant the suite never imported from the
-  copy (an installed package shadowing it) as invalid. Not yet in Python:
-  layer groups, `cross-masked.txt`, `-j` and `-select`.
+  copy (an installed package shadowing it) as invalid. It also implements layer
+  groups, reviewed `cross-masked.txt`, `-j`, `-select` and `-evidence-dir`;
+  `python/tests/test_cross_parity.py` checks these with real pytest runs.
 
 Neither is needed to start. Until a port has them, it says so.
 
