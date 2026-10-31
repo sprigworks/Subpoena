@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.1.0-alpha.3 and Python 0.1.0a3 (2026-11-01)
+
+Tagged `v0.1.0-alpha.3` and `python/v0.1.0a3`. Python gains network
+absence, lint, cross-examination with layer groups, session cgroups, the
+production exporter, invariants by name and a pytest plugin. Running a
+witness and registry-drift stay Go only.
 
 - **Python pytest plugin.** Installing `subpoena` registers a pytest11
   plugin with `subpoena_harness`, `subpoena_watch_spawns` and
