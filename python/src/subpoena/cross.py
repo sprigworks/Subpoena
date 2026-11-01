@@ -50,6 +50,7 @@ import argparse
 import ast
 import hashlib
 import io
+import math
 import json
 import os
 import re
@@ -59,6 +60,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 import tokenize
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
@@ -68,11 +72,11 @@ SURVIVED = "enforcement-mutant-survived"
 CRASHED = "enforcement-mutant-crashed"
 INVALID = "enforcement-mutant-invalid"
 TIMED_OUT = "enforcement-mutant-timeout"
+MASKED = "enforcement-layer-masked"
 
 _ANY_MARKER = re.compile(r"#\s*subpoena\s*:\s*enforc")  # cross's markers, misspelt ones too
 _POINT = "subpoena:enforcement_point"
 _STATEMENT = "subpoena:enforcement"
-_GUARD = re.compile(r"^subpoena:enforcement_guard (true|false)$")
 _SIMPLE = (ast.Return, ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Raise, ast.Pass,
            ast.Break, ast.Continue, ast.Delete, ast.Assert)
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", ".tox", ".pytest_cache", "node_modules", ".mypy_cache"}
@@ -92,6 +96,7 @@ class Mutant:
     span: Tuple[int, int] = (0, 0)  # byte offsets of the replaced text in the file
     breaks: int = 0                 # line breaks inside the span, kept by apply
     digest: str = ""                # sha256 of the file at discovery
+    group: str = ""
 
     def name(self) -> str:
         return f"{self.func} ({self.file}:{self.line})"
@@ -105,6 +110,12 @@ class Result:
     evidence: str = ""        # witness, testimony or other, for killed
     first_failure: str = ""
     output: str = ""
+    with_mutants: List[Mutant] = field(default_factory=list)
+    group: str = ""
+    masked_by: List[str] = field(default_factory=list)
+    accepted: str = ""
+    selected: List[str] = field(default_factory=list)
+    evidence_file: str = ""
 
 
 @dataclass
@@ -112,8 +123,13 @@ class Report:
     enforcement_points: int = 0
     results: List[Result] = field(default_factory=list)
 
+    stale_accepted: List[str] = field(default_factory=list)
+    snapshot: Dict[str, str] = field(default_factory=dict)
+
     def failed(self) -> bool:
-        return not self.results or any(r.outcome != KILLED for r in self.results)
+        return (not self.results or bool(self.stale_accepted) or
+                any(r.outcome != KILLED and not (r.outcome == MASKED and r.accepted)
+                    for r in self.results))
 
 
 # --- discovery -------------------------------------------------------------
@@ -173,6 +189,38 @@ def _point_marked(comments: Dict[int, Tuple[str, bool]], first: int) -> List[int
     return lines
 
 
+def _marker(comment: str):
+    parts = comment.split()
+    if not parts or parts[0] not in (_STATEMENT, "subpoena:enforcement_guard"):
+        return None
+    guard = parts.pop(0) != _STATEMENT
+    bypass = ""
+    if guard:
+        if not parts or parts[0] not in {"true", "false"}:
+            raise CrossError("cross: not a marker cross applies: enforcement_guard needs the bypass value first: true or false")
+        bypass = parts.pop(0).title()
+    group = ""
+    for arg in parts:
+        match = re.fullmatch(r"group=([A-Za-z0-9_.-]+)", arg)
+        if not match or group:
+            raise CrossError(f"cross: not a marker cross applies: marker argument {arg!r}: want at most one group=<name>")
+        group = match.group(1)
+    return bypass, group
+
+
+def _groups(mutants):
+    groups = {}
+    for m in mutants:
+        if m.group:
+            groups.setdefault(m.group, []).append(m)
+    for group, members in groups.items():
+        if len(members) == 1:
+            raise CrossError(f"cross: group={group} has one layer; a group needs at least two")
+        if len(members) > 8:
+            raise CrossError(f"cross: group={group} has {len(members)} layers; at most 8")
+    return groups
+
+
 def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
     """Every marked mutant under root, and the number of enforcement points.
     Raises CrossError for any marker that would take no effect."""
@@ -213,17 +261,19 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
                 c = comments.get(st.lineno, ("", False))[0]
                 if not c or not _ANY_MARKER.match("#" + c) or st.lineno in placed:
                     continue
-                if c == _STATEMENT:
+                marker = _marker(c)
+                if marker is None:
+                    continue
+                bypass, group = marker
+                if not bypass:
                     if not isinstance(st, _SIMPLE):
                         continue  # an if or a loop starting here: not this marker's line
                     m = mutant(node.name, st.lineno, st, "")
-                elif _GUARD.match(c):
+                else:
                     if not isinstance(st, ast.If):
                         continue
-                    m = mutant(node.name, st.lineno, st.test,
-                               "True" if _GUARD.match(c).group(1) == "true" else "False")
-                else:
-                    continue
+                    m = mutant(node.name, st.lineno, st.test, bypass)
+                m.group = group
                 placed.add(st.lineno)
                 mutants.append(m)
                 found += 1
@@ -280,7 +330,8 @@ _PLUGIN = "subpoena._cross_plugin"
 
 
 def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report: str,
-               nonce: str = "") -> Tuple[Optional[int], str]:
+               nonce: str = "", *, selected=None, coverage=None, cancel=None,
+               mutated_files=None) -> Tuple[Optional[int], str]:
     # The report is created fresh, by cross, before every run: nothing left
     # from an earlier run (or planted) is read as this one's.
     if os.path.lexists(report):
@@ -290,14 +341,29 @@ def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report:
     env["SUBPOENA_CROSS_REPORT"] = report
     env["SUBPOENA_CROSS_NONCE"] = nonce
     env["SUBPOENA_CROSS_MUTATED"] = os.path.join(copy, mutated) if mutated else ""
+    env["SUBPOENA_CROSS_MUTATED_FILES"] = json.dumps(
+        [os.path.join(copy, f) for f in (mutated_files or ([mutated] if mutated else []))])
+    env["SUBPOENA_CROSS_SELECTED"] = json.dumps(selected) if selected is not None else ""
+    env["SUBPOENA_CROSS_COVERAGE"] = json.dumps([os.path.join(copy, f) for f in (coverage or [])])
+    env["SUBPOENA_CROSS_ROOT"] = copy
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = copy + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     cmd = [sys.executable, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "-p", _PLUGIN] + args
     p = subprocess.Popen(cmd, cwd=copy, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          text=True, start_new_session=True)
     try:
-        out, _ = p.communicate(timeout=timeout)
-        return p.returncode, out
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise CrossError("cross: run canceled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            try:
+                out, _ = p.communicate(timeout=min(remaining, 0.2))
+                return p.returncode, out
+            except subprocess.TimeoutExpired:
+                continue
     except subprocess.TimeoutExpired:
         # The whole session: pytest and anything the tests started.
         _kill_group(p)
@@ -375,50 +441,255 @@ def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, L
     return KILLED, [r["test"] for r in fails], "other", first
 
 
+def _clean(code, records):
+    return (code == 0 and any(r.get("kind") == "finished" for r in records) and
+            not any(r.get("kind") in {"tampered", "failure", "collect_error"} for r in records))
+
+
+def _masked_key(m):
+    return f"{m.file} | {m.func} | group={m.group} | {' '.join(m.removed.split())}"
+
+
+def _accept_masked(rep, path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return
+    reasons = {}
+    for number, line in enumerate(lines, 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = [s.strip() for s in line.split(" | ", 4)]
+        if len(fields) != 5 or not fields[2].startswith("group=") or not fields[4]:
+            raise CrossError(f"cross: cross-masked.txt:{number}: want <file> | <func> | group=<group> | <removed text> | <reason>, each layer listed once")
+        key = " | ".join(fields[:3] + [' '.join(fields[3].split())])
+        if key in reasons:
+            raise CrossError(f"cross: cross-masked.txt:{number}: each layer listed once")
+        reasons[key] = fields[4]
+    layers = {}
+    for result in rep.results:
+        if result.outcome == MASKED:
+            layers.setdefault(_masked_key(result.mutant), []).append(result)
+    for key, reason in reasons.items():
+        matches = layers.get(key, [])
+        if len(matches) > 1:
+            raise CrossError(f"cross: cross-masked.txt: {key!r} matches {len(matches)} masked layers")
+        if matches:
+            matches[0].accepted = reason
+        else:
+            rep.stale_accepted.append(key)
+
+
 def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 300.0, log=None,
-        _before_mutate: Optional[Callable[[str], None]] = None) -> Report:
-    """Cross-examine the project at target. Raises CrossError on setup errors.
-    _before_mutate (tests only) is called with the copy's root before each
-    mutant is applied."""
+        _before_mutate: Optional[Callable[[str], None]] = None, *, jobs: int = 1,
+        select: bool = False, evidence_dir: Optional[str] = None) -> Report:
+    """Cross-examine immutable copies. Selection confirms every non-kill on the full suite.
+    Parallel workers share no mutable files. Group runs always use the whole suite.
+    """
+    if not isinstance(jobs, int) or jobs < 1 or not math.isfinite(timeout) or timeout <= 0:
+        raise CrossError("cross: jobs must be positive and timeout must be finite and positive")
     log = log or (lambda s: None)
     target = os.path.abspath(target)
-    points, mutants = find_mutants(target)
-    if not mutants:
-        raise CrossError(f"cross: no {_POINT} with a {_STATEMENT} statement under {target}")
-    rep = Report(enforcement_points=points)
+    if not os.path.isdir(target):
+        raise CrossError(f"cross: target is not a directory: {target}")
     args = list(pytest_args or [])
+    cancel = threading.Event()
+    lock = threading.Lock()
+    run_id = secrets.token_hex(8)
+    counter = 0
+    if evidence_dir is not None:
+        evidence_dir = os.path.abspath(evidence_dir)
+        if os.path.realpath(target) == os.path.realpath(evidence_dir):
+            raise CrossError("cross: evidence directory must differ from the target tree root")
+        os.makedirs(evidence_dir, exist_ok=True)
+
     with tempfile.TemporaryDirectory(prefix="subpoena-cross-") as tmp:
-        copy = os.path.join(tmp, os.path.basename(target))
+        template = os.path.join(tmp, "snapshot")
+        def ignore(directory, names):
+            ignored = set(shutil.ignore_patterns(*_SKIP_DIRS, "*.egg-info")(directory, names))
+            if evidence_dir:
+                ignored.update(name for name in names if os.path.realpath(os.path.join(directory, name)) ==
+                               os.path.realpath(evidence_dir))
+            return ignored
         try:
-            shutil.copytree(target, copy, ignore=shutil.ignore_patterns(*_SKIP_DIRS, "*.egg-info"))
-        except OSError as e:  # shutil.Error too: a dangling symlink, an unreadable file
-            raise CrossError(f"cross: copy tree: {e}") from None
-        report = os.path.join(tmp, "report.jsonl")
-        nonce = secrets.token_hex(16)
-        log(f"baseline: pytest {' '.join(args)}")
-        code, out = _run_suite(copy, args, timeout, "", report, nonce)
-        if code != 0:
-            raise CrossError("cross: baseline suite is not green, cannot judge mutants:\n" + _tail(out, 40))
-        for m in mutants:
-            if _before_mutate is not None:
-                _before_mutate(copy)
-            path = os.path.join(copy, m.file)
-            snapshot = _read_source(path, m.file)
-            if hashlib.sha256(snapshot).hexdigest() != m.digest:
-                raise CrossError(f"cross: {m.file}: snapshot drift: copy no longer matches discovery bytes")
-            log(f"mutant: {m.name()} " + (f"forced {m.removed!r} to {m.bypass}" if m.bypass
-                                          else f"removed {m.removed!r}"))
+            shutil.copytree(target, template, ignore=ignore)
+        except OSError as exc:
+            raise CrossError(f"cross: copy tree: {exc}") from None
+        points, mutants = find_mutants(template)
+        if not mutants:
+            raise CrossError(f"cross: no {_POINT} with a {_STATEMENT} statement under {target}")
+        groups = _groups(mutants)
+        rep = Report(enforcement_points=points,
+                     snapshot={m.file: m.digest for m in mutants})
+        for file, digest in sorted(rep.snapshot.items()):
+            log(f"snapshot {digest} {file}")
+
+        def suite(copy, selected=None, coverage=None, members=(), label="run"):
+            nonlocal counter
+            with lock:
+                counter += 1
+                number = counter
+            report = os.path.join(tmp, f"report-{number}.jsonl")
+            nonce = secrets.token_hex(16)
+            code, out = _run_suite(copy, args, timeout, members[0].file if members else "",
+                                   report, nonce, selected=selected, coverage=coverage,
+                                   cancel=cancel, mutated_files=sorted({m.file for m in members}))
+            records = _read_report(report, nonce)
+            evidence_file = ""
+            if evidence_dir:
+                prefix = os.path.join(evidence_dir, f"{run_id}-{number:05d}-{label}")
+                evidence_file = prefix + ".txt"
+                # Exclusive writes: concurrent runs never overwrite evidence.
+                with open(evidence_file, "x", encoding="utf-8") as f:
+                    f.write(out)
+                with open(prefix + ".jsonl", "x", encoding="utf-8") as f:
+                    with open(report, encoding="utf-8") as raw:
+                        shutil.copyfileobj(raw, f)
+                with open(prefix + ".json", "x", encoding="utf-8") as f:
+                    json.dump({"label": label, "exit_code": code, "selected": selected,
+                               "mutants": [{"file": m.file, "func": m.func, "line": m.line,
+                                            "removed": m.removed, "group": m.group,
+                                            "digest": m.digest} for m in members]}, f, indent=2)
+            return code, out, records, evidence_file
+
+        def fresh():
+            directory = tempfile.mkdtemp(prefix="case-", dir=tmp)
+            copy = os.path.join(directory, "project")
             try:
-                with open(path, "wb") as f:
-                    f.write(apply(snapshot, m))
-                code, out = _run_suite(copy, args, timeout, m.file, report, nonce)
+                shutil.copytree(template, copy)
+            except OSError as exc:
+                raise CrossError(f"cross: copy tree: {exc}") from None
+            return directory, copy
+
+        def baseline(selected=None, coverage=None, label="baseline"):
+            directory, copy = fresh()
+            try:
+                return suite(copy, selected, coverage, label=label)
             finally:
-                with open(path, "wb") as f:
-                    f.write(snapshot)
-            outcome, failing, ev, first = classify(code, _read_report(report, nonce), out)
-            rep.results.append(Result(m, outcome, failing, ev, first,
-                                      "" if outcome == KILLED else _tail(out, 20)))
-    return rep
+                shutil.rmtree(directory)
+
+        log(f"baseline: pytest {' '.join(args)}")
+        code, out, records, _ = baseline()
+        if not _clean(code, records):
+            raise CrossError("cross: baseline suite is not green, cannot judge mutants:\n" + _tail(out, 40))
+        selected_tests = {}
+        if select:
+            collected = [r for r in records if r.get("kind") == "collected"]
+            if len(collected) != 1 or not isinstance(collected[0].get("tests"), list):
+                raise CrossError("cross: select: missing test collection report")
+            nodes = collected[0]["tests"]
+            hits = {i: [] for i in range(len(mutants))}
+            for test in nodes:
+                log(f"select: {test}")
+                code, out, covered, _ = baseline([test], sorted(rep.snapshot), "coverage")
+                if not _clean(code, covered):
+                    raise CrossError(f"cross: select: {test} fails when run alone; fix the test or drop -select:\n" + _tail(out, 20))
+                coverage = [r for r in covered if r.get("kind") == "coverage" and r.get("test") == test]
+                # Missing coverage selects the full suite, never an empty subset.
+                if len(coverage) != 1:
+                    for i in hits:
+                        hits[i] = []
+                    selected_tests = {}
+                    break
+                lines = coverage[0].get("lines", {})
+                for i, m in enumerate(mutants):
+                    if m.line in lines.get(m.file, []):
+                        hits[i].append(test)
+            else:
+                selected_tests = {i: sorted(tests) for i, tests in hits.items() if tests}
+            for subset in sorted({tuple(tests) for tests in selected_tests.values()}):
+                code, out, records, _ = baseline(list(subset), label="subset-baseline")
+                if not _clean(code, records):
+                    raise CrossError("cross: select: selected subset fails without the mutant:\n" + _tail(out, 20))
+
+        def case(members, selected=None):
+            directory, copy = fresh()
+            try:
+                if _before_mutate is not None:
+                    _before_mutate(copy)
+                by_file = {}
+                for m in members:
+                    by_file.setdefault(m.file, []).append(m)
+                for file, changes in by_file.items():
+                    path = os.path.join(copy, file)
+                    data = _read_source(path, file)
+                    if any(hashlib.sha256(data).hexdigest() != m.digest for m in changes):
+                        raise CrossError(f"cross: {file}: snapshot drift: copy no longer matches discovery bytes")
+                    # Descending offsets preserve all remaining mutation positions.
+                    ordered = sorted(changes, key=lambda m: m.span, reverse=True)
+                    if any(low.span[1] > high.span[0] for high, low in zip(ordered, ordered[1:])):
+                        raise CrossError(f"cross: {file}: overlapping mutations in group")
+                    for m in ordered:
+                        data = apply(data, m)
+                    with open(path, "wb") as f:
+                        f.write(data)
+                with lock:
+                    log("mutant: " + ", ".join(m.name() for m in members))
+                code, out, records, evidence_file = suite(copy, selected=selected, members=members, label="mutant")
+                outcome, failing, evidence, first = classify(code, records, out)
+                return Result(members[0], outcome, failing, evidence, first,
+                              "" if outcome == KILLED else _tail(out, 20),
+                              with_mutants=list(members[1:]), selected=list(selected or []),
+                              evidence_file=evidence_file)
+            finally:
+                shutil.rmtree(directory)
+
+        def single(item):
+            i, m = item
+            tests = selected_tests.get(i)
+            result = case([m], tests)
+            if tests and result.outcome != KILLED:
+                result = case([m])
+            return result
+
+        pool = ThreadPoolExecutor(max_workers=min(jobs, len(mutants)))
+        futures = []
+        try:
+            for item in enumerate(mutants):
+                futures.append(pool.submit(single, item))
+            rep.results = [future.result() for future in futures]
+        except BaseException:
+            cancel.set()
+            for future in futures:
+                future.cancel()
+            raise
+        finally:
+            pool.shutdown(wait=True)
+        singles = list(rep.results)
+        for group, members in sorted(groups.items()):
+            group_result = case(members)
+            group_result.group = group
+            rep.results.append(group_result)
+            survivors = [(i, m) for i, m in enumerate(mutants)
+                         if m.group == group and singles[i].outcome == SURVIVED]
+            if len(survivors) < 2:
+                continue
+            if len(survivors) < len(members):
+                group_result = case([m for _, m in survivors])
+                group_result.group = group
+                rep.results.append(group_result)
+            if group_result.outcome != KILLED:
+                continue
+            pairs = {}
+            for i, m in survivors:
+                masked_by = []
+                for j, other in survivors:
+                    if i == j:
+                        continue
+                    key = tuple(sorted((i, j)))
+                    if key not in pairs:
+                        pair = case([m, other])
+                        pairs[key] = pair.outcome
+                        if pair.outcome not in {KILLED, SURVIVED}:
+                            pair.group = group
+                            rep.results.append(pair)
+                    if pairs[key] == KILLED:
+                        masked_by.append(other.name())
+                singles[i].outcome = MASKED
+                singles[i].masked_by = masked_by
+        _accept_masked(rep, os.path.join(template, "cross-masked.txt"))
+        return rep
 
 
 def _tail(s: str, n: int) -> str:
@@ -428,6 +699,7 @@ def _tail(s: str, n: int) -> str:
 # --- command line -----------------------------------------------------------
 
 _EXPLAIN = {
+    MASKED: "layer is masked by other surviving layers; requires a reviewed cross-masked.txt entry",
     SURVIVED: "suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced",
     CRASHED: "suite went red only by a crash (an exception other than an assertion, or the process died); "
              "a crash is not a kill:",
@@ -442,11 +714,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="subpoena-cross",
                                  description="Remove each marked enforcement statement and require pytest to fail.")
     ap.add_argument("target", help="project directory; pytest runs there")
+    ap.add_argument("-j", "--jobs", type=int, default=1, help="isolated parallel single-mutant workers")
+    ap.add_argument("-select", "--select", action="store_true", help="select tests by per-test line coverage")
+    ap.add_argument("-evidence-dir", "--evidence-dir", help="keep full pytest output and plugin records")
     ap.add_argument("--timeout", type=float, default=300.0, help="seconds per suite run (default 300)")
     ap.add_argument("pytest_args", nargs="*", help="arguments for pytest, after --")
     a = ap.parse_args(argv)
     try:
-        rep = run(a.target, a.pytest_args, a.timeout, log=lambda s: print(s, file=sys.stderr))
+        rep = run(a.target, a.pytest_args, a.timeout, log=lambda s: print(s, file=sys.stderr),
+                  jobs=a.jobs, select=a.select, evidence_dir=a.evidence_dir)
     except (CrossError, OSError) as e:
         # Exit 1 means a mutant was not killed; a setup fault must never read as that.
         print(f"subpoena-cross: {e}", file=sys.stderr)
@@ -454,7 +730,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"{rep.enforcement_points} enforcement point(s), {len(rep.results)} mutant(s)")
     for r in rep.results:
         m = r.mutant
-        print(f"{r.outcome} {m.func}")
+        print(f"{r.outcome} {m.func}" + (f" group={r.group}" if r.group else ""))
+        if r.evidence_file:
+            print(f"  evidence file: {r.evidence_file}")
+        if r.with_mutants:
+            print("  with: " + ", ".join(x.name() for x in r.with_mutants))
+        if r.masked_by:
+            print("  masked by: " + ", ".join(r.masked_by))
+        if r.accepted:
+            print("  accepted: " + r.accepted)
         if m.bypass:
             print(f"  at {m.file}:{m.line}, forced to {m.bypass}: {' '.join(m.removed.split())}")
         else:
@@ -466,6 +750,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("  " + _EXPLAIN[r.outcome])
             if r.output and r.outcome != SURVIVED:
                 print("  " + r.output.replace("\n", "\n  "))
+    for entry in rep.stale_accepted:
+        print(f"stale masked acceptance: {entry}")
     return 1 if rep.failed() else 0
 
 

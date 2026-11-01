@@ -24,12 +24,18 @@ import fnmatch
 import json
 import os
 import sys
+import threading
 
 import pytest
 
 _REPORT = os.environ.pop("SUBPOENA_CROSS_REPORT", "")
 _NONCE = os.environ.pop("SUBPOENA_CROSS_NONCE", "")
 _MUTATED = os.environ.get("SUBPOENA_CROSS_MUTATED", "")
+_MUTATED_FILES = json.loads(os.environ.pop("SUBPOENA_CROSS_MUTATED_FILES", "[]")) or ([_MUTATED] if _MUTATED else [])
+_SELECTED = os.environ.pop("SUBPOENA_CROSS_SELECTED", "")
+_SELECTED = set(json.loads(_SELECTED)) if _SELECTED else None
+_COVERAGE = {os.path.realpath(p) for p in json.loads(os.environ.pop("SUBPOENA_CROSS_COVERAGE", "[]"))}
+_ROOT = os.path.realpath(os.environ.pop("SUBPOENA_CROSS_ROOT", ""))
 
 # Frames from these packages are assertion machinery, not where a failure
 # came from: skip past them to the code that called them.
@@ -74,7 +80,8 @@ def _verdict(item, excinfo):
     frames = _frames(excinfo)
     if any(pkg == "pytest_timeout" for pkg, _ in frames):
         return "timeout"
-    if excinfo.errisinstance(SyntaxError) and _same_file(getattr(excinfo.value, "filename", ""), _MUTATED):
+    if excinfo.errisinstance(SyntaxError) and any(
+            _same_file(getattr(excinfo.value, "filename", ""), path) for path in _MUTATED_FILES):
         return "invalid"
     if not (excinfo.errisinstance(AssertionError) or excinfo.errisinstance(pytest.fail.Exception)):
         return "crash"
@@ -102,10 +109,54 @@ def pytest_collectreport(report):
         _write({"kind": "collect_error", "node": report.nodeid, "message": str(report.longrepr)[-2000:]})
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(session, config, items):
+    if _SELECTED is None:
+        return
+    available = {item.nodeid for item in items}
+    if not _SELECTED <= available:
+        raise pytest.UsageError("subpoena-cross: selected tests were not collected")
+    deselected = [item for item in items if item.nodeid not in _SELECTED]
+    items[:] = [item for item in items if item.nodeid in _SELECTED]
+    config.hook.pytest_deselected(items=deselected)
+
+
+def pytest_collection_finish(session):
+    _write({"kind": "collected", "tests": [item.nodeid for item in session.items]})
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    if not _COVERAGE:
+        yield
+        return
+    lines = {}
+    previous = sys.gettrace()
+    previous_thread = threading.gettrace() if hasattr(threading, "gettrace") else None
+    filenames = {}
+    def line_trace(frame, event, arg):
+        if event == "line":
+            lines.setdefault(filenames[frame.f_code.co_filename], set()).add(frame.f_lineno)
+        return line_trace
+    def trace(frame, event, arg):
+        filename = frame.f_code.co_filename
+        if filename not in filenames:
+            real = os.path.realpath(filename)
+            filenames[filename] = (os.path.relpath(real, _ROOT).replace(os.sep, "/")
+                                   if real in _COVERAGE else None)
+        return line_trace if filenames[filename] is not None else None
+    sys.settrace(trace)
+    threading.settrace(trace)
+    try:
+        yield
+    finally:
+        sys.settrace(previous)
+        threading.settrace(previous_thread)
+        _write({"kind": "coverage", "test": item.nodeid,
+                "lines": {p: sorted(hit) for p, hit in lines.items()}})
+
+
 def pytest_sessionfinish(session, exitstatus):
-    loaded = True
-    if _MUTATED:
-        want = os.path.realpath(_MUTATED)
-        loaded = any(os.path.realpath(getattr(m, "__file__", "") or "") == want
-                     for m in list(sys.modules.values()))
-    _write({"kind": "finished", "exitstatus": int(exitstatus), "mutated_loaded": loaded})
+    loaded = {os.path.realpath(getattr(m, "__file__", "") or "") for m in list(sys.modules.values())}
+    all_loaded = all(os.path.realpath(path) in loaded for path in _MUTATED_FILES)
+    _write({"kind": "finished", "exitstatus": int(exitstatus), "mutated_loaded": all_loaded})

@@ -1,13 +1,18 @@
 """The witness, read from the file subpoena-witness writes (docs/ports.md, W;
-schema: docs/witness-event.schema.json). A port of witness.ReadLog."""
+schema: docs/witness-event.schema.json). A port of witness.ReadLog, and of
+the Sinkhole network witness."""
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+import selectors
+import socket
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import IO, List, Optional
+from typing import IO, List, Optional, Tuple, Union
 
 BY_CGROUP = "cgroup"
 
@@ -221,3 +226,215 @@ def read_log(f: IO[str]) -> Log:
         fault(f"witness: the file holds {windows} capture windows, and nothing watched between them; "
               "use one witness run per file")
     return Log(lines, health)
+
+
+# The network witness (pkg/witness's NetworkEvent and Sinkhole). Go's eBPF
+# connect witness (netbpf) is not ported; the sinkhole needs no root and no
+# kernel support.
+
+OP_CONNECT = "connect"  # connect() on an inet socket
+OP_SENDMSG = "sendmsg"  # a send with an explicit destination
+BY_DESTINATION = "destination"
+
+
+# "v4:port" or "[v6]:port", as Go's netip.ParseAddrPort takes them: an
+# unbracketed IPv6 address would split at its last colon into another address.
+_ADDR_PORT = re.compile(r"^(?:\[([0-9A-Fa-f:.]+)\]|([0-9.]+)):([0-9]{1,5})$")
+
+
+@dataclass(frozen=True)
+class AddrPort:
+    """An IP address and port. An IPv4-mapped IPv6 address is unmapped."""
+
+    addr: Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+    port: int
+
+    def __post_init__(self) -> None:
+        # Normalize here, not only in of(): a directly constructed mapped
+        # address would otherwise compare unequal to the same IPv4 address,
+        # and a filter could miss a connection the witness saw.
+        addr, port = self.addr, self.port
+        if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
+            raise ValueError(f"port {port!r} is not 0 to 65535")
+        if not isinstance(addr, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            addr = ipaddress.ip_address(addr)
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
+        object.__setattr__(self, "addr", addr)
+
+    @staticmethod
+    def of(a: Union["AddrPort", str, Tuple[str, int]]) -> "AddrPort":
+        """An AddrPort from itself, a (host, port) pair, or "host:port"
+        ("[v6]:port" for IPv6). Hosts are addresses, never names."""
+        if isinstance(a, AddrPort):
+            return a
+        if isinstance(a, str):
+            m = _ADDR_PORT.match(a)
+            if not m:
+                raise ValueError(f"{a!r} is not host:port ([host]:port for IPv6)")
+            a = (m.group(1) or m.group(2), int(m.group(3)))
+        host, port = a
+        return AddrPort(ipaddress.ip_address(host), port)
+
+    def __str__(self) -> str:
+        if isinstance(self.addr, ipaddress.IPv6Address):
+            return f"[{self.addr}]:{self.port}"
+        return f"{self.addr}:{self.port}"
+
+
+@dataclass
+class NetworkEvent:
+    """One observed outbound connection attempt. It records the attempt, not
+    its outcome: a refused connect still counts, because "the code tried"
+    contradicts "the code was denied"."""
+
+    dest: AddrPort
+    op: str = OP_CONNECT
+    protocol: str = "tcp"
+    pid: int = 0
+    comm: str = ""
+    cgroup: str = ""
+    cgroup_id: int = 0
+    trace_id: str = ""
+    attribution: str = ""
+    seen_at: Optional[datetime] = None
+
+
+class Sinkhole:
+    """A tier-1 network witness: a TCP listener the test stands up as a
+    destination the code under test must never reach, then points that code
+    at. Every connection that arrives is recorded and closed. The application
+    cannot unsay a connection the listener accepted.
+
+    It sees only its own address: "nothing reached the sinkhole" is the claim
+    it can certify. Arrivals carry no PID or cgroup, so dialed() returns every
+    arrival for every trace (BY_DESTINATION).
+
+        s = Sinkhole()
+        ... point the code at s.addr, run it ...
+        s.stop()
+        require_no_dial(s, trace_id)
+    """
+
+    def __init__(self) -> None:
+        self._ln = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self._ln.bind(("127.0.0.1", 0))
+            self._ln.listen(socket.SOMAXCONN)
+            self._ln.setblocking(False)
+            self._wake_r, self._wake_w = socket.socketpair()
+        except OSError as e:
+            self._ln.close()
+            raise OSError(f"sinkhole: {e}") from e
+        self.addr = AddrPort.of(self._ln.getsockname())
+        self._mu = threading.Lock()
+        self._stopping = threading.Lock()  # one stop at a time
+        self._events: List[NetworkEvent] = []
+        self._err: Optional[str] = None
+        self._finished = False
+        self._thread = threading.Thread(target=self._accept, name="subpoena-sinkhole", daemon=True)
+        self._thread.start()
+
+    def _accept(self) -> None:
+        sel = selectors.DefaultSelector()  # not select.select: it fails on an fd over 1023
+        try:
+            sel.register(self._ln, selectors.EVENT_READ)
+            sel.register(self._wake_r, selectors.EVENT_READ)
+            while True:
+                ready = [k.fileobj for k, _ in sel.select()]
+                if self._wake_r in ready:
+                    return
+                n, err = self._drain()
+                self._record(n)
+                if err is not None:
+                    self._fail(f"sinkhole: accept: {err}")
+                    return
+        except Exception as e:  # noqa: BLE001: any failure means arrivals may be unseen
+            self._fail(f"sinkhole: accept: {e}")
+        finally:
+            sel.close()
+
+    def _drain(self) -> "tuple[int, Optional[BaseException]]":
+        """Accept and close every connection already queued, without waiting,
+        and say how many there were."""
+        n = 0
+        while True:
+            try:
+                c, _ = self._ln.accept()
+            except (BlockingIOError, InterruptedError):
+                return n, None
+            except ConnectionAbortedError:
+                n += 1  # completed a handshake, then reset: it still arrived
+                continue
+            except OSError as e:
+                return n, e
+            n += 1  # it arrived; closing our end cannot unsay that
+            try:
+                c.close()
+            except OSError:
+                pass
+
+    def _record(self, n: int) -> None:
+        if not n:
+            return
+        now = datetime.now(timezone.utc)
+        with self._mu:
+            for _ in range(n):
+                self._events.append(NetworkEvent(dest=self.addr, op=OP_CONNECT, protocol="tcp",
+                                                 attribution=BY_DESTINATION, seen_at=now))
+
+    def _fail(self, err: str) -> None:
+        with self._mu:
+            if self._err is None:
+                self._err = err
+
+    def stop(self) -> Optional[str]:
+        """End the capture: stop the accept loop, drain connections the kernel
+        has completed but not yet handed over, close the listener. A
+        connection that finished its handshake before stop is recorded even
+        if its client has already hung up; one arriving during stop may be
+        refused unseen, so stop only after the code under test is done. Call
+        it before dialed() or health(); later calls return the same result."""
+        with self._stopping:
+            return self._stop()
+
+    def _stop(self) -> Optional[str]:
+        with self._mu:
+            if self._finished:
+                return self._err
+        try:
+            self._wake_w.send(b"x")
+        except OSError as e:
+            self._fail(f"sinkhole: stop: {e}")
+        self._thread.join()
+        n, err = _drain(self)
+        self._record(n)
+        if err is not None:
+            self._fail(f"sinkhole: drain (queued connections may be unseen): {err}")
+        self._ln.close()
+        self._wake_r.close()
+        self._wake_w.close()
+        with self._mu:
+            self._finished = True
+            return self._err
+
+    def dialed(self, trace_id: str) -> List[NetworkEvent]:
+        """Every connection that reached the sinkhole, whatever the trace:
+        arrivals cannot be told apart by trace."""
+        with self._mu:
+            return list(self._events)
+
+    def health(self) -> Optional[str]:
+        """None if the capture is complete: stopped, drained, and no accept
+        error along the way. Otherwise the fault."""
+        with self._mu:
+            if self._err is not None:
+                return self._err
+            if not self._finished:
+                return "sinkhole: capture has not stopped"
+            return None
+
+
+def _drain(s: Sinkhole) -> "tuple[int, Optional[BaseException]]":
+    """Sinkhole.stop's drain, replaceable in tests to inject a failed one."""
+    return s._drain()

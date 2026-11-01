@@ -30,6 +30,13 @@ jobs:
         run: |
           cd pkg/cgroup && sudo SUBPOENA_CGROUP_REQUIRE=1 /tmp/cgroup.test -test.count=1 -test.v -test.run 'Real|StartInto'
           cd ../../examples/gateway && sudo SUBPOENA_CGROUP_REQUIRE=1 /tmp/gateway.test -test.count=1 -test.v -test.run 'Real|StartInto'
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e "python[test]"
+      # The Python port's real-cgroup case, as root like the Go ones above.
+      - name: real cgroups (Python)
+        run: sudo SUBPOENA_CGROUP_REQUIRE=1 "$(command -v python)" -m pytest -q -rs python/tests/test_cgroup.py
 
   ebpf:
     runs-on: ubuntu-latest

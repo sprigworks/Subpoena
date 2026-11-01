@@ -11,7 +11,7 @@ progress, and it says so.
 
 | Port | Status |
 | --- | --- |
-| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W and G pass: harness cases, 139 evaluator cases, witness reader and absence checks, cross-examination for pytest. L not yet |
+| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader and absence checks, Python AST lint, cross-examination for pytest with groups, selection and parallel runs |
 | TypeScript | generated names only (`generated/ts/semconv.ts`: `SPAN_AGENT_SESSION_EXEC`, `ATTR_SESSION_ID`, `ATTRIBUTE_TIERS`). Harness not started |
 
 ## What a port is, and what it reuses
@@ -169,15 +169,30 @@ Check: `conformance/witness.yaml` holds files and what a reader must report
 for each (read error, health, spawned PIDs, the no-spawn verdict); the Go
 runner is `conformance/witness_test.go`. `pkg/witness/log_test.go` and
 `pkg/harness/watch_test.go` hold the reader and `SpawnRule` cases a port must
-also pass. Go's network witness (`NoDial`) is not part of the port contract
-yet.
+also pass.
+
+- **W6. Network absence.** `no_dial(witness, trace_id, match)` follows W5's
+  rule over `dialed(trace_id)`: one attempt that `match` selects (none: any
+  attempt) is Fail even from an unhealthy capture; with none, missing or bad
+  health is Inconclusive. `dial_to(addrs)` matches a destination address, a
+  zero port matching every port and an IPv4-mapped address matching its IPv4
+  form. A rule about a host name needs the test to pin what the name
+  resolves to. A port ships the loopback sinkhole: a listener that records
+  every arrival for every trace, drains its accept queue when stopped, and is
+  healthy only once stopped with no accept or drain error. Go's eBPF network
+  witness (`netbpf`) is not ported.
+
+Check: `pkg/witness/sinkhole_test.go` and `pkg/harness/network_test.go`
+hold the cases; the Python runner is `python/tests/test_network.py`.
 
 ## L and G: lint and cross-examination
 
 - **L1.** A port's lint applies the same rules as `lint/README.md`, adapted
   to the language: no telemetry string literals, `collect()` before
   telemetry assertions, a witness call in every enforcement-point test, and
-  provenance markers.
+  provenance markers. Python runs `subpoena-lint <dir>` (or
+  `python -m subpoena.lint <dir>`); its eight rules are tested in
+  `python/tests/test_lint.py`. Registry-drift remains a Go-only subcommand.
 - **G1.** A port's cross-examination removes each statement marked as enforcement and
   requires the suite to fail. A mutant that does not compile or import counts
   as invalid, not killed. As in Go: a guard marker forces an `if` condition;
@@ -187,8 +202,9 @@ yet.
   timeout, is `timeout`; a marker that takes no effect, and an enforcement point with no
   statement marker, are errors; the baseline must be green. Python's
   `subpoena-cross` also refuses a mutant the suite never imported from the
-  copy (an installed package shadowing it) as invalid. Not yet in Python:
-  layer groups, `cross-masked.txt`, `-j` and `-select`.
+  copy (an installed package shadowing it) as invalid. It also implements layer
+  groups, reviewed `cross-masked.txt`, `-j`, `-select` and `-evidence-dir`;
+  `python/tests/test_cross_parity.py` checks these with real pytest runs.
 
 Neither is needed to start. Until a port has them, it says so.
 

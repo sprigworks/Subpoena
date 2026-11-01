@@ -25,7 +25,7 @@ that kind of code in three ways.
    mutant) and requires the suite to go red. A mutant that survives means the
    tests would still pass with the protection gone.
 
-**Status: alpha, v0.1.0-alpha.2.** APIs will change. Go is the reference
+**Status: alpha, v0.1.0-alpha.3.** APIs will change. Go is the reference
 implementation, and Python is a port (see [Languages](#languages)).
 
 ## What a test looks like
@@ -115,9 +115,9 @@ Details in [docs/architecture.md](docs/architecture.md).
 | TraceQL subset evaluator | yes | yes, native (agrees on all 139 shared cases) |
 | Witnessed absence checks (`RequireNoSpawn`, `WatchSpawns`, capture health) | yes | yes, over the witness file |
 | Running a witness (`/proc`, eBPF exec, eBPF network) | yes | reads the file `subpoena-witness` writes |
-| Network absence checks (`RequireNoDial`) | yes | not yet |
-| Cross-examination (`subpoena-cross`) | yes, plus layer groups, `-j` and `-select` | yes, for pytest |
-| Lint (`subpoena-lint`) | yes | not yet |
+| Network absence checks (`RequireNoDial`, `Sinkhole`) | yes | yes, with the loopback `Sinkhole` |
+| Cross-examination (`subpoena-cross`) | yes, plus layer groups, `-j` and `-select` | yes, for pytest, including groups, `-j`, `-select` and evidence files |
+| Lint (`subpoena-lint`) | yes | yes, eight AST rules; registry-drift stays Go-only |
 | Tiers 2 and 3 (OATS, alert rules) | same files, any language | same files, any language |
 
 The Python package is `pip install subpoena`; see [python/README.md](python/README.md).

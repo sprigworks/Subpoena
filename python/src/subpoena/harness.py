@@ -12,10 +12,11 @@ A port of pkg/harness; conformance/harness.yaml holds the cases it must pass.
 
 from __future__ import annotations
 
+import copy
 import enum
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from opentelemetry import trace as trace_api
 from opentelemetry.context import Context
@@ -23,7 +24,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanLimits, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
-from . import traceql
+from . import traceql, witness
 
 DEFAULT_CAPACITY = 10000
 
@@ -130,6 +131,25 @@ class Verdict(enum.Enum):
         return self.value
 
 
+@dataclass
+class Result:
+    """The outcome of a query: the matching traces, and whether the snapshot
+    they came from was complete. Iterating or taking len() goes over the
+    matches."""
+
+    matches: List[traceql.Match]
+    complete: bool
+
+    def count(self) -> int:
+        return len(self.matches)
+
+    def __len__(self) -> int:
+        return len(self.matches)
+
+    def __iter__(self):
+        return iter(self.matches)
+
+
 class Trace:
     """An immutable, queryable snapshot of the captured spans."""
 
@@ -146,10 +166,20 @@ class Trace:
     def span_count(self) -> int:
         return sum(len(t.spans) for t in self._traces)
 
-    def query(self, q: str) -> List[traceql.Match]:
+    def spans(self, trace_id: str) -> List[traceql.Span]:
+        """The captured spans of one trace (empty if it is not in the
+        snapshot)."""
+        for t in self._traces:
+            if t.id == trace_id:
+                return copy.deepcopy(t.spans)
+        return []
+
+    def query(self, q: str) -> Result:
         """Raises traceql.ParseError, or traceql.UnsupportedValueError if q reads
         an attribute that holds an array value in the snapshot."""
-        return traceql.parse(q).eval(self._traces)
+        # Matches hold the snapshot's own spans; hand out copies so a caller
+        # cannot edit the evidence a later verdict reads.
+        return Result(copy.deepcopy(traceql.parse(q).eval(self._traces)), self._complete)
 
     def absent(self, q: str) -> Verdict:
         """Fail on any match, even from an incomplete capture; Pass on none from
@@ -387,3 +417,64 @@ def watch_spawns(addfinalizer, w: Any, trace_id: str, rule: SpawnRule) -> None:
         if errs:
             raise AssertionError("\n".join(errs))
     addfinalizer(finalize)
+
+
+def check_no_spawn(w: Any, trace_id: str) -> Optional[str]:
+    """require_no_spawn without failing the test: the failure message, or None
+    if the check passed, so one failing run can show every kind of evidence."""
+    v, err = no_spawn(w, trace_id)
+    if v is not Verdict.PASS:
+        return f"witness: no spawn for {trace_id}: {v}: {err}"
+    return None
+
+
+# Network checks: absence of a connection attempt, proven by an independent
+# network witness (subpoena.witness.Sinkhole, or anything with
+# dialed(trace_id) and health()). A port of pkg/harness's NoDial,
+# RequireNoDial, CheckNoDial and DialTo.
+
+DialMatch = Callable[[witness.NetworkEvent], bool]
+
+
+def no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) -> "tuple[Verdict, Optional[str]]":
+    """Fail if the witness saw a connection attempt for trace_id that match
+    selects (None: any attempt), even from an unhealthy capture. With none,
+    missing or bad capture health is Inconclusive; Pass needs a healthy
+    witness. Stop the witness first."""
+    hits = [e for e in w.dialed(trace_id) if match is None or match(e)]
+    if hits:
+        return Verdict.FAIL, f"witness saw connection attempts for {trace_id}: {hits}"
+    err = _capture_health(w)
+    if err is not None:
+        return Verdict.INCONCLUSIVE, err
+    return Verdict.PASS, None
+
+
+def require_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) -> None:
+    """Fail the test (AssertionError) unless a healthy witness saw no matching
+    connection attempt for trace_id. Inconclusive fails too."""
+    __tracebackhide__ = True
+    err = check_no_dial(w, trace_id, match)
+    if err is not None:
+        raise AssertionError(err)
+
+
+def check_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) -> Optional[str]:
+    """require_no_dial without failing the test: the failure message, or None
+    if the check passed."""
+    v, err = no_dial(w, trace_id, match)
+    if v is not Verdict.PASS:
+        return f"witness: no dial for {trace_id}: {v}: {err}"
+    return None
+
+
+def dial_to(*addrs: "witness.AddrPort | str | tuple[str, int]") -> DialMatch:
+    """Match attempts to any of the given addresses ("host:port", a (host,
+    port) pair, or an AddrPort). Port 0 matches every port. IPv4-mapped IPv6
+    addresses match their IPv4 form."""
+    want = [witness.AddrPort.of(a) for a in addrs]
+
+    def match(e: witness.NetworkEvent) -> bool:
+        d = witness.AddrPort.of(e.dest)
+        return any(d.addr == a.addr and (a.port == 0 or a.port == d.port) for a in want)
+    return match
