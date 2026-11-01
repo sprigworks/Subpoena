@@ -68,6 +68,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
 KILLED = "enforcement-mutant-killed"
+KILLED_BY_SELF_REPORT = "enforcement-mutant-killed-by-self-report"
 SURVIVED = "enforcement-mutant-survived"
 CRASHED = "enforcement-mutant-crashed"
 INVALID = "enforcement-mutant-invalid"
@@ -483,7 +484,8 @@ def _accept_masked(rep, path):
 
 def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 300.0, log=None,
         _before_mutate: Optional[Callable[[str], None]] = None, *, jobs: int = 1,
-        select: bool = False, evidence_dir: Optional[str] = None) -> Report:
+        select: bool = False, evidence_dir: Optional[str] = None,
+        require_witness: bool = False) -> Report:
     """Cross-examine immutable copies. Selection confirms every non-kill on the full suite.
     Parallel workers share no mutable files. Group runs always use the whole suite.
     """
@@ -628,6 +630,8 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                     log("mutant: " + ", ".join(m.name() for m in members))
                 code, out, records, evidence_file = suite(copy, selected=selected, members=members, label="mutant")
                 outcome, failing, evidence, first = classify(code, records, out)
+                if require_witness and outcome == KILLED and evidence != "witness":
+                    outcome = KILLED_BY_SELF_REPORT
                 return Result(members[0], outcome, failing, evidence, first,
                               "" if outcome == KILLED else _tail(out, 20),
                               with_mutants=list(members[1:]), selected=list(selected or []),
@@ -699,6 +703,7 @@ def _tail(s: str, n: int) -> str:
 # --- command line -----------------------------------------------------------
 
 _EXPLAIN = {
+    KILLED_BY_SELF_REPORT: "require-witness: first failure was not independent witness evidence",
     MASKED: "layer is masked by other surviving layers; requires a reviewed cross-masked.txt entry",
     SURVIVED: "suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced",
     CRASHED: "suite went red only by a crash (an exception other than an assertion, or the process died); "
@@ -713,6 +718,8 @@ _EXPLAIN = {
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="subpoena-cross",
                                  description="Remove each marked enforcement statement and require pytest to fail.")
+    ap.add_argument("--require-witness", action="store_true",
+                    help="accept a kill only when its first failure is independent witness evidence")
     ap.add_argument("target", help="project directory; pytest runs there")
     ap.add_argument("-j", "--jobs", type=int, default=1, help="isolated parallel single-mutant workers")
     ap.add_argument("-select", "--select", action="store_true", help="select tests by per-test line coverage")
@@ -722,7 +729,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     a = ap.parse_args(argv)
     try:
         rep = run(a.target, a.pytest_args, a.timeout, log=lambda s: print(s, file=sys.stderr),
-                  jobs=a.jobs, select=a.select, evidence_dir=a.evidence_dir)
+                  jobs=a.jobs, select=a.select, evidence_dir=a.evidence_dir,
+                  require_witness=a.require_witness)
     except (CrossError, OSError) as e:
         # Exit 1 means a mutant was not killed; a setup fault must never read as that.
         print(f"subpoena-cross: {e}", file=sys.stderr)
@@ -743,9 +751,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  at {m.file}:{m.line}, forced to {m.bypass}: {' '.join(m.removed.split())}")
         else:
             print(f"  at {m.file}:{m.line}, removed: {' '.join(m.removed.split())}")
-        if r.outcome == KILLED:
+        if r.outcome in {KILLED, KILLED_BY_SELF_REPORT}:
             print(f"  suite went red; failing: {', '.join(r.failing)}")
             print(f"  first evidence ({r.evidence}): {r.first_failure}")
+            if r.outcome == KILLED_BY_SELF_REPORT:
+                print("  " + _EXPLAIN[r.outcome])
         else:
             print("  " + _EXPLAIN[r.outcome])
             if r.output and r.outcome != SURVIVED:

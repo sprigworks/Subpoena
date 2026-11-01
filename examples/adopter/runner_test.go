@@ -28,6 +28,7 @@ func rig(t *testing.T) (*harness.Harness, *jobrunner.Runner, *witness.ProcWitnes
 		t.Fatal(err)
 	}
 	t.Cleanup(w.Stop)
+	harness.WatchSpawns(t, w, "", harness.SpawnRule{Allowed: []string{"sleep " + sleepArg}})
 	return h, jobrunner.New(h.Tracer("jobrunner-test")), w
 }
 
@@ -40,10 +41,8 @@ var (
 // invariant holds in the trace, and the witness saw no process.
 func TestUntrustedJobWithSecretsNeverRuns(t *testing.T) {
 	h, r, w := rig(t)
-	_, err := r.Submit(context.Background(), jobrunner.Job{ID: "job-1", WantsSecrets: true, Command: "sleep", Args: []string{sleepArg}})
-	if !errors.Is(err, jobrunner.ErrRejected) {
-		t.Fatalf("want ErrRejected, got %v", err)
-	}
+	harness.WatchSpawns(t, w, "", harness.SpawnRule{Allowed: []string{}})
+	_, submitErr := r.Submit(context.Background(), jobrunner.Job{ID: "job-1", WantsSecrets: true, Command: "sleep", Args: []string{sleepArg}})
 	w.Stop()
 	if err := w.Health(); err != nil {
 		t.Fatalf("witness capture incomplete: %v", err)
@@ -52,10 +51,13 @@ func TestUntrustedJobWithSecretsNeverRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	harness.RequireNoSpawn(t, w, tr.TraceIDs()[0])
+	if !errors.Is(submitErr, jobrunner.ErrRejected) {
+		t.Fatalf("want ErrRejected, got %v", submitErr)
+	}
 	harness.RequireExists(t, tr, rejected)
 	harness.RequireAbsent(t, tr, invariants.MustLoad(invariants.NoRunWithSecretsAfterReject))
 	harness.RequireAbsent(t, tr, anyExec)
-	harness.RequireNoSpawn(t, w, tr.TraceIDs()[0])
 }
 
 // Control: a trusted job with secrets, and an untrusted one without, run, and

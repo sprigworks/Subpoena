@@ -31,9 +31,10 @@ func main() {
 	timeout := flag.Duration("timeout", 5*time.Minute, "bound on each go command, and so on each mutant's test run")
 	evidenceDir := flag.String("evidence-dir", "", "keep each mutant run's full go test -json output in this directory")
 	jobs := flag.Int("j", 1, "single mutants to run at once, each in its own copy of the module")
+	requireWitness := flag.Bool("require-witness", false, "accept a kill only when its first failure is independent witness evidence")
 	sel := flag.Bool("select", false, "run each mutant against only the tests that executed its line (per-test coverage pass first)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: subpoena-cross [-timeout 5m] [-j 1] [-select] [-evidence-dir dir] <dir>")
+		fmt.Fprintln(os.Stderr, "usage: subpoena-cross [-timeout 5m] [-j 1] [-select] [-require-witness] [-evidence-dir dir] <dir>")
 	}
 	flag.Parse()
 	if flag.NArg() != 1 || *timeout <= 0 || *jobs < 1 {
@@ -46,7 +47,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() { <-ctx.Done(); stop() }()
-	rep, err := cross.Run(ctx, cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr, EvidenceDir: *evidenceDir, Jobs: *jobs, Select: *sel})
+	rep, err := cross.Run(ctx, cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr, EvidenceDir: *evidenceDir, Jobs: *jobs, Select: *sel, RequireWitness: *requireWitness})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-cross:", err)
 		os.Exit(2)
@@ -69,9 +70,12 @@ func main() {
 			}
 		}
 		switch r.Outcome {
-		case cross.Killed:
+		case cross.Killed, cross.KilledBySelfReport:
 			fmt.Printf("  suite went red; failing: %s\n", strings.Join(r.Failing, ", "))
 			fmt.Printf("  first evidence (%s): %s\n", r.Evidence, r.FirstFailure)
+			if r.Outcome == cross.KilledBySelfReport {
+				fmt.Println("  require-witness: the first failure was not witness evidence; ask the witness before return values or telemetry")
+			}
 		case cross.Survived:
 			fmt.Println("  suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced")
 		case cross.Masked:

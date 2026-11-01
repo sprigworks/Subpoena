@@ -147,7 +147,7 @@ application emissions.
 ## Cross-examination options
 
 ```
-subpoena-cross -j 4 -select -evidence-dir ./cross-evidence ./my-service
+subpoena-cross --require-witness -j 4 -select -evidence-dir ./cross-evidence ./my-service
 ```
 
 `-j N` (`--jobs N`) runs single mutants in isolated copies, preserving discovery
@@ -197,3 +197,13 @@ Duplicate, ambiguous or malformed entries are errors; stale entries fail the
 run. Never add a group or acceptance entry to hide a testable survivor. Keep
 release checks at `-j 1`, or confirm parallel kills there: contention can alter
 timing-sensitive tests. `--timeout` remains the per-run timeout in seconds.
+
+`--require-witness` accepts a mutant kill only when the first failing assertion
+is tagged `witness:`. A span or return-value failure first is reported as
+`enforcement-mutant-killed-by-self-report` and exits 1; a later witness failure
+cannot redeem it. Without the flag, existing kill classification is unchanged.
+The tags describe the assertion's oracle and remain a reviewed claim: do not
+label testimony as witness evidence. The Level 0 quickstart reads its in-memory
+database directly before asking about spans, but that is `other` evidence;
+its CI uses ordinary cross mode. Production adopters need an independent
+observer appropriate to their real effect before selecting the strict gate.

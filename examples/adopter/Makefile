@@ -11,7 +11,7 @@ lint:
 	go tool subpoena-lint -dead-telemetry .
 
 cross:
-	go tool subpoena-cross .
+	go tool subpoena-cross --require-witness .
 
 check: test lint cross
 

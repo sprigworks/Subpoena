@@ -46,7 +46,7 @@ lint-drift:
 
 # Cross-examination: remove each enforcement statement; the suite must go red.
 cross:
-	go run ./cmd/subpoena-cross ./examples/gateway
+	go run ./cmd/subpoena-cross --require-witness ./examples/gateway
 
 # Subpoena's own fail-closed guards, cross-examined like any adopter's.
 CROSS_SELF := ./pkg/harness ./pkg/witness ./internal/cross ./conformance/oatscapture

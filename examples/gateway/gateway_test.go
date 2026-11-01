@@ -56,6 +56,7 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(w.Stop)
+	harness.WatchSpawns(t, w, "", harness.SpawnRule{Allowed: []string{"sleep " + sleepArg}})
 	return &rig{h: h, gw: gateway.New(h.Tracer("gateway-test")), w: w}
 }
 
@@ -71,12 +72,10 @@ var (
 func TestDeniedSessionNeverExecs(t *testing.T) {
 	r := newRig(t)
 	ctx, sess := r.gw.Open(context.Background(), gateway.User{Name: "mallory"})
+	harness.WatchSpawns(t, r.w, traceOf(ctx), harness.SpawnRule{Allowed: []string{}})
 
 	// (a) open a denied session: a non-admin asks to act on a prod host.
-	_, err := r.gw.Run(ctx, sess, "prod-db1", "sleep", sleepArg)
-	if !errors.Is(err, gateway.ErrDenied) {
-		t.Fatalf("expected ErrDenied, got %v", err)
-	}
+	_, runErr := r.gw.Run(ctx, sess, "prod-db1", "sleep", sleepArg)
 	r.w.Stop() // final poll before asking the witness
 	if err := r.w.Health(); err != nil {
 		t.Fatalf("witness capture incomplete: %v", err)
@@ -88,22 +87,19 @@ func TestDeniedSessionNeverExecs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// (c) the invariant returns zero traces.
+	// Ask the independent witness before return values or telemetry can fail.
+	harness.RequireNoSpawn(t, r.w, traceOf(ctx))
+	if ids := tr.TraceIDs(); len(ids) != 1 {
+		t.Fatalf("expected one trace, got %v", ids)
+	}
+	if !errors.Is(runErr, gateway.ErrDenied) {
+		t.Fatalf("expected ErrDenied, got %v", runErr)
+	}
 	harness.RequireAbsent(t, tr, invariants.MustLoad(invariants.NoExecAfterDeny))
-
-	// (d) the authorize span says the decision was false, and names its policy.
 	harness.RequireExists(t, tr, authorizeDenied)
 	harness.RequireExists(t, tr, fmt.Sprintf(`{ span.%s = %q }`,
 		semconv.AttrAuthorizationPolicyId, gateway.PolicyDenyProdNonAdmin))
-	// Testimony that is consistent with the invariant: no exec span either.
 	harness.RequireAbsent(t, tr, anyExec)
-
-	// (e) the independent witness saw zero spawned processes for this trace.
-	ids := tr.TraceIDs()
-	if len(ids) != 1 {
-		t.Fatalf("expected one trace, got %v", ids)
-	}
-	harness.RequireNoSpawn(t, r.w, ids[0])
 }
 
 func TestAllowedSessionExecsExactlyOnce(t *testing.T) {
@@ -166,8 +162,8 @@ func TestAdminMayActOnProd(t *testing.T) {
 func TestExecRefusesCommandsOutsideAllowlist(t *testing.T) {
 	r := newRig(t)
 	ctx, sess := r.gw.Open(context.Background(), gateway.User{Name: "alice"})
-	if _, err := r.gw.Run(ctx, sess, "dev-1", "rm", "-rf", "/"); err == nil {
-		t.Fatal("rm must not be runnable")
+	if _, err := r.gw.Run(ctx, sess, "dev-1", "printf", "allowlist-probe"); err == nil {
+		t.Fatal("printf must not be runnable")
 	}
 	r.w.Stop()
 	if err := r.w.Health(); err != nil {

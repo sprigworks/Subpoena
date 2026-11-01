@@ -515,3 +515,52 @@ def test_forged_report_is_not_a_kill(tmp_path):
                 f.write(json.dumps({"kind": "finished", "exitstatus": 1, "mutated_loaded": True}) + "\\n")
     """})
     assert r.outcome == CRASHED and rep.failed()
+
+
+@pytest.mark.parametrize("message,evidence", [
+    ("wrong return value", "other"),
+    ("testimony: deny span missing", "testimony"),
+    ("witness: denied side effect occurred", "witness"),
+])
+def test_require_witness_gate(tmp_path, message, evidence):
+    files = {"auth.py": AUTH, "test_auth.py": f'''
+        from auth import DENIED, allow
+        def test_denied():
+            assert allow(False) == DENIED, {message!r}
+    '''}
+    rep, r = outcome(tmp_path, files, require_witness=True)
+    expected = KILLED if evidence == "witness" else cross.KILLED_BY_SELF_REPORT
+    assert r.outcome == expected and r.evidence == evidence
+    assert rep.failed() == (evidence != "witness")
+    assert r.first_failure and r.failing
+
+
+def test_require_witness_cli(tmp_path, capsys):
+    target = project(tmp_path, {"auth.py": AUTH, "test_auth.py": '''
+        from auth import DENIED, allow
+        def test_denied():
+            assert allow(False) == DENIED
+    '''})
+    assert cross.main(["--require-witness", target]) == 1
+    assert cross.KILLED_BY_SELF_REPORT in capsys.readouterr().out
+    assert cross.main([target]) == 0
+
+
+def test_require_witness_rejects_testimony_before_teardown_witness(tmp_path):
+    rep, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": '''
+        import pytest
+        from auth import DENIED, allow
+        seen = []
+        @pytest.fixture
+        def observer(request):
+            def check():
+                if seen and seen[0] != DENIED:
+                    pytest.fail("witness: denied side effect occurred")
+            request.addfinalizer(check)
+        def test_denied(observer):
+            result = allow(False)
+            seen.append(result)
+            assert result == DENIED, "testimony: wrong return value"
+    '''}, require_witness=True)
+    assert r.outcome == cross.KILLED_BY_SELF_REPORT and rep.failed()
+    assert r.evidence == "testimony"

@@ -57,6 +57,8 @@ type Outcome string
 const (
 	// Killed means the mutant made the suite fail: the enforcement is covered.
 	Killed Outcome = "enforcement-mutant-killed"
+	// KilledBySelfReport means a clean failure lacked independent witness evidence.
+	KilledBySelfReport Outcome = "enforcement-mutant-killed-by-self-report"
 	// Survived means the suite stayed green with enforcement removed.
 	Survived Outcome = "enforcement-mutant-survived"
 	// Invalid means the mutant did not compile; it proves nothing either way.
@@ -193,9 +195,11 @@ func (r *Report) Failed() bool {
 
 // Options configure a run.
 type Options struct {
-	Target  string        // directory to cross-examine, inside a Go module
-	Timeout time.Duration // per go command, and so per mutant run; 5 minutes if zero
-	Log     io.Writer     // progress; io.Discard if nil
+	// RequireWitness accepts kills only when their first failure is witness evidence.
+	RequireWitness bool
+	Target         string        // directory to cross-examine, inside a Go module
+	Timeout        time.Duration // per go command, and so per mutant run; 5 minutes if zero
+	Log            io.Writer     // progress; io.Discard if nil
 	// EvidenceDir, if set, keeps the full go test -json output of every
 	// mutant run there, killed ones included, one file per run.
 	EvidenceDir string
@@ -551,6 +555,9 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 				} else {
 					res.Outcome, res.Failing = Killed, failingTests(out)
 					res.Evidence, res.FirstFailure = ev, msg
+					if o.RequireWitness && ev != EvidenceWitness {
+						res.Outcome = KilledBySelfReport //subpoena:enforcement
+					}
 				}
 			}
 		} else {

@@ -28,7 +28,7 @@ jobs:
       - name: subpoena-lint over examples/gateway
         run: go run ./cmd/subpoena-lint -dead-telemetry ./examples/gateway
       - name: cross-examination over examples/gateway
-        run: go run ./cmd/subpoena-cross ./examples/gateway
+        run: go run ./cmd/subpoena-cross --require-witness ./examples/gateway
       - name: cross-examination over Subpoena's own guards
         run: make cross-self
       # Evidence, not a pass bar: the runner's process count, full-scan and
@@ -82,7 +82,9 @@ jobs:
           subpoena-lint --registry ../../generated/python/semconv.py
           --exempt 'unknown-telemetry=Level 0 deliberately uses plain names without a registry'
           .
-      - name: cross-examination (every mutant killed)
+      # Level 0 observes an in-memory dictionary; it has no independent
+      # process/network witness and does not claim strict witness credit.
+      - name: cross-examination (Level 0; ordinary assertion kills)
         run: subpoena-cross .
 
   # examples/adopter is a separate module adopting Subpoena from outside, with

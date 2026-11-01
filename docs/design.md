@@ -122,10 +122,7 @@ func (g *Gateway) Authorize(ctx context.Context, s *Session, host string) (conte
 **Tier 1, unit** ([`gateway_test.go`](../examples/gateway/gateway_test.go), `TestDeniedSessionNeverExecs`, shortened):
 
 ```go
-_, err := r.gw.Run(ctx, sess, "prod-db1", "sleep", sleepArg)
-if !errors.Is(err, gateway.ErrDenied) {
-	t.Fatalf("expected ErrDenied, got %v", err)
-}
+_, runErr := r.gw.Run(ctx, sess, "prod-db1", "sleep", sleepArg)
 r.w.Stop() // final poll before asking the witness
 if err := r.w.Health(); err != nil {
 	t.Fatalf("witness capture incomplete: %v", err)
@@ -134,9 +131,12 @@ tr, err := r.h.Collect(context.Background())
 if err != nil {
 	t.Fatal(err)
 }
+harness.RequireNoSpawn(t, r.w, traceOf(ctx)) // independent evidence decides first
+if !errors.Is(runErr, gateway.ErrDenied) {
+	t.Fatalf("expected ErrDenied, got %v", runErr)
+}
 harness.RequireAbsent(t, tr, invariants.MustLoad(invariants.NoExecAfterDeny)) // structure
 harness.RequireExists(t, tr, authorizeDenied)                                 // the decision was recorded
-harness.RequireNoSpawn(t, r.w, tr.TraceIDs()[0])                              // the evidence
 ```
 
 The three assertions check different things: the structure of the trace, the recorded decision, and what actually ran. Only the last one is evidence. The first two are the application's own account.
