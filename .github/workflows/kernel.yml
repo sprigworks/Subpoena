@@ -48,6 +48,12 @@ jobs:
           cache: true
       - run: uname -r && ls -l /sys/kernel/btf/vmlinux
       - run: make test-ebpf
+      # The real subpoena-witness file through the Go and Python readers.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e "python[test]"
+      - run: make test-witness-parity PYTHON=python
 
   conformance:
     runs-on: ubuntu-latest

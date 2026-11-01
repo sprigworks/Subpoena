@@ -169,7 +169,11 @@ Check: `conformance/witness.yaml` holds files and what a reader must report
 for each (read error, health, spawned PIDs, the no-spawn verdict); the Go
 runner is `conformance/witness_test.go`. `pkg/witness/log_test.go` and
 `pkg/harness/watch_test.go` hold the reader and `SpawnRule` cases a port must
-also pass.
+also pass. Those files are hand-written, so `make test-witness-parity` adds
+cases in the same format built from real `subpoena-witness` output on a real
+kernel (`conformance/witness_kernel_linux_test.go`): the file as written and
+damaged the ways a capture fails. A port runs that file too; Python's runner
+reads it from `SUBPOENA_WITNESS_CAPTURE` (`python/tests/test_witness_cases.py`).
 
 - **W6. Network absence.** `no_dial(witness, trace_id, match)` follows W5's
   rule over `dialed(trace_id)`: one attempt that `match` selects (none: any

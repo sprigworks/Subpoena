@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Witness readers on real evidence.** `make test-witness-parity` runs the
+  real `subpoena-witness` against the real kernel, spawns in one session
+  cgroup and not another, and builds witness-file cases from what it wrote:
+  the file as written and, derived from it, the same file killed before its
+  stop record, with a stop record reporting lost kernel events, cut mid-line,
+  and doubled into two windows. The Go and
+  Python readers must give the verdicts the test knows to be true; until now
+  the Python reader had only seen hand-written files. CI runs it in the
+  kernel workflow's `ebpf` job.
+
 ## v0.1.0-alpha.3 and Python 0.1.0a3 (2026-11-01)
 
 Tagged `v0.1.0-alpha.3` and `python/v0.1.0a3`. Python gains network
