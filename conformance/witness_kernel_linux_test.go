@@ -62,7 +62,7 @@ func TestKernelWitnessCapture(t *testing.T) {
 	}
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "subpoena-witness")
-	if out, err := exec.Command("go", "build", "-o", bin, "../cmd/subpoena-witness").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-buildvcs=false", "-o", bin, "../cmd/subpoena-witness").CombinedOutput(); err != nil {
 		t.Fatalf("build subpoena-witness: %v\n%s", err, out)
 	}
 
