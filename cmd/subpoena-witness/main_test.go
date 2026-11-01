@@ -271,3 +271,27 @@ func TestNetOutMustDifferFromOut(t *testing.T) {
 		}
 	}
 }
+
+// One file spelled two ways: through a symlink, through "..", or relative
+// against absolute. The check compares the opened files, not the spellings.
+func TestNetOutMustDifferFromOutHoweverSpelled(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "x.jsonl")
+	if err := os.Symlink(out, filepath.Join(dir, "link.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	for _, netOut := range []string{filepath.Join(dir, "link.jsonl"), filepath.Join(dir, "sub", "..", "x.jsonl"), "x.jsonl"} {
+		if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r := newRig(t)
+		o := options{out: out, netOut: netOut}
+		if err := run(o, r.witnesses(), r.sig); err == nil || !strings.Contains(err.Error(), "different files") {
+			t.Errorf("%+v: %v", o, err)
+		}
+		if r.ew.started || r.nw.started {
+			t.Errorf("%+v: a witness started", o)
+		}
+	}
+}

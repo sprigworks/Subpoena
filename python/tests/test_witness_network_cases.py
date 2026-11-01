@@ -94,6 +94,7 @@ def test_dialed_maps_every_field():
         "192.0.2.1:9", "sendmsg", "udp", 7, "curl", "subpoena/" + A, 91, A, "cgroup")
     assert e.seen_at.isoformat() == "2026-10-28T12:00:01+00:00"
     assert log.dialed("") == [] and len(log) == 1
+    assert len(log.dialed(A.upper())) == 1, "a trace ID matches whatever its case, as netbpf.Witness.Dialed"
 
 
 def test_dial_to_and_no_dial_work_unchanged():

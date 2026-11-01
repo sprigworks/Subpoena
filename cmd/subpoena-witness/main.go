@@ -94,9 +94,10 @@ var kernel = witnesses{
 // only while mu is held, and mu is held from the witness's Start until the
 // start record is written.
 type sink struct {
-	mu  sync.Mutex
-	enc *json.Encoder
-	err error // the first failed event write
+	mu   sync.Mutex
+	enc  *json.Encoder
+	file *os.File
+	err  error // the first failed event write
 }
 
 func (s *sink) event(v any) {
@@ -109,18 +110,27 @@ func (s *sink) event(v any) {
 
 func openSink(path string) (*sink, func(), error) {
 	if path == "-" {
-		return &sink{enc: json.NewEncoder(os.Stdout)}, func() {}, nil
+		return &sink{enc: json.NewEncoder(os.Stdout), file: os.Stdout}, func() {}, nil
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, nil, err
 	}
-	return &sink{enc: json.NewEncoder(io.Writer(f))}, func() { f.Close() }, nil
+	return &sink{enc: json.NewEncoder(io.Writer(f)), file: f}, func() { f.Close() }, nil
+}
+
+// sameFile reports whether two sinks write to one file, however its paths
+// were spelled (relative, "..", a symlink).
+func sameFile(a, b *sink) bool {
+	ai, err1 := a.file.Stat()
+	bi, err2 := b.file.Stat()
+	return err1 == nil && err2 == nil && os.SameFile(ai, bi)
 }
 
 func run(o options, ws witnesses, stopSig <-chan os.Signal) error {
+	errSameFile := errors.New("-net-out and -out must be different files: a reader of the exec file takes every line that is not a record for an exec")
 	if o.netOut != "" && filepath.Clean(o.netOut) == filepath.Clean(o.out) {
-		return errors.New("-net-out and -out must be different files: a reader of the exec file takes every line that is not a record for an exec")
+		return errSameFile
 	}
 	execOut, closeExec, err := openSink(o.out)
 	if err != nil {
@@ -149,6 +159,9 @@ func run(o options, ws witnesses, stopSig <-chan os.Signal) error {
 			return err
 		}
 		defer closeNet()
+		if sameFile(execOut, netOut) {
+			return errSameFile
+		}
 		nw = ws.net(o.root, func(e netbpf.Event) {
 			if !o.all && e.Attribution != witness.ByCgroup {
 				return

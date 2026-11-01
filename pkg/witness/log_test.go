@@ -48,6 +48,9 @@ func TestSpawnedReturnsEveryLineOfThatTrace(t *testing.T) {
 	if n := len(log.Spawned(traceB)); n != 1 {
 		t.Fatalf("trace B: want 1 exec, got %d", n)
 	}
+	if n := len(log.Spawned(strings.ToUpper(traceA))); n != len(got) {
+		t.Fatalf("a trace ID matches whatever its case, as execbpf.Witness.Spawned: got %d", n)
+	}
 	if n := len(log.Spawned("c0de00000000000000000000000000ff")); n != 0 {
 		t.Fatalf("unknown trace: want none, got %d", n)
 	}

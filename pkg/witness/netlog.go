@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -116,9 +117,10 @@ func (l *NetworkLog) Dialed(traceID string) []NetworkEvent {
 	if traceID == "" {
 		return nil
 	}
+	traceID = strings.ToLower(traceID) // as netbpf.Witness.Dialed
 	var out []NetworkEvent
 	for _, e := range l.events {
-		if e.TraceID == traceID {
+		if strings.ToLower(e.TraceID) == traceID {
 			out = append(out, e)
 		}
 	}

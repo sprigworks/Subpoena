@@ -56,6 +56,9 @@ func TestDialedReturnsEveryAttemptOfThatTrace(t *testing.T) {
 	if b := log.Dialed(traceB); len(b) != 1 || b[0].Dest != netip.MustParseAddrPort("[2001:db8::1]:53") || b[0].Op != OpSendmsg {
 		t.Fatalf("trace B: %+v", b)
 	}
+	if n := len(log.Dialed(strings.ToUpper(traceA))); n != 2 {
+		t.Fatalf("a trace ID matches whatever its case, as netbpf.Witness.Dialed: got %d", n)
+	}
 	if n := len(log.Dialed("")); n != 0 {
 		t.Fatalf("the empty trace ID must match nothing, got %d", n)
 	}

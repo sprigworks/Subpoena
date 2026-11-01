@@ -241,9 +241,10 @@ func (l *Log) Spawned(traceID string) []ProcessEvent {
 	if traceID == "" {
 		return nil
 	}
+	traceID = strings.ToLower(traceID) // as execbpf.Witness.Spawned
 	var out []ProcessEvent
 	for _, ln := range l.lines {
-		if ln.TraceID != traceID {
+		if strings.ToLower(ln.TraceID) != traceID {
 			continue
 		}
 		// subpoena-witness writes argv as the command. Without it, the task

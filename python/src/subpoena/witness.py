@@ -120,7 +120,8 @@ class Log:
         trace ID matches nothing."""
         if not trace_id:
             return []
-        return [self._event(l) for l in self._lines if (l.get("trace_id") or "") == trace_id]
+        trace_id = trace_id.lower()  # as the Go reader and the in-process witness
+        return [self._event(l) for l in self._lines if (l.get("trace_id") or "").lower() == trace_id]
 
     @staticmethod
     def _event(l: dict) -> ProcessEvent:
@@ -515,7 +516,8 @@ class NetworkLog:
         The empty trace ID matches nothing."""
         if not trace_id:
             return []
-        return [self._event(l) for l in self._lines if (l.get("trace_id") or "") == trace_id]
+        trace_id = trace_id.lower()  # as the Go reader and the in-process witness
+        return [self._event(l) for l in self._lines if (l.get("trace_id") or "").lower() == trace_id]
 
     @staticmethod
     def _event(l: dict) -> NetworkEvent:
