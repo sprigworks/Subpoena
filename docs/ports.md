@@ -192,7 +192,8 @@ hold the cases; the Python runner is `python/tests/test_network.py`.
   telemetry assertions, a witness call in every enforcement-point test, and
   provenance markers. Python runs `subpoena-lint <dir>` (or
   `python -m subpoena.lint <dir>`); its eight rules are tested in
-  `python/tests/test_lint.py`. Registry-drift remains a Go-only subcommand.
+  `python/tests/test_lint.py`. Its `registry-drift` subcommand applies Go's rule to
+  Python test files (`python/tests/test_lint_drift.py`).
 - **G1.** A port's cross-examination removes each statement marked as enforcement and
   requires the suite to fail. A mutant that does not compile or import counts
   as invalid, not killed. As in Go: a guard marker forces an `if` condition;

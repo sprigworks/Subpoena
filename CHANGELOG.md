@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **registry-drift for Python, and in CI.** `subpoena-lint registry-drift`
+  in the Python port applies Go's rule to Python test files, through
+  `generated/python/semconv.py` (PyYAML: `subpoena[drift]`). `make lint-drift`
+  runs Go and Python, and the registry workflow now runs both on registry
+  PRs: a finding fails until a maintainer adds `registry-drift-reviewed`.
+
 ## v0.1.0-alpha.3 and Python 0.1.0a3 (2026-11-01)
 
 Tagged `v0.1.0-alpha.3` and `python/v0.1.0a3`. Python gains network

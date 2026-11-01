@@ -40,9 +40,14 @@ lint:
 
 # registry-drift: does a change set touch registry/ and a test that asserts on
 # the changed identifiers? Working tree vs HEAD by default; in CI or on a
-# branch use `make lint-drift BASE=origin/main`.
+# branch use `make lint-drift BASE=origin/main`. Go checks the _test.go files,
+# the Python port the Python test files; both run, and either finding fails.
+# PYTHON needs the port and PyYAML installed (`pip install -e "python[drift]"`).
+PYTHON ?= python3
 lint-drift:
-	go run ./cmd/subpoena-lint registry-drift $(if $(BASE),--base $(BASE)) .
+	go run ./cmd/subpoena-lint registry-drift $(if $(BASE),--base $(BASE)) .; go=$$?; \
+	$(PYTHON) -m subpoena.lint registry-drift $(if $(BASE),--base $(BASE)) .; py=$$?; \
+	[ $$go -eq 0 ] && [ $$py -eq 0 ]
 
 # Cross-examination: remove each enforcement statement; the suite must go red.
 cross:

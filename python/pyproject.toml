@@ -37,6 +37,7 @@ Documentation = "https://github.com/sprigworks/subpoena/blob/main/python/README.
 Changelog = "https://github.com/sprigworks/subpoena/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+drift = ["pyyaml>=6"]
 test = ["pytest>=8", "pyyaml>=6", "pytest-timeout>=2"]
 
 [tool.setuptools.packages.find]
