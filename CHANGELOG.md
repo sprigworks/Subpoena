@@ -8,6 +8,11 @@ Each release below has a short summary. The full text of every entry is in
 - **Changed for users:** Subpoena now needs Go 1.26 or newer. Every `go.mod` says `go 1.26.0`, so a
   module that pins Subpoena as a tool or dependency must be on Go 1.26 too. Go 1.25 no longer gets
   upstream security fixes, and current OpenTelemetry (1.47) already requires 1.26.
+- **registry-drift for Python, and in CI.** `subpoena-lint registry-drift`
+  in the Python port applies Go's rule to Python test files, through
+  `generated/python/semconv.py` (PyYAML: `subpoena[drift]`). `make lint-drift`
+  runs Go and Python, and the registry workflow now runs both on registry
+  PRs: a finding fails until a maintainer adds `registry-drift-reviewed`.
 
 ## v0.1.0-alpha.5 and v0.1.0-alpha.6 (2026-11-07)
 

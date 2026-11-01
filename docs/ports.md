@@ -323,7 +323,8 @@ Check: the row cases in `conformance/witness.yaml`, through both runners, and
   telemetry assertions, a witness call in every enforcement-point test, and
   provenance markers. Python runs `subpoena-lint <dir>` (or
   `python -m subpoena.lint <dir>`); its eight rules are tested in
-  `python/tests/test_lint.py`. Registry-drift remains a Go-only subcommand.
+  `python/tests/test_lint.py`. Its `registry-drift` subcommand applies Go's rule to
+  Python test files (`python/tests/test_lint_drift.py`).
 - **G1.** A port's cross-examination removes each statement marked as enforcement and
   requires the suite to fail. A mutant that does not compile or import counts
   as invalid, not killed. So does a marked return with no honest stand-in: one

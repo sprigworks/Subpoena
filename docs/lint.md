@@ -70,6 +70,7 @@ span-level helper queries that way, from registry constants).
 ```
 go run ./cmd/subpoena-lint registry-drift                      # working tree vs HEAD
 go run ./cmd/subpoena-lint registry-drift --base origin/main   # make lint-drift BASE=origin/main
+subpoena-lint registry-drift --base origin/main                 # the Python port, over Python tests
 ```
 
 The registry is the contract, and a test must not move together with it
@@ -88,6 +89,16 @@ where it left main. An attribute is "changed" if its `type`, `stability`,
 `note` and `examples` are ignored. Identifiers map to Go constants through
 `generated/go/semconv` in the working tree (run `make generate` first). Test
 files are those that differ from the base plus untracked ones.
+
+The Python port (`python -m subpoena.lint registry-drift`) applies the same
+rule and the same output to Python test files (`test_*.py`, `*_test.py`,
+`conftest.py`), mapping identifiers through `generated/python/semconv.py`. Where Python
+cannot resolve a name's origin (a star import, a module loaded with
+`importlib`), a reference by the generated constant's own name counts; a name
+bound to some other module does not.
+`make lint-drift` runs both. In CI the registry workflow runs both against the
+PR base; findings fail the check until a maintainer adds the
+`registry-drift-reviewed` label, and a load error fails it regardless.
 
 Exit status 0 clean, 1 findings, 2 error (not a git repository, unknown base,
 unparseable registry YAML). Not covered: removals (the test would not
