@@ -1,7 +1,7 @@
 // Command subpoena-lint checks a package tree for trace-native testing
 // violations. See lint/README.md for the rules.
 //
-//	subpoena-lint [-registry dir] [-invariants dir] [-dead-telemetry] <dir>...
+//	subpoena-lint [-registry dir] [-invariants dir] [-dead-telemetry] [-exempt rule=reason] <dir>...
 //	subpoena-lint registry-drift [--base ref] [repo]
 //
 // Exit status: 0 clean, 1 findings, 2 usage or load error.
@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/sprigworks/subpoena/internal/lint"
 )
@@ -19,11 +20,23 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "registry-drift" {
 		os.Exit(registryDrift(os.Args[2:]))
 	}
+	exemptions := map[string]string{}
+	flag.Func("exempt", "Level 0 exemption, rule=reason (repeatable)", func(value string) error {
+		rule, reason, ok := strings.Cut(value, "=")
+		if !ok {
+			return fmt.Errorf("exemption must be rule=reason")
+		}
+		if err := lint.ValidateExemption(rule, reason); err != nil {
+			return err
+		}
+		exemptions[rule] = reason
+		return nil
+	})
 	registry := flag.String("registry", "", "directory of the generated semconv package (default: found above the target)")
 	invariants := flag.String("invariants", "", "directory of *.traceql invariants (default: invariants/ found above the target)")
 	dead := flag.Bool("dead-telemetry", false, "also report registry entries no target emits (the targets must be the whole service)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: subpoena-lint [-registry dir] [-invariants dir] [-dead-telemetry] <dir>...")
+		fmt.Fprintln(os.Stderr, "usage: subpoena-lint [-registry dir] [-invariants dir] [-dead-telemetry] [-exempt rule=reason] <dir>...")
 		fmt.Fprintln(os.Stderr, "       subpoena-lint registry-drift [--base ref] [repo]")
 		flag.PrintDefaults()
 	}
@@ -46,7 +59,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	findings, err := lint.RunWith(flag.Args(), reg, lint.Options{InvariantsDir: *invariants, DeadTelemetry: *dead, Warn: os.Stderr})
+	findings, err := lint.RunWith(flag.Args(), reg, lint.Options{InvariantsDir: *invariants, DeadTelemetry: *dead, Warn: os.Stderr, Exemptions: exemptions})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)

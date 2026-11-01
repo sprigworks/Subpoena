@@ -8,6 +8,7 @@ package lint
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/parser"
 	"go/token"
 	"go/types"
@@ -568,7 +569,8 @@ type tree struct {
 	untyped int
 	// wrappers are the Collect wrappers found in the tree, by declaration
 	// position (see findWrappers).
-	wrappers map[token.Pos]bool
+	wrappers    map[token.Pos]bool
+	unwitnessed map[token.Pos]string
 }
 
 // Options tune a Run.
@@ -583,6 +585,21 @@ type Options struct {
 	// Warn, if set, receives a note for each root with files that were not
 	// type-checked.
 	Warn io.Writer
+	// Exemptions waive a deliberate Level 0 rule, with a nonempty reason.
+	Exemptions map[string]string
+}
+
+// ValidateExemption limits waivers to the deliberate Level 0 exceptions.
+func ValidateExemption(rule, reason string) error {
+	switch rule {
+	case RuleUnknownTelemetry, RuleOrphanInvariant:
+	default:
+		return fmt.Errorf("lint: rule %q cannot be exempted", rule)
+	}
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("lint: exemption %s needs a reason", rule)
+	}
+	return nil
 }
 
 // Run lints every .go file under each root and returns findings sorted by position.
@@ -590,11 +607,22 @@ func Run(roots []string, reg *Registry) ([]Finding, error) { return RunWith(root
 
 // RunWith is Run with explicit Options.
 func RunWith(roots []string, reg *Registry, opts Options) ([]Finding, error) {
+	for rule, reason := range opts.Exemptions {
+		if err := ValidateExemption(rule, reason); err != nil {
+			return nil, err
+		}
+		if opts.Warn != nil {
+			fmt.Fprintf(opts.Warn, "subpoena-lint: exempt %s: %s\n", rule, reason)
+		}
+	}
 	var out []Finding
 	var trees []*tree
 	for _, root := range roots {
 		t, err := load(root)
 		if err != nil {
+			return nil, err
+		}
+		if err := validateUnwitnessed(t); err != nil {
 			return nil, err
 		}
 		trees = append(trees, t)
@@ -616,6 +644,25 @@ func RunWith(roots []string, reg *Registry, opts Options) ([]Finding, error) {
 	if opts.DeadTelemetry {
 		out = append(out, checkDeadTelemetry(trees, reg)...)
 	}
+	for rule := range opts.Exemptions {
+		found := false
+		for _, finding := range out {
+			if finding.Rule == rule {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("lint: stale exemption %s suppresses no findings", rule)
+		}
+	}
+	kept := out[:0]
+	for _, finding := range out {
+		if _, exempt := opts.Exemptions[finding.Rule]; !exempt {
+			kept = append(kept, finding)
+		}
+	}
+	out = kept
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i].Pos, out[j].Pos
 		if a.Filename != b.Filename {
@@ -650,6 +697,8 @@ func load(root string) (*tree, error) {
 				return nil
 			}
 		}
+		// Keep AST object resolution enabled: syntaxConstant follows Ident.Obj
+		// to resolve local constants when package type information is unavailable.
 		f, err := parser.ParseFile(t.fset, p, nil, parser.ParseComments)
 		if err != nil {
 			return err
@@ -730,8 +779,8 @@ func calleeName(c *ast.CallExpr) (name, recv string) {
 // ---- Rule 1: unknown-telemetry ---------------------------------------------
 
 // checkUnknownTelemetry flags span names and attribute keys that are not
-// registry constants. A string literal is accepted only if its value equals a
-// registry value; a semconv.X selector is accepted only if X exists.
+// registry constants. Folded string values, including identifiers, are
+// accepted only if they equal a registry value; semconv.X must exist.
 func checkUnknownTelemetry(t *tree, reg *Registry) []Finding {
 	var out []Finding
 	for _, f := range t.files {
@@ -752,7 +801,7 @@ func checkUnknownTelemetry(t *tree, reg *Registry) []Finding {
 			default:
 				return true
 			}
-			if msg := badTelemetryArg(arg, reg); msg != "" {
+			if msg := badTelemetryArg(f, arg, reg); msg != "" {
 				out = append(out, t.finding(RuleUnknownTelemetry, arg.Pos(), "%s", msg))
 			}
 			return true
@@ -761,22 +810,60 @@ func checkUnknownTelemetry(t *tree, reg *Registry) []Finding {
 	return out
 }
 
-func badTelemetryArg(arg ast.Expr, reg *Registry) string {
-	switch a := arg.(type) {
-	case *ast.BasicLit:
-		if a.Kind != token.STRING {
-			return ""
-		}
-		v, err := strconv.Unquote(a.Value)
-		if err == nil && !reg.Values[v] {
-			return fmt.Sprintf("%s is not in the registry; add it to registry/ (with review) and regenerate, do not invent telemetry", a.Value)
-		}
-	case *ast.SelectorExpr:
+func badTelemetryArg(f file, arg ast.Expr, reg *Registry) string {
+	if a, ok := ast.Unparen(arg).(*ast.SelectorExpr); ok {
 		if id, ok := a.X.(*ast.Ident); ok && id.Name == "semconv" && !reg.Names[a.Sel.Name] {
 			return fmt.Sprintf("semconv.%s does not exist in the generated registry package", a.Sel.Name)
 		}
 	}
+	// go/types folds aliases, imported constants and constant expressions.
+	var v constant.Value
+	if f.info != nil {
+		v = f.info.Types[arg].Value
+	}
+	if v == nil {
+		v = syntaxConstant(arg, map[*ast.Object]bool{})
+	}
+	if v != nil && v.Kind() == constant.String {
+		value := constant.StringVal(v)
+		if !reg.Values[value] {
+			return fmt.Sprintf("%q is not in the registry; add it to registry/ (with review) and regenerate, do not invent telemetry", value)
+		}
+	}
 	return ""
+}
+
+// syntaxConstant covers local constants in files excluded from type checking.
+// Object identity preserves lexical shadowing; cycles stay unknown.
+func syntaxConstant(arg ast.Expr, seen map[*ast.Object]bool) constant.Value {
+	switch a := ast.Unparen(arg).(type) {
+	case *ast.BasicLit:
+		if a.Kind == token.STRING {
+			return constant.MakeFromLiteral(a.Value, token.STRING, 0)
+		}
+	case *ast.Ident:
+		obj := a.Obj
+		if obj == nil || obj.Kind != ast.Con || seen[obj] {
+			return nil
+		}
+		seen[obj] = true
+		defer delete(seen, obj)
+		if spec, ok := obj.Decl.(*ast.ValueSpec); ok {
+			for i, id := range spec.Names {
+				if id.Obj == obj && i < len(spec.Values) {
+					return syntaxConstant(spec.Values[i], seen)
+				}
+			}
+		}
+	case *ast.BinaryExpr:
+		if a.Op == token.ADD {
+			left, right := syntaxConstant(a.X, seen), syntaxConstant(a.Y, seen)
+			if left != nil && right != nil && left.Kind() == constant.String && right.Kind() == constant.String {
+				return constant.BinaryOp(left, token.ADD, right)
+			}
+		}
+	}
+	return nil
 }
 
 // ---- Rule 2: no-trace-assertion --------------------------------------------
@@ -873,7 +960,7 @@ func checkUnwitnessedEnforcement(t *tree) []Finding {
 	for _, f := range t.files {
 		for _, d := range f.ast.Decls {
 			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Doc == nil || !commentHas(fd.Doc, MarkerEnforcementPoint) {
+			if !ok || fd.Doc == nil || !commentHas(fd.Doc, MarkerEnforcementPoint) || t.unwitnessed[fd.Pos()] != "" {
 				continue
 			}
 			out = append(out, t.finding(RuleUnwitnessedEnforcement, fd.Pos(),
@@ -881,6 +968,53 @@ func checkUnwitnessedEnforcement(t *tree) []Finding {
 		}
 	}
 	return out
+}
+
+// A waiver belongs to one enforcement function, never to the target tree.
+var unwitnessedRE = regexp.MustCompile(`^//\s*subpoena:unwitnessed(?:\s|$)`)
+
+func validateUnwitnessed(t *tree) error {
+	t.unwitnessed = map[token.Pos]string{}
+	witnessed := false
+	for _, f := range t.files {
+		if f.isTest && asksWitness(f) {
+			witnessed = true
+		}
+	}
+	for _, f := range t.files {
+		placed := map[*ast.Comment]bool{}
+		for _, decl := range f.ast.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Doc == nil {
+				continue
+			}
+			for _, c := range fd.Doc.List {
+				if !unwitnessedRE.MatchString(c.Text) {
+					continue
+				}
+				reason := strings.TrimSpace(unwitnessedRE.ReplaceAllString(c.Text, ""))
+				if reason == "" {
+					return fmt.Errorf("lint: %s: unwitnessed marker needs a reason", t.fset.Position(c.Pos()))
+				}
+				if f.isTest || !commentHas(fd.Doc, MarkerEnforcementPoint) || witnessed {
+					return fmt.Errorf("lint: %s: stale unwitnessed marker: requires an enforcement function with no witness in its target tree", t.fset.Position(c.Pos()))
+				}
+				if t.unwitnessed[fd.Pos()] != "" {
+					return fmt.Errorf("lint: %s: duplicate unwitnessed marker", t.fset.Position(c.Pos()))
+				}
+				t.unwitnessed[fd.Pos()] = reason
+				placed[c] = true
+			}
+		}
+		for _, g := range f.ast.Comments {
+			for _, c := range g.List {
+				if unwitnessedRE.MatchString(c.Text) && !placed[c] {
+					return fmt.Errorf("lint: %s: misplaced unwitnessed marker: attach it to the enforcement function's doc comment", t.fset.Position(c.Pos()))
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func commentHas(g *ast.CommentGroup, marker string) bool {

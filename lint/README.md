@@ -18,7 +18,7 @@ Exit status: 0 clean, 1 findings, 2 usage or load error. The registry package
 
 | Rule | Flags |
 | --- | --- |
-| `unknown-telemetry` | A string literal passed as the span name (`x.Start(ctx, "...")`, `SetName("...")`) or as an attribute key (`attribute.String("...", v)` and the other typed constructors) whose value is not in the registry, or a `semconv.X` selector where `X` does not exist. A literal that equals a registry value is accepted; prefer the constant. |
+| `unknown-telemetry` | A string constant (literal, local identifier, imported constant, or folded expression) passed as the span name (`x.Start(ctx, "...")`, `SetName("...")`) or as an attribute key (`attribute.String("...", v)` and the other typed constructors) whose value is not in the registry, or a `semconv.X` selector where `X` does not exist. A literal that equals a registry value is accepted; prefer the constant. |
 | `no-trace-assertion` | A `_test.go` file that defines tests but never calls `Collect()`. Files with no `Test`/`Benchmark`/`Fuzz`/`Example` function (helpers only) are exempt, and so are files marked `//subpoena:pure_logic` (below). A `pure_logic` file that imports telemetry is flagged instead. |
 | `unwitnessed-enforcement` | A function whose doc comment carries `//subpoena:enforcement_point` when no `_test.go` file in the tree asks a Witness: `Spawned` or `Dialed`, or the harness checks `NoSpawn`, `RequireNoSpawn`, `CheckNoSpawn`, `WatchSpawns`, `NoDial`, `RequireNoDial` and `CheckNoDial`. |
 | `unguarded-absence` | A `RequireAbsent(...)` or `.Absent(...)` call with no `Collect()` call earlier in the same top-level function. |
@@ -154,3 +154,41 @@ same way. When this happens, `subpoena-lint` prints how many files it matched
 by name to stderr. Rule 3 is tree-wide, not per-function. These limits are
 listed here so nobody mistakes them for guarantees. Cross-examination
 (`cmd/subpoena-cross`) is the backstop that checks behaviour rather than shape.
+
+## Explicit Level 0 exemptions
+
+Both linters accept repeatable `-exempt rule=reason` (Python: `--exempt`).
+Only `unknown-telemetry` and `orphan-invariant` can be exempted across a target
+tree. A nonempty reason is required and printed. An exemption that suppresses
+no findings is stale and causes a load error (exit 2). Run Level 0 examples
+separately so their vocabulary exceptions cannot hide findings in another
+adopter. All other rules still run.
+
+An unwitnessed educational enforcement function instead needs a local marker:
+
+```go
+//subpoena:enforcement_point
+//subpoena:unwitnessed Level 0 demonstrates a direct state observation
+func Authorize() { /* ... */ }
+```
+
+Python uses `# subpoena:unwitnessed <reason>` in the comment block immediately
+above the enforcement `def` or its decorators, alongside
+`# subpoena:enforcement_point`. The waiver applies only to that function;
+new enforcement functions still need witnesses. Missing reasons, duplicate or
+misplaced markers, markers on non-enforcement functions, and markers whose
+target tree now asks a witness are load errors. Remove stale markers when
+adding the witness.
+
+The Go quickstart explicitly exempts vocabulary checking. Its inline queries
+are constructed dynamically and currently yield no orphan-invariant findings,
+so no exemption for that rule is allowed. The Python quickstart also exempts only vocabulary: its queries are
+referenced through local variables and yield no orphan-invariant findings.
+Only `delete_account` carries the local witness exception. Its dictionary observation is an educational
+effect check, without a health-reporting process or network witness. The
+gateway, adopter and platform services have no Level 0 exemptions.
+
+Where Go type information is available, constant names are checked by their
+resolved string values, including aliases and imported constants. Files that
+cannot be type-checked retain literal checks and resolve local string constants
+and concatenations by lexical scope; their warning identifies reduced coverage.

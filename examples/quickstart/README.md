@@ -31,8 +31,10 @@ There is no Weaver registry, no generated names and no invgen.
 - The names are not registry-checked. Each name an absence query uses here is
   also required to exist in another test, which catches a typo; a name used
   only in an absence query would let it pass for the wrong reason.
-- No `subpoena-lint`. Its `unknown-telemetry` and `orphan-invariant` rules
-  need a registry and an `invariants/` directory, so lint arrives at Level 1.
+- Lint runs with an explicit `unknown-telemetry` exemption because Level 0
+  has no registry. Its dynamically formatted inline queries are not currently
+  checked by `orphan-invariant`; there is no waiver for that rule. Capture,
+  witness, provider and provenance checks still run.
 
 ## Commands
 
@@ -40,6 +42,7 @@ From this directory (Go 1.25+, a Linux box, no privileges):
 
 ```
 make test     # go test ./...
+make lint     # lint with explicit Level 0 exemptions
 make cross    # go tool subpoena-cross .
 make check    # both
 ```

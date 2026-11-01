@@ -338,3 +338,122 @@ func TestRegistryEnumValueConstantsAreNamesNotTelemetry(t *testing.T) {
 		t.Fatalf("names and keys lost: %+v", r)
 	}
 }
+
+// The identifiers below model the Level 0 naming pattern. Unknown constants
+// must not evade the vocabulary rule, including across files and imports.
+func TestTelemetryConstantValues(t *testing.T) {
+	fs := lintTree(t, map[string]string{
+		"go.mod":         "module fixture\n\ngo 1.25.0\n",
+		"names/names.go": "package names\nconst Bad = \"imported.invented\"\n",
+		"names.go":       "package p\nconst SpanBad = \"local.invented\"\nconst SpanAlias = SpanBad\n",
+		"service.go": `package p
+import "fixture/names"
+type tracer struct{}
+func (tracer) Start(ctx int, name string) {}
+func f(t tracer) {
+ t.Start(0, SpanBad)
+ t.Start(0, SpanAlias)
+ t.Start(0, names.Bad)
+ t.Start(0, "folded." + "invented")
+ const registered = "agent.session.exec"
+ t.Start(0, registered)
+ {
+  const registered = "shadow.invented"
+  t.Start(0, registered)
+ }
+}
+`,
+	})
+	only(t, fs, RuleUnknownTelemetry, 5)
+}
+
+func TestUntypedTelemetryConstantValues(t *testing.T) {
+	fs := lintTree(t, map[string]string{"service.go": `//go:build excluded_fixture
+
+package p
+const Prefix = "invented."
+const SpanX = Prefix + "span"
+func f() { tracer.Start(ctx, SpanX) }
+`})
+	only(t, fs, RuleUnknownTelemetry, 1)
+	if !strings.Contains(fs[0].Msg, "invented.span") {
+		t.Fatal(fs)
+	}
+}
+
+func TestExplicitExemptions(t *testing.T) {
+	dir := writeTree(t, map[string]string{"service.go": `package p
+func f() { tracer.Start(ctx, "invented") }
+`, "service_test.go": "package p\nfunc TestMissing() {}\n"}, t.TempDir())
+	fs, err := RunWith([]string{dir}, registry(t), Options{Exemptions: map[string]string{RuleUnknownTelemetry: "Level 0 has no registry"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fs) != 2 {
+		t.Fatal(fs)
+	}
+	for _, f := range fs {
+		if f.Rule == RuleUnknownTelemetry {
+			t.Fatal(fs)
+		}
+	}
+	for _, exemptions := range []map[string]string{
+		{RuleUnknownTelemetry: " "},
+		{RuleMissingProvenance: "not a Level 0 exception"},
+		{"typo": "invalid rule"},
+	} {
+		if _, err := RunWith([]string{dir}, registry(t), Options{Exemptions: exemptions}); err == nil {
+			t.Fatalf("accepted invalid exemptions %v", exemptions)
+		}
+	}
+}
+
+func TestUnwitnessedSiteExemption(t *testing.T) {
+	dir := writeTree(t, map[string]string{"service.go": `package p
+//subpoena:enforcement_point
+//subpoena:unwitnessed Educational direct state observation
+func first() {}
+//subpoena:enforcement_point
+func second() {}
+`}, t.TempDir())
+	fs, err := Run([]string{dir}, registry(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	only(t, fs, RuleUnwitnessedEnforcement, 1)
+	if !strings.Contains(fs[0].Msg, "second") {
+		t.Fatal(fs)
+	}
+}
+
+func TestInvalidUnwitnessedMarkers(t *testing.T) {
+	for _, source := range []string{
+		"package p\n//subpoena:enforcement_point\n//subpoena:unwitnessed\nfunc f() {}\n",
+		"package p\n//subpoena:unwitnessed reason\nvar x = 1\n",
+		"package p\n//subpoena:unwitnessed reason\nfunc f() {}\n",
+	} {
+		dir := writeTree(t, map[string]string{"service.go": source}, t.TempDir())
+		if _, err := Run([]string{dir}, registry(t)); err == nil {
+			t.Fatalf("accepted invalid marker: %s", source)
+		}
+	}
+	dir := writeTree(t, map[string]string{
+		"service.go":      "package p\n//subpoena:enforcement_point\n//subpoena:unwitnessed reason\nfunc f() {}\n",
+		"service_test.go": "package p\nimport \"x/pkg/witness\"\nfunc TestX() { w.Spawned(\"t\") }\n",
+	}, t.TempDir())
+	if _, err := Run([]string{dir}, registry(t)); err == nil {
+		t.Fatal("accepted stale site marker with witness")
+	}
+}
+
+func TestStaleExemptions(t *testing.T) {
+	for _, rule := range []string{RuleUnknownTelemetry, RuleOrphanInvariant} {
+		dir := writeTree(t, map[string]string{"service.go": "package p\n"}, t.TempDir())
+		if _, err := RunWith([]string{dir}, registry(t), Options{Exemptions: map[string]string{rule: "obsolete reason"}}); err == nil || !strings.Contains(err.Error(), "stale exemption") {
+			t.Fatalf("stale %s exemption: %v", rule, err)
+		}
+	}
+	if err := ValidateExemption(RuleUnwitnessedEnforcement, "too broad"); err == nil {
+		t.Fatal("allowed broad enforcement exemption")
+	}
+}

@@ -231,6 +231,34 @@ class _File:
             line -= 1
         return False
 
+    def unwitnessed_exemptions(self, witnessed):
+        """Validate reasoned waivers attached to exactly one enforcement def."""
+        markers = {line: re.sub(r'#\s*subpoena:unwitnessed(?:\s|$)', '', text, count=1).strip()
+                   for line, (text, _) in self.comments.items()
+                   if re.match(r'#\s*subpoena:unwitnessed(?:\s|$)', text)}
+        exempt, placed = set(), set()
+        for fn in ast.walk(self.tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            line = min([fn.lineno] + [d.lineno for d in fn.decorator_list]) - 1
+            attached = []
+            while line in self.comments and self.comments[line][1]:
+                if line in markers:
+                    attached.append(line)
+                line -= 1
+            for line in attached:
+                if not markers[line]:
+                    raise LintError(f'{self.path}:{line}: unwitnessed marker needs a reason')
+                if self.test or fn not in self.points or witnessed:
+                    raise LintError(f'{self.path}:{line}: stale unwitnessed marker: requires an enforcement function with no witness in its target tree')
+                if fn in exempt:
+                    raise LintError(f'{self.path}:{line}: duplicate unwitnessed marker')
+                exempt.add(fn)
+                placed.add(line)
+        for line in markers.keys() - placed:
+            raise LintError(f'{self.path}:{line}: misplaced unwitnessed marker: attach it above the enforcement def or its decorators')
+        return exempt
+
     def call(self, node, scope, fn, direct, guarded, main):
         symbol = self.resolve(node.func, scope)
         written_name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, 'id', '')
@@ -416,8 +444,14 @@ class _File:
         return self.findings
 
 
-def run(roots, *, registry=None, invariants=None, dead_telemetry=False):
+def run(roots, *, registry=None, invariants=None, dead_telemetry=False, exemptions=None):
     """Lint target trees and return position-sorted findings. Raise LintError on load errors."""
+    exemptions = dict(exemptions or {})
+    for rule, reason in exemptions.items():
+        if rule not in {'unknown-telemetry', 'orphan-invariant'}:
+            raise LintError(f'rule {rule!r} cannot be exempted')
+        if not reason.strip():
+            raise LintError(f'exemption {rule} needs a reason')
     roots = [Path(p).resolve() for p in roots]
     if not roots:
         raise LintError('at least one target is required')
@@ -436,9 +470,13 @@ def run(roots, *, registry=None, invariants=None, dead_telemetry=False):
             findings.extend(source.check())
             emitted.update(source.emitted)
             files.append(source)
-        if not any(f.witnessed for f in files):
-            for source in files:
+        witnessed = any(f.witnessed for f in files)
+        for source in files:
+            exempt = source.unwitnessed_exemptions(witnessed)
+            if not witnessed:
                 for point in source.points:
+                    if point in exempt:
+                        continue
                     source.add('unwitnessed-enforcement', point, 'no test in the target tree asks a witness')
                     findings.append(source.findings[-1])
     if dead_telemetry:
@@ -447,7 +485,10 @@ def run(roots, *, registry=None, invariants=None, dead_telemetry=False):
                 path, node = positions[name]
                 findings.append(Finding(path, node.lineno, node.col_offset + 1, 'dead-telemetry',
                                         f'{name} is not referenced by non-test target code'))
-    return sorted(set(findings), key=lambda f: (str(f.path), f.line, f.column, f.rule))
+    for rule in exemptions:
+        if not any(f.rule == rule for f in findings):
+            raise LintError(f'stale exemption {rule} suppresses no findings')
+    return sorted({f for f in findings if f.rule not in exemptions}, key=lambda f: (str(f.path), f.line, f.column, f.rule))
 
 
 def main(argv=None):
@@ -455,11 +496,21 @@ def main(argv=None):
     parser.add_argument('-registry', '--registry', type=Path, help='generated semconv.py or its directory')
     parser.add_argument('-invariants', '--invariants', type=Path, help='directory containing *.traceql')
     parser.add_argument('-dead-telemetry', '--dead-telemetry', action='store_true')
+    parser.add_argument('--exempt', action='append', default=[], metavar='RULE=REASON',
+                        help='explicit Level 0 exception (repeatable; a reason is required)')
     parser.add_argument('targets', nargs='+', type=Path)
     args = parser.parse_args(argv)
     try:
+        exemptions = {}
+        for value in args.exempt:
+            rule, sep, reason = value.partition('=')
+            if not sep:
+                raise LintError('exemption must be rule=reason')
+            exemptions[rule] = reason
         findings = run(args.targets, registry=args.registry, invariants=args.invariants,
-                       dead_telemetry=args.dead_telemetry)
+                       dead_telemetry=args.dead_telemetry, exemptions=exemptions)
+        for rule, reason in sorted(exemptions.items()):
+            print(f"subpoena-lint: exempt {rule}: {reason}", file=sys.stderr)
     except (LintError, OSError, tokenize.TokenError, RecursionError, ValueError) as exc:
         print(f'subpoena-lint: {exc}', file=sys.stderr)
         return 2
