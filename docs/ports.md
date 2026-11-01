@@ -11,7 +11,7 @@ progress, and it says so.
 
 | Port | Status |
 | --- | --- |
-| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader and absence checks, Python AST lint, cross-examination for pytest with groups, selection and parallel runs |
+| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness readers (exec and network) and absence checks, Python AST lint, cross-examination for pytest with groups, selection and parallel runs |
 | TypeScript | generated names only (`generated/ts/semconv.ts`: `SPAN_AGENT_SESSION_EXEC`, `ATTR_SESSION_ID`, `ATTRIBUTE_TIERS`). Harness not started |
 
 ## What a port is, and what it reuses
@@ -21,7 +21,7 @@ progress, and it says so.
 | Generated names | nothing: Python and TypeScript are generated | `registry/`, Weaver |
 | Tier-1 harness | yes (H1–H6) | — |
 | TraceQL evaluation | optional (Q1–Q3) | `subpoena-traceql`, until it has its own evaluator |
-| Witness | a reader for its tests (W1–W3) | `subpoena-witness`, `pkg/cgroup` conventions |
+| Witness | readers for its tests (W1–W6) | `subpoena-witness`, `pkg/cgroup` conventions |
 | Lint | eventually (L1) | the rule set and its meaning (`lint/README.md`) |
 | Cross-examination | eventually (G1) | the marker and the mutation it applies |
 | Tiers 2 and 3 | nothing | OATS stack, alert rules |
@@ -107,10 +107,13 @@ query. It exits 0 only if every answer matches. CI runs it against
 ## W: the witness
 
 The witness is not ported. `subpoena-witness` (Linux, eBPF) runs beside the
-tests in every language and writes one JSON object per line for each exec. A
-port reads that file. The format is a contract: its schema is
-[witness-event.schema.json](witness-event.schema.json), and a Go test keeps
-the command's output and the schema in step.
+tests in every language and writes one JSON object per line for each exec;
+with `-net-out FILE` it also runs the network witness and writes one line per
+outbound connection attempt to that file (W6). A port reads those files. The
+formats are contracts: their schemas are
+[witness-event.schema.json](witness-event.schema.json) and
+[witness-network-event.schema.json](witness-network-event.schema.json), and
+Go tests keep the command's output and the schemas in step.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -175,7 +178,28 @@ kernel (`conformance/witness_kernel_linux_test.go`): the file as written and
 damaged the ways a capture fails. A port runs that file too; Python's runner
 reads it from `SUBPOENA_WITNESS_CAPTURE` (`python/tests/test_witness_cases.py`).
 
-- **W6. Network absence.** `no_dial(witness, trace_id, match)` follows W5's
+- **W6. Network absence.** The network file is a separate file because a
+  reader of the exec file takes every line that is not a record for an exec.
+  It has its own `start` and `stop` records, written as W4 says once the
+  network witness is attached and when it stops (unhealthy on lost kernel
+  events or a failed write), and by default holds only attempts from a
+  session cgroup (`-all`: every attempt). An attempt is a line with:
+
+  | Field | Type | Meaning |
+  | --- | --- | --- |
+  | `time` | RFC 3339 string | when the attempt was seen |
+  | `op` | string | `connect`, or `sendmsg` (a send with a destination) |
+  | `protocol` | string | `tcp`, `udp`, `icmp`, ..., or the IP protocol number |
+  | `dest` | string | `ip:port`, `[ip]:port` for IPv6, IPv4-mapped written as IPv4, no zone |
+  | `pid`, `host_pid` | integer (int64) | in the witness's PID namespace (0 if not visible), and the initial one |
+  | `comm` | string | kernel task name |
+  | `sock_type` | integer (int64) | 1 stream, 2 datagram, 3 raw, ... |
+  | `cgroup_id`, `cgroup`, `trace_id`, `attribution` | as for an exec | |
+
+  `read_network_log` follows W3 and W4 exactly, with `dialed(trace_id)` in
+  place of `spawned`; a `dest` that is not an IP address and port, in that
+  form, is a read error, and an IPv4-mapped one reads as IPv4.
+  `no_dial(witness, trace_id, match)` follows W5's
   rule over `dialed(trace_id)`: one attempt that `match` selects (none: any
   attempt) is Fail even from an unhealthy capture; with none, missing or bad
   health is Inconclusive. `dial_to(addrs)` matches a destination address, a
@@ -183,11 +207,18 @@ reads it from `SUBPOENA_WITNESS_CAPTURE` (`python/tests/test_witness_cases.py`).
   form. A rule about a host name needs the test to pin what the name
   resolves to. A port ships the loopback sinkhole: a listener that records
   every arrival for every trace, drains its accept queue when stopped, and is
-  healthy only once stopped with no accept or drain error. Go's eBPF network
-  witness (`netbpf`) is not ported.
+  healthy only once stopped with no accept or drain error; it sees only its
+  own address, where the network file sees every attempt from the session.
 
-Check: `pkg/witness/sinkhole_test.go` and `pkg/harness/network_test.go`
-hold the cases; the Python runner is `python/tests/test_network.py`.
+Check: `conformance/witness-network.yaml` holds network files and what a
+reader must report (read error, health, dialed destinations, the no-dial
+verdict); the Go runner is `conformance/witness_test.go`, Python's
+`python/tests/test_witness_network_cases.py`. `make test-witness-parity`
+adds cases from a real `-net-out` file, with a UDP send and a refused TCP
+connect that reach no listener (`SUBPOENA_WITNESS_NETWORK_CAPTURE`).
+`pkg/witness/sinkhole_test.go` and `pkg/harness/network_test.go` hold the
+sinkhole and `no_dial` cases; the Python runner is
+`python/tests/test_network.py`.
 
 ## L and G: lint and cross-examination
 
