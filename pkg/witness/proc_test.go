@@ -176,9 +176,20 @@ func TestLiveProc(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	evs := w.Spawned(tid)
+	// A sighting can pair the new command line with the task name read just
+	// before the exec, or catch the exited child with only its name; refresh
+	// then keeps that name as a second, name-only event for the same pid.
+	// That over-report is deliberate, so only the full-line event must be
+	// unique.
+	var evs []ProcessEvent
+	for _, e := range w.Spawned(tid) {
+		if e.NameOnly() && e.PID == cmd.Process.Pid {
+			continue
+		}
+		evs = append(evs, e)
+	}
 	if len(evs) != 1 {
-		t.Fatalf("want exactly the sleep child (pid %d), got %d events: %s", cmd.Process.Pid, len(evs), brief(evs))
+		t.Fatalf("want exactly the sleep child (pid %d), got %d events: %s", cmd.Process.Pid, len(evs), brief(w.Spawned(tid)))
 	}
 	if evs[0].PID != cmd.Process.Pid || evs[0].Command != sleep+" 0.2" || evs[0].Exe == "" || evs[0].PPID != os.Getpid() {
 		t.Fatalf("unexpected event pid=%d ppid=%d exe=%q cmd=%q (want pid %d, me %d)", evs[0].PID, evs[0].PPID, evs[0].Exe, evs[0].Command, cmd.Process.Pid, os.Getpid())
