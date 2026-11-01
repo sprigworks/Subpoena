@@ -54,6 +54,12 @@ jobs:
           cache: true
       - run: uname -r && ls -l /sys/kernel/btf/vmlinux
       - run: make test-ebpf
+      # The real subpoena-witness file through the Go and Python readers.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e "python[test]"
+      - run: make test-witness-parity PYTHON=python
 
   # The committed eBPF objects must be what bpf/*.c compiles to. A byte compare
   # only holds with one compiler, so this job pins Ubuntu 22.04's clang 14.0.0

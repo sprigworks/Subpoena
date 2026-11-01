@@ -16,7 +16,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: demo all build vet fmt test lint lint-drift cross cross-self conform python test-cgroup test-ebpf test-db generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: demo all build vet fmt test lint lint-drift cross cross-self conform python test-cgroup test-ebpf test-witness-parity test-db generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -105,6 +105,24 @@ test-ebpf:
 # skips otherwise; SUBPOENA_DB_REQUIRE pulls the images and makes a skip a failure.
 test-db:
 	SUBPOENA_DB_REQUIRE=1 go test -count=1 -timeout 30m -v ./pkg/witness/dbproxy/live
+
+# The witness file contract on real evidence (docs/ports.md W3-W5): run the
+# real subpoena-witness in a privileged container, build cases from the file it
+# writes (conformance/witness_kernel_linux_test.go, which runs them through the
+# Go reader), then run the same cases through the Python reader. Neither half
+# can pass by skipping. PYTHON needs the port installed (`make python`).
+PYTHON ?= python3
+WITNESS_CAPTURE := tmp/witness-capture
+test-witness-parity:
+	go mod download
+	rm -rf $(WITNESS_CAPTURE) && mkdir -p $(WITNESS_CAPTURE)
+	docker run --rm --privileged -v "$(CURDIR)":/src -w /src \
+	-v "$$(go env GOMODCACHE)":/go/pkg/mod:ro -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local \
+	-e SUBPOENA_EBPF_REQUIRE=1 -e SUBPOENA_WITNESS_CAPTURE_OUT=/src/$(WITNESS_CAPTURE) $(GO_IMAGE) \
+	sh -c 'go test -count=1 -v -run TestKernelWitnessCapture ./conformance; rc=$$?; \
+	chown -R $(shell id -u):$(shell id -g) $(WITNESS_CAPTURE); exit $$rc'
+	SUBPOENA_WITNESS_CAPTURE=$(CURDIR)/$(WITNESS_CAPTURE)/witness-capture.yaml SUBPOENA_WITNESS_CAPTURE_REQUIRE=1 \
+	$(PYTHON) -m pytest -q -rs python/tests/test_witness_cases.py
 
 # Regenerate the eBPF objects and Go bindings from pkg/witness/{execbpf,netbpf}/bpf/*.c
 # (needs clang). The output is committed so ordinary builds need no clang.
