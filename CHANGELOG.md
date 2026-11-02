@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.1.0-alpha.4 and Python 0.1.0a4 (2026-11-03)
+
+Tagged `v0.1.0-alpha.4` and `python/v0.1.0a4`. Hardens Subpoena's own checks;
+no new language surface.
 
 - **Cross `--require-witness` (Go and Python).** Opt-in strict mode: a clean
   kill whose first evidence is not a witness becomes
