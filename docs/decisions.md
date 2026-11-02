@@ -62,7 +62,7 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 
 ## Registry governance
 
-**Decision:** every PR that touches `registry/` runs `weaver registry check` and `weaver registry diff` against main ([`.github/workflows/registry.yml`](../.github/workflows/registry.yml)) and needs a CODEOWNERS review. A diff that removes or obsoletes an entry also needs the `registry-breaking-approved` label. `subpoena-lint registry-drift` (`make lint-drift`) flags a registry change made together with a test that depends on it, for a human to look at. It does not run in CI yet.
+**Decision:** every PR that touches `registry/` runs `weaver registry check` and `weaver registry diff` against main ([`.github/workflows/registry.yml`](../.github/workflows/registry.yml)) and needs a CODEOWNERS review. A diff that removes or obsoletes an entry also needs the `registry-breaking-approved` label. `subpoena-lint registry-drift` (`make lint-drift`) flags a registry change made together with a test that depends on it, for a human to look at: Go checks `_test.go` files and the Python port Python test files. The registry workflow runs both on every registry PR; a finding needs the `registry-drift-reviewed` label, which a maintainer adds after checking the test was not bent to fit.
 
 **Not built:** the original decision also asked for a version bump on every breaking change, and for each service to declare the registry version it uses (`schema_url`).
 
@@ -86,7 +86,7 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 
 **Decision:** Go first, then Python, then TypeScript. The registry is language-neutral, so names are generated for every language.
 
-**Status:** Go has all three tiers, lint and cross-examination. Python has the harness, the evaluator, the witness reader with its process and network absence checks, session cgroups, the production exporter, cross-examination for pytest with layer groups, and AST lint for the eight L1 rules; registry-drift remains Go-only ([ports.md](ports.md)). TypeScript has generated names only.
+**Status:** Go has all three tiers, lint and cross-examination. Python has the harness, the evaluator, the witness reader with its process and network absence checks, session cgroups, the production exporter, cross-examination for pytest with layer groups, and AST lint for the eight L1 rules with registry-drift ([ports.md](ports.md)). TypeScript has generated names only.
 
 ## A distribution, not an SDK
 

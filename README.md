@@ -117,7 +117,7 @@ Details in [docs/architecture.md](docs/architecture.md).
 | Running a witness (`/proc`, eBPF exec, eBPF network) | yes | reads the file `subpoena-witness` writes |
 | Network absence checks (`RequireNoDial`, `Sinkhole`) | yes | yes, with the loopback `Sinkhole` |
 | Cross-examination (`subpoena-cross`) | yes, plus layer groups, `-j` and `-select` | yes, for pytest, including groups, `-j`, `-select` and evidence files |
-| Lint (`subpoena-lint`) | yes | yes, eight AST rules; registry-drift stays Go-only |
+| Lint (`subpoena-lint`) | yes | yes, eight AST rules and registry-drift over Python tests |
 | Tiers 2 and 3 (OATS, alert rules) | same files, any language | same files, any language |
 
 The Python package is `pip install subpoena`; see [python/README.md](python/README.md).

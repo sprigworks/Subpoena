@@ -105,8 +105,11 @@ witnesses. See [marker validation](../lint/README.md#explicit-level-0-exemptions
 The rules have the meanings in [lint/README.md](../lint/README.md):
 `unknown-telemetry`, `no-trace-assertion`, `unwitnessed-enforcement`,
 `unguarded-absence`, `missing-provenance`, `orphan-invariant`,
-`provider-override`, and opt-in `dead-telemetry`. The separate `registry-drift`
-subcommand remains Go-only. Span methods (`start_span`,
+`provider-override`, and opt-in `dead-telemetry`. The separate
+`subpoena-lint registry-drift [--base ref] [repo]` subcommand flags a Python
+test file (`test_*.py`, `*_test.py`, `conftest.py`) changed together with a
+`registry/` entry it references through `generated/python/semconv.py`; it needs
+PyYAML (`pip install 'subpoena[drift]'`). Span methods (`start_span`,
 `start_as_current_span`, `update_name`), attribute methods (`set_attribute`,
 `set_attributes`) and literal `attributes` dictionaries are checked. As in Go,
 a literal equal to a registry name is accepted; prefer the generated constant.

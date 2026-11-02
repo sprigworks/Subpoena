@@ -8,9 +8,11 @@ from __future__ import annotations
 import argparse
 import ast
 import io
+import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tokenize
 from dataclasses import dataclass
@@ -131,8 +133,9 @@ def _telemetry(symbol):
 
 
 class _File:
-    def __init__(self, path, names, values, invariants):
+    def __init__(self, path, names, values, invariants, star_ok=False):
         self.path, self.names, self.values, self.invariants = path, names, values, invariants
+        self.star_ok = star_ok
         self.text, self.tree = _parse(path)
         self.comments = _comments(self.text)
         self.test = path.name.startswith('test_') or path.name.endswith('_test.py') or path.name == 'conftest.py'
@@ -154,6 +157,8 @@ class _File:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 for alias in node.names:
                     if alias.name == '*':
+                        if self.star_ok:
+                            continue
                         raise LintError(f'{self.path}:{node.lineno}: star imports cannot be resolved by lint')
                     if isinstance(node, ast.Import):
                         name = alias.asname or alias.name.split('.')[0]
@@ -491,7 +496,217 @@ def run(roots, *, registry=None, invariants=None, dead_telemetry=False, exemptio
     return sorted({f for f in findings if f.rule not in exemptions}, key=lambda f: (str(f.path), f.line, f.column, f.rule))
 
 
+# ---- registry-drift ---------------------------------------------------------
+#
+# The registry is the contract; a test must not move together with it. The
+# rule is Go's (internal/lint/drift.go): parse registry/**/*.yaml at the base
+# revision and in the working tree, take the spans and attributes that are new
+# or semantically changed (brief, note and examples are ignored), map them to
+# the generated Python constants, and report Python test files changed since
+# the base that reference one. A flag for a deliberate human look, not a
+# verdict. Not handled, as in Go: removals, string literals, identifiers
+# reached through variables, and non-span, non-attribute groups. Unlike Go, a
+# bare constant name counts when Python cannot resolve where it came from (a
+# star import, a module loaded with importlib); generated names are distinctive.
+
+def _git(top, *args):
+    try:
+        done = subprocess.run(['git', '-C', str(top), *args], capture_output=True, check=False)
+    except OSError as exc:
+        raise LintError(f'git: {exc}') from exc
+    if done.returncode != 0:
+        raise LintError(f'git {" ".join(args)}: {done.stderr.decode(errors="replace").strip()}')
+    return done.stdout
+
+
+def _split_z(data):
+    return [p for p in data.decode('utf-8', errors='surrogateescape').split('\0') if p]
+
+
+def _pick(mapping, *keys):
+    return {k: mapping[k] for k in keys if k in mapping}
+
+
+def _parse_registry_yaml(model, name, data):
+    try:
+        import yaml
+    except ImportError as exc:
+        raise LintError("registry-drift needs PyYAML: pip install 'subpoena[drift]'") from exc
+    try:
+        document = yaml.safe_load(data)
+    except (yaml.YAMLError, ValueError) as exc:  # PyYAML raises ValueError for some bad scalars
+        raise LintError(f'parse {name}: {exc}') from exc
+    # Fail on a shape Go's typed decode would reject: a skipped group could hide a change.
+    def shape(ok, what):
+        if not ok:
+            raise LintError(f'parse {name}: {what}')
+    shape(document is None or isinstance(document, dict), 'top level is not a mapping')
+    groups = (document or {}).get('groups') or []
+    shape(isinstance(groups, list), '`groups` is not a list')
+    for group in groups:
+        shape(isinstance(group, dict), 'a group is not a mapping')
+        attributes = group.get('attributes') or []
+        shape(isinstance(attributes, list) and all(isinstance(a, dict) for a in attributes),
+              f'group {group.get("id")!r}: `attributes` is not a list of mappings')
+        if group.get('type') == 'attribute_group':
+            for a in attributes:
+                if isinstance(a.get('id'), str) and a['id']:
+                    model['attribute'][a['id']] = _canonical(_pick(a, 'type', 'stability', 'deprecated', 'annotations'))
+        elif group.get('type') == 'span' and group.get('name'):
+            model['span'][group['name']] = _canonical({
+                'span_kind': group.get('span_kind', ''), 'stability': group.get('stability', ''),
+                'attributes': [_pick(a, 'ref', 'id', 'requirement_level', 'type', 'annotations') for a in attributes]})
+
+
+def _canonical(value):
+    # Keys are stringified first: YAML 1.1 reads `on`, `no` and dates as non-string keys.
+    def norm(v):
+        if isinstance(v, dict):
+            return sorted([str(k), norm(x)] for k, x in v.items())
+        if isinstance(v, list):
+            return [norm(x) for x in v]
+        return v
+    return json.dumps(norm(value), default=str)
+
+
+def _is_yaml(path):
+    return str(path).endswith(('.yaml', '.yml'))
+
+
+def _python_test(path):
+    name = Path(path).name
+    return name.endswith('.py') and (name.startswith('test_') or name.endswith('_test.py') or name == 'conftest.py')
+
+
+def diff_registry(base, head):
+    """(kind, id, new) for each span or attribute new or changed in head, sorted by kind and id."""
+    out = []
+    for kind in ('attribute', 'span'):
+        for ident, value in head[kind].items():
+            if base[kind].get(ident) != value:
+                out.append((kind, ident, ident not in base[kind]))
+    return sorted(out)
+
+
+def registry_drift(repo='.', base=''):
+    """Run the registry-drift rule over a git repository. Raise LintError on load errors."""
+    try:
+        top = Path(_git(repo, 'rev-parse', '--show-toplevel').decode().strip())
+    except LintError as exc:
+        raise LintError(f'registry-drift needs a git repository: {exc}') from exc
+    rev = 'HEAD'
+    if base and base != 'HEAD':
+        rev = base
+        try:
+            rev = _git(top, 'merge-base', base, 'HEAD').decode().strip()
+        except LintError:
+            try:
+                _git(top, 'rev-parse', '--verify', base + '^{commit}')
+            except LintError:
+                raise LintError(f'unknown base revision {base!r}') from None
+    try:
+        _git(top, 'rev-parse', '--verify', rev + '^{commit}')
+        has_base = True
+    except LintError:
+        has_base = False  # a repository with no commits yet: the base registry is empty
+
+    base_model = {'attribute': {}, 'span': {}}
+    if has_base:
+        for p in _split_z(_git(top, 'ls-tree', '-r', '--name-only', '-z', rev, '--', 'registry')):
+            if _is_yaml(p):
+                _parse_registry_yaml(base_model, f'{rev}:{p}', _git(top, 'show', f'{rev}:{p}'))
+    head_model = {'attribute': {}, 'span': {}}
+    registry_dir = top / 'registry'
+    if registry_dir.is_dir():
+        for directory, dirs, files in os.walk(registry_dir):
+            dirs.sort()
+            for f in sorted(files):
+                path = Path(directory) / f
+                if _is_yaml(path):
+                    try:
+                        data = path.read_bytes()
+                    except OSError as exc:
+                        raise LintError(f'{path}: {exc}') from exc
+                    _parse_registry_yaml(head_model, str(path), data)
+    changes = diff_registry(base_model, head_model)
+    if not changes:
+        return []
+
+    regpath = top / 'generated/python/semconv.py'
+    if not regpath.exists():
+        raise LintError(f'registry-drift: {regpath} not found (run `make generate`)')
+    names, _, _ = _registry(regpath)
+    by_value = {(kind, ident): (kind, ident, new) for kind, ident, new in changes}
+    by_const = {}
+    for name, value in names.items():
+        kind = 'span' if name.startswith('SPAN_') else 'attribute' if name.startswith('ATTR_') else None
+        if kind and (kind, value) in by_value:
+            by_const[name] = by_value[(kind, value)]
+
+    tests = []
+    if has_base:
+        tests += _split_z(_git(top, 'diff', '--name-only', '-z', '--diff-filter=ACMR', rev, '--', '*.py'))
+    tests += _split_z(_git(top, 'ls-files', '--others', '--exclude-standard', '-z', '--', '*.py'))
+    label = base or 'HEAD'
+    findings = []
+    for rel in sorted(set(t for t in tests if _python_test(t))):
+        path = top / rel
+        try:
+            source = _File(path, names, set(), set(), star_ok=True)
+        except LintError:
+            continue  # a test that does not parse is the interpreter's problem
+        scope = dict(source.module_imports)
+        for node in ast.walk(source.tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                scope.update(source.import_bindings([node]))
+        for node in ast.walk(source.tree):
+            if not isinstance(node, (ast.Name, ast.Attribute)) or not isinstance(node.ctx, ast.Load):
+                continue
+            # Through an import of the generated module, or by the constant's own
+            # name where Python cannot say where it came from (a star import, a
+            # module loaded with importlib). A binding to some other module rules it out.
+            symbols = [p for p in source.resolve(node, scope).split('|') if p]
+            if symbols:
+                consts = sorted({p.rsplit('.', 1)[-1] for p in symbols if _semconv(p)} & by_const.keys())
+            else:
+                written = node.attr if isinstance(node, ast.Attribute) else node.id
+                consts = [written] if written in by_const else []
+            if not consts:
+                continue
+            kind, ident, new = by_const[consts[0]]
+            findings.append(Finding(path, node.lineno, node.col_offset + 1, 'registry-drift',
+                f'{ast.unparse(node)} references {kind} "{ident}", which is {"new" if new else "changed"} in the registry/ '
+                f'diff against {label}; the registry is the contract, so confirm the code or test is not being '
+                'bent to fit (needs registry owner review)'))
+    return sorted(set(findings), key=lambda f: (str(f.path), f.line, f.column))
+
+
+def _registry_drift_main(argv):
+    parser = argparse.ArgumentParser(prog='subpoena-lint registry-drift',
+                                     description='Flag Python test files that move together with registry/.')
+    parser.add_argument('-base', '--base', default='',
+                        help='revision to compare against (default HEAD: working tree vs HEAD); '
+                             'a branch ref is resolved to its merge-base with HEAD')
+    parser.add_argument('repo', nargs='?', default='.')
+    args = parser.parse_args(argv)
+    try:
+        findings = registry_drift(args.repo, args.base)
+    except Exception as exc:  # any failure is a load error (2), never findings (1) that a label could waive
+        print(f'subpoena-lint: registry-drift: {type(exc).__name__}: {exc}', file=sys.stderr)
+        return 2
+    for finding in findings:
+        print(finding)
+    if findings:
+        print(f'subpoena-lint registry-drift: {len(findings)} finding(s)', file=sys.stderr)
+        return 1
+    print('subpoena-lint registry-drift: clean')
+    return 0
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ['registry-drift']:
+        return _registry_drift_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('-registry', '--registry', type=Path, help='generated semconv.py or its directory')
     parser.add_argument('-invariants', '--invariants', type=Path, help='directory containing *.traceql')
