@@ -36,6 +36,14 @@ func TestWitnessCases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	runWitnessCases(t, b, 10)
+}
+
+// runWitnessCases runs a file in the witness.yaml format through the Go
+// reader. The kernel capture test (witness_kernel_linux_test.go) feeds it the
+// cases it builds from real subpoena-witness output.
+func runWitnessCases(t *testing.T, b []byte, minCases int) {
+	t.Helper()
 	// KnownFields: a misspelt key (no_spwan) must fail, not drop a check.
 	var wc witnessCases
 	dec := yaml.NewDecoder(bytes.NewReader(b))
@@ -51,7 +59,7 @@ func TestWitnessCases(t *testing.T) {
 		}
 		return id
 	}
-	if len(wc.Cases) < 10 {
+	if len(wc.Cases) < minCases {
 		t.Fatalf("only %d cases", len(wc.Cases))
 	}
 	for _, c := range wc.Cases {
