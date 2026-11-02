@@ -208,3 +208,88 @@ def test_skipped_trees(project):
         (project / name).mkdir()
         (project / name / 'broken.py').write_text('def broken(')
     assert run([project]) == []
+
+
+def test_explicit_level_zero_exemptions_keep_other_rules(project):
+    found = check(project, 'def test_example():\n    t.start_span("invented")\n',
+                  exemptions={'unknown-telemetry': 'Level 0 has no registry'})
+    assert rules(found) == {'missing-provenance', 'no-trace-assertion'}
+
+
+@pytest.mark.parametrize('exemptions', [
+    {'unknown-telemetry': ' '},
+    {'missing-provenance': 'not a Level 0 exception'},
+    {'typo': 'invalid rule'},
+])
+def test_invalid_exemptions_fail(project, exemptions):
+    with pytest.raises(LintError):
+        run([project], exemptions=exemptions)
+
+
+def test_exemption_cli_requires_and_reports_reason(project):
+    (project / "service.py").write_text('t.start_span("invented")\n')
+    result = subprocess.run([sys.executable, '-m', 'subpoena.lint', '--exempt',
+                             'unknown-telemetry=Level 0 has no registry', str(project)],
+                            text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert 'exempt unknown-telemetry: Level 0 has no registry' in result.stderr
+    result = subprocess.run([sys.executable, '-m', 'subpoena.lint', '--exempt',
+                             'unknown-telemetry=', str(project)], text=True, capture_output=True)
+    assert result.returncode == 2
+    assert 'needs a reason' in result.stderr
+
+
+@pytest.mark.parametrize('rule', ['unknown-telemetry', 'orphan-invariant'])
+def test_stale_global_exemption_fails(project, rule):
+    with pytest.raises(LintError, match='stale exemption'):
+        run([project], exemptions={rule: 'obsolete waiver'})
+    result = subprocess.run([sys.executable, '-m', 'subpoena.lint', '--exempt',
+                             f'{rule}=obsolete waiver', str(project)], text=True, capture_output=True)
+    assert result.returncode == 2
+
+
+def test_unwitnessed_cannot_be_globally_exempted(project):
+    with pytest.raises(LintError, match='cannot be exempted'):
+        run([project], exemptions={'unwitnessed-enforcement': 'too broad'})
+
+
+def test_unwitnessed_site_exemption_does_not_waive_second_point(project):
+    found = check(project, """# subpoena:enforcement_point
+# subpoena:unwitnessed Educational dictionary observation
+@decorator
+def first():
+    pass
+
+# subpoena:enforcement_point
+def second():
+    pass
+""", 'service.py')
+    assert len(found) == 1
+    assert found[0].rule == 'unwitnessed-enforcement'
+    assert found[0].line == 8
+
+
+@pytest.mark.parametrize('source,reason', [
+    ('# subpoena:enforcement_point\n# subpoena:unwitnessed\ndef f(): pass', 'needs a reason'),
+    ('# subpoena:unwitnessed reason\nx = 1', 'misplaced'),
+    ('# subpoena:unwitnessed reason\ndef f(): pass', 'stale'),
+    ('# subpoena:enforcement_point\n# subpoena:unwitnessed reason\ndef f(): pass\n'
+     'from subpoena.harness import require_no_spawn\n'
+     'def test_check(): require_no_spawn(w, "t")', 'stale'),
+])
+def test_invalid_site_exemptions_fail(project, source, reason):
+    with pytest.raises(LintError, match=reason):
+        check(project, source, 'test_service.py' if 'test_check' in source else 'service.py')
+
+
+def test_site_marker_becomes_stale_when_witness_added(project):
+    (project / 'service.py').write_text(
+        '# subpoena:enforcement_point\n'
+        '# subpoena:unwitnessed Educational direct state observation\n'
+        'def authorize(): pass\n')
+    (project / 'test_service.py').write_text(
+        '# subpoena:spec_derived\n'
+        'from subpoena.harness import require_no_spawn\n'
+        'def test_denied(): require_no_spawn(w, "t")\n')
+    with pytest.raises(LintError, match='stale unwitnessed marker'):
+        run([project])

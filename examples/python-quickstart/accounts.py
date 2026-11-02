@@ -17,6 +17,7 @@ class Database:
 # The rule: non-admins never reach erase. subpoena-cross forces the check
 # off, then removes the refusal, and requires the tests to fail each time.
 # subpoena:enforcement_point
+# subpoena:unwitnessed Level 0 observes an in-memory dictionary directly, without a health-reporting process or network witness
 def delete_account(db, tracer_provider: TracerProvider, role, account_id):
     tracer = tracer_provider.get_tracer("accounts")
     with tracer.start_as_current_span("delete_account") as request:

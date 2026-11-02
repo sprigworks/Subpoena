@@ -24,7 +24,14 @@ The rule: only an admin may delete an account. `delete_account` in
   kernel-side witness. For a process effect, run `subpoena-witness` and
   check its file with `subpoena.harness.require_no_spawn` or
   `watch_spawns`, which fail closed on bad capture health.
-- Python has no lint yet. Cross-examination (`subpoena-cross .`) tries two
+- CI runs Python lint with an explicit, printed exemption for unregistered
+  telemetry. Queries referenced through local variables currently yield no
+  `orphan-invariant` findings, so that rule has no exemption. The dictionary
+  observation instead of a
+  health-reporting witness is exempted only on `delete_account`, with a
+  reasoned `subpoena:unwitnessed` marker. Other enforcement functions still
+  need witnesses. All other rules remain enabled.
+- Cross-examination (`subpoena-cross .`) tries two
   mutants: the check `role != "admin"` forced to `False`, and the
   `return False` refusal removed. CI requires both killed. Nothing else in
   this code is mutated.

@@ -95,6 +95,13 @@ is parsed with `ast`, never executed. `--registry`, `--invariants` and
 explicit configuration and star imports fail the run. Dot directories,
 `testdata`, `vendor`, `venv`, `__pycache__` and `node_modules` are skipped.
 
+For a deliberate Level 0 exception, repeat `--exempt rule=reason`. Only
+`unknown-telemetry` and `orphan-invariant` permit tree-wide waivers; a nonempty
+reason is required and printed, and an unused waiver errors. An educational
+enforcement function needs its own `# subpoena:unwitnessed <reason>` marker
+immediately above its definition or decorators. Other functions still need
+witnesses. See [marker validation](../lint/README.md#explicit-level-0-exemptions).
+
 The rules have the meanings in [lint/README.md](../lint/README.md):
 `unknown-telemetry`, `no-trace-assertion`, `unwitnessed-enforcement`,
 `unguarded-absence`, `missing-provenance`, `orphan-invariant`,
