@@ -25,7 +25,7 @@ that kind of code in three ways.
    mutant) and requires the suite to go red. A mutant that survives means the
    tests would still pass with the protection gone.
 
-**Status: alpha, v0.1.0-alpha.3.** APIs will change. Go is the reference
+**Status: alpha, v0.1.0-alpha.4.** APIs will change. Go is the reference
 implementation, and Python is a port (see [Languages](#languages)).
 
 ## What a test looks like
