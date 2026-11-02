@@ -14,8 +14,8 @@ tags: [subpoena, invariant, witness, cgroup]
 fixture:
   compose:
     files: ["docker-compose.oats.yml"]
-    app_service: gateway
-    app_port: 8080
+    app_service: witness
+    app_port: 8081
 
 input:
   # Control: an allowed session. Proves the whole pipeline (gateway -> Tempo and
@@ -33,6 +33,12 @@ input:
       Content-Type: application/json
     body: '{"user":"mallory","host":"prod-db1","command":"sleep","args":["0.137"]}'
     status: "403"
+
+  # Close and drain the independent capture before evaluating any absence.
+  # A missing/unhealthy window or witness exit fails this input with HTTP 500.
+  - path: /capture/stop
+    method: POST
+    status: "200"
 
 expected:
   traces:
@@ -52,6 +58,15 @@ expected:
     - traceql: '{ name = "agent.session.exec" && span.subpoena.witness.correlation != "cgroup" }'
       absent: true
   logs:
+    # Both boundaries must reach Loki exactly once. A healthy stop means no
+    # lost kernel events, reader failure or write failure after final drain.
+    # These positive controls gate all absence assertions in this case.
+    - logql: '{service_name="subpoena-witness"} | json | record="start"'
+      count: '== 1'
+    - logql: '{service_name="subpoena-witness"} | json | record="stop"'
+      count: '== 1'
+    - logql: '{service_name="subpoena-witness"} | json | record="stop" and healthy="true" and error=""'
+      count: '== 1'
     # The proof, with no argument matching: exactly one exec ran inside a
     # session cgroup in the whole run, on the whole host. Two requests were
     # made; one was allowed. The count of 1 is both the control (the pipeline

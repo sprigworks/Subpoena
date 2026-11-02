@@ -143,6 +143,13 @@ The three assertions check different things: the structure of the trace, the rec
 
 **Tier 2, integration** ([`oats-case.yaml`](../examples/gateway/oats/oats-case.yaml)). The same invariant runs on Tempo, next to a control request that is allowed. `subpoena-witness` (the `execbpf` witness) reads each exec's cgroup in the kernel and ships its events to Loki. Exactly one exec inside a session cgroup must appear for the whole run: one proves the pipeline is live, and two would mean the denied session ran something. This case needs no argument matching. A second case, [`oats-case-argument.yaml`](../examples/gateway/oats/oats-case-argument.yaml), runs the gateway unprivileged, where it cannot create session cgroups, and tells the witness's events apart by a unique command-line argument instead.
 
+Both cases close the independent witness through the fixture controller
+before judging an absence. Finalization waits for the witness's drain and
+loss accounting, then requires a complete healthy capture with `ReadLog`.
+The cases also require exactly one start and a healthy stop record in Loki.
+A missing stop or degraded kernel capture fails instead of proving silence;
+the controls do not guarantee lossless transport through the log pipeline.
+
 **Tier 3, production** ([`no_exec_after_deny.yaml`](../examples/gateway/alerts/no_exec_after_deny.yaml)). The same string with `| count_over_time()` becomes a Grafana alert. A second rule alerts when authorize spans stop arriving, because "no violations" and "no telemetry" look the same to the invariant. `make alerts` drives both through silence, clean traffic, and a violation. Production has no test witness, so this tier checks the application's own report only. A kernel exec backstop for production is decided but not built ([decisions.md](decisions.md)).
 
 **Cross-examination.** `subpoena-cross` removes each line marked `//subpoena:enforcement`, runs the suite on a copy of the module, and requires red. Removing `Authorize`'s deny return lets the session run, and the suite fails on several counts: no `ErrDenied`, an exec span under the denied authorize span, and a process the witness saw. `Fetch` ([`fetch_test.go`](../examples/gateway/fetch_test.go)) shows why the witness is required. Removing its deny return leaves the authorize span saying "denied" and emits no span for the connection, so every span assertion still passes. Only the sinkhole, which sees the connection arrive, turns the suite red.

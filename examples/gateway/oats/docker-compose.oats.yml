@@ -41,14 +41,14 @@ services:
   witness:
     build:
       context: ../../..
-      dockerfile: cmd/subpoena-witness/Dockerfile
+      dockerfile: examples/gateway/oats/capture/Dockerfile
     pid: host
     privileged: true
-    command:
-      - -all
-      - -cgroup-root=/sys/fs/cgroup/subpoena
-      - -out=/var/run/subpoena-witness/events.json
-      - -ready=/var/run/subpoena-witness/ready
+    # The fixture controller proxies requests, then stops and validates its
+    # witness child on POST /capture/stop before OATS evaluates absences.
+    ports:
+      - "127.0.0.1::8081"
+    stop_grace_period: 25s
     volumes:
       - witness-events:/var/run/subpoena-witness
     healthcheck:

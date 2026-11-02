@@ -49,7 +49,7 @@ cross:
 	go run ./cmd/subpoena-cross ./examples/gateway
 
 # Subpoena's own fail-closed guards, cross-examined like any adopter's.
-CROSS_SELF := ./pkg/harness ./pkg/witness ./internal/cross
+CROSS_SELF := ./pkg/harness ./pkg/witness ./internal/cross ./conformance/oatscapture
 cross-self:
 	@set -e; for t in $(CROSS_SELF); do go run ./cmd/subpoena-cross $$t; done
 

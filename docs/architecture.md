@@ -74,6 +74,14 @@ the test stands up. The kernel sibling is `pkg/witness/netbpf`, in
 `make test-ebpf`; it is not what `cmd/subpoena-witness` runs. See
 `witnesses/README.md` for the gaps in each.
 
+The tier-2 OATS fixture proxies test requests through an independent capture
+controller. Its final input stops and drains the witness before OATS judges
+any absence, and requires a complete healthy start/stop window using
+`witness.ReadLog`. Both OATS cases also require those boundaries and the
+healthy stop in Loki. A lost kernel event or failed capture cannot pass on
+silence. This does not guarantee lossless collector/Loki transport; the
+allowed exec and boundary queries remain positive pipeline controls.
+
 The toy gateway makes this concrete. `Authorize` and `Fetch` are marked
 `//subpoena:enforcement_point`, and the tests do not stop at the span: they ask
 the witness how many processes were spawned, and whether a forbidden address

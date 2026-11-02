@@ -26,6 +26,27 @@ witness ties a process to the session:
   session cgroups, and its exec spans say `argument`. The witness writes every
   exec on the host (`-all`); the case matches the denied command exactly.
 
+Both cases send their requests through the fixture-only `capture` controller
+in the witness container. It starts `subpoena-witness` as a child and forwards
+requests to the gateway only while capture is active. The final input,
+`POST /capture/stop`, waits for all requests to finish, signals the witness,
+and waits for its final drain, kernel loss accounting and stop record. It
+then reads the file with `witness.ReadLog` and requires healthy capture before
+returning HTTP 200. A crash, missing boundary, restart, malformed record,
+lost kernel event, read failure or write failure fails this input. Further
+gateway requests are refused after finalization.
+
+OATS also requires exactly one start, exactly one stop, and a healthy stop
+without an error in Loki alongside the exec queries. Missing shipped records
+therefore cannot prove an absence. This closes the kernel capture before
+judgment rather than taking a periodic health snapshot, which could miss
+loss during the final drain. The controller and its stop endpoint belong
+only to the test fixture; the gateway does not control them.
+
+This guarantees kernel capture health, not lossless transport through the
+collector and Loki. The allowed exec and boundary checks exercise that
+pipeline, but do not prove that the collector delivered every exec line.
+
 ## Verified (2026-10-25)
 
 Linux 6.17, Docker 28.2 (rootful), cgroup v2, OATS v0.10.0 with gcx 1.0.0,
