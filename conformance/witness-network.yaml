@@ -1,0 +1,403 @@
+# The network witness file (docs/ports.md W4, W6): what a port's reader must
+# report for each file written by subpoena-witness -net-out. The format is
+# witness.yaml's, with dialed (dest strings per trace ID, in file order) and
+# no_dial (the verdict of the no-dial check, any destination, per trace ID) in
+# place of spawned and no_spawn.
+traces: {A: c0de00000000000000000000000000a1, B: c0de00000000000000000000000000b2, C: c0de00000000000000000000000000c3}
+cases:
+  # One capture window closed by a healthy stop: absence rests on it.
+  - name: healthy_window
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"sendmsg","protocol":"udp","dest":"10.0.0.1:53","pid":8,"host_pid":4008,"comm":"dig","sock_type":2,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000b2","trace_id":"c0de00000000000000000000000000b2","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    dialed:
+      A: ["192.0.2.1:443"]
+      B: ["10.0.0.1:53"]
+      C: []
+    no_dial:
+      A: Fail
+      C: Pass
+
+  # Attempts with no records (cut short): what was tried still counts, absence is Inconclusive.
+  - name: no_records
+    lines:
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+    health: "no start or stop records"
+    dialed:
+      A: ["192.0.2.1:443"]
+    no_dial:
+      A: Fail
+      C: Inconclusive
+
+  # Nothing at all: no capture health, so no absence.
+  - name: empty_file
+    lines: []
+    health: "no start or stop records"
+    dialed:
+      A: []
+    no_dial:
+      A: Inconclusive
+
+  # The witness was killed, or the file read before it stopped.
+  - name: never_stopped
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+    health: "never stopped"
+    dialed:
+      A: ["192.0.2.1:443"]
+    no_dial:
+      A: Fail
+      C: Inconclusive
+
+  # The stop record says kernel events were lost.
+  - name: lost_events
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":false,"error":"netbpf: lost 3 kernel event(s)"}'
+    health: "lost 3 kernel event(s)"
+    dialed:
+      A: []
+    no_dial:
+      A: Inconclusive
+
+  # A stop that claims health but carries an error is unhealthy.
+  - name: healthy_with_error
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"error":"write: disk full"}'
+    health: "disk full"
+    dialed:
+      A: []
+    no_dial:
+      A: Inconclusive
+
+  # An attempt before any start: written when nothing vouched for the capture.
+  - name: attempt_outside_window
+    lines:
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "outside any capture window"
+    dialed:
+      A: ["192.0.2.1:443"]
+    no_dial:
+      A: Fail
+      C: Inconclusive
+
+  # Two runs appended to one file, each closed by a healthy stop.
+  - name: two_windows
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:01:01Z","op":"connect","protocol":"tcp","dest":"198.51.100.7:80","pid":9,"host_pid":4009,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:01:09Z","record":"stop","healthy":true}'
+    health: "2 capture windows"
+    dialed:
+      A: ["192.0.2.1:443", "198.51.100.7:80"]
+    no_dial:
+      A: Fail
+      C: Inconclusive
+
+  # An attempt after one stop and before the next start.
+  - name: attempt_between_windows
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "outside any capture window"
+    dialed:
+      A: ["192.0.2.1:443"]
+    no_dial:
+      C: Inconclusive
+
+  # A second start before the first window stopped.
+  - name: start_inside_window
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "still open"
+    dialed:
+      A: []
+    no_dial:
+      A: Inconclusive
+
+  # A stop with no window open.
+  - name: stop_without_start
+    lines:
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "no capture open"
+    dialed:
+      A: []
+    no_dial:
+      A: Inconclusive
+
+  # A record kind this reader does not know is an error, never skipped.
+  - name: unknown_record
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time": "2026-10-28T12:00:05Z", "record": "pause"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "unknown record"
+
+  # A record must carry its time.
+  - name: record_without_time
+    lines:
+      - '{"record": "start"}'
+    read_error: "no time"
+
+  # An attempt must carry its time.
+  - name: attempt_without_time
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "no time"
+
+  # healthy of the wrong type: the read fails.
+  - name: healthy_not_a_boolean
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":"yes"}'
+    read_error: "line 2"
+
+  # A line cut mid-object: the read fails, it is never skipped.
+  - name: malformed_line
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect",'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # NaN is not JSON: the read fails.
+  - name: nan_value
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":NaN,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # A record at the zero time has no time.
+  - name: zero_time
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"0001-01-01T00:00:00Z","record":"stop","healthy":true}'
+    read_error: "no time"
+
+  # A time without a zone is not RFC 3339: the read fails.
+  - name: time_without_zone
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # A numeric time: the read fails.
+  - name: time_not_a_string
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":5,"record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # A key that differs from a known one only by case is refused, so no reader takes it for that field.
+  - name: key_in_another_case
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","Trace_ID":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "another case"
+
+  # A network field in another case is refused too.
+  - name: sock_type_in_another_case
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","SOCK_TYPE":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "another case"
+
+  # A stop that does not say healthy is unhealthy.
+  - name: stop_without_healthy
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop"}'
+    health: "capture unhealthy"
+    no_dial:
+      C: Inconclusive
+
+  # A healthy second window does not clear the first window's fault.
+  - name: unhealthy_then_healthy
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:05Z","record":"stop","healthy":false,"error":"ring buffer lost 3 events"}'
+      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:01:09Z","record":"stop","healthy":true}'
+    health: "capture unhealthy"
+    no_dial:
+      C: Inconclusive
+
+  # A start after the last stop: that capture never stopped.
+  - name: trailing_start
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false}'
+    health: "never stopped"
+    no_dial:
+      C: Inconclusive
+
+  # An integer outside the range its field is decoded into (uint64 for cgroup_id): the read fails.
+  - name: cgroup_id_negative
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":-1,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # int64 for sock_type: one past its maximum fails the read.
+  - name: sock_type_past_int64
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":9223372036854775808,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # A string field of the wrong type fails the read.
+  - name: op_not_a_string
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":1,"protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # A null field is the same as an absent one: the attempt still counts.
+  - name: integer_null
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":null,"host_pid":4007,"comm":"curl","sock_type":null,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    dialed:
+      A: ["192.0.2.1:443"]
+    no_dial:
+      A: Fail
+      C: Pass
+
+  # An op this reader does not know is still an attempt: over-report, never filter.
+  - name: unknown_op
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"sendmmsg","protocol":"132","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    dialed:
+      A: ["192.0.2.1:443"]
+    no_dial:
+      A: Fail
+
+  # IPv6 is bracketed.
+  - name: ipv6_dest
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"[2001:db8::1]:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    dialed:
+      A: ["[2001:db8::1]:443"]
+    no_dial:
+      A: Fail
+
+  # An IPv4-mapped IPv6 address is read as its IPv4 form.
+  - name: ipv4_mapped_dest
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"[::ffff:192.0.2.1]:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    dialed:
+      A: ["192.0.2.1:443"]
+    no_dial:
+      A: Fail
+
+  # A dest that is not ip:port fails the read: a host name.
+  - name: dest_host_name
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"example.com:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "is not ip:port"
+
+  # A dest with no port fails the read.
+  - name: dest_without_port
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "is not ip:port"
+
+  # A port past 65535 fails the read.
+  - name: dest_port_out_of_range
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"192.0.2.1:65536","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "is not ip:port"
+
+  # IPv6 without brackets fails the read.
+  - name: dest_ipv6_unbracketed
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"2001:db8::1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "is not ip:port"
+
+  # IPv4 in brackets fails the read.
+  - name: dest_ipv4_bracketed
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"[192.0.2.1]:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "is not ip:port"
+
+  # A zone fails the read: the witness never writes one.
+  - name: dest_with_zone
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":"[fe80::1%eth0]:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "is not ip:port"
+
+  # A missing dest fails the read.
+  - name: dest_missing
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "is not ip:port"
+
+  # dest of the wrong type fails the read.
+  - name: dest_not_a_string
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","op":"connect","protocol":"tcp","dest":443,"pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # Fields the reader does not know are ignored, exec fields included.
+  - name: unknown_fields
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","args":["x"],"added_later":{"a":1},"op":"connect","protocol":"tcp","dest":"192.0.2.1:443","pid":7,"host_pid":4007,"comm":"curl","sock_type":1,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    dialed:
+      A: ["192.0.2.1:443"]
+    no_dial:
+      A: Fail

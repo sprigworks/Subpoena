@@ -34,6 +34,7 @@ def test_spawned_returns_every_line_of_that_trace():
     assert got[1].seen_at.microsecond == 123456
     assert len(log.spawned(B)) == 1
     assert log.spawned("c0de00000000000000000000000000ff") == []
+    assert [e.pid for e in log.spawned(A.upper())] == [7, 9], "a trace ID matches whatever its case"
 
 
 def test_command_source_says_line_or_name():

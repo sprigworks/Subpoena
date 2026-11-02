@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Kernel network evidence for every language.** `subpoena-witness
+  -net-out FILE` also runs the eBPF network witness and writes one line per
+  outbound connection attempt (`witness.NetLine`, schema
+  `docs/witness-network-event.schema.json`) to its own file, with its own
+  start and stop records; the exec file is unchanged. If the network witness
+  cannot start, the command fails. Go reads the file with
+  `witness.ReadNetworkLog`, Python with `subpoena.witness.read_network_log`,
+  under the exec file's window and health rules (now shared code in both);
+  both are a network witness for `NoDial` / `no_dial`, so Python sees a dial
+  the loopback sinkhole would miss. `conformance/witness-network.yaml` holds
+  the cases, and `make test-witness-parity` adds cases from a real network
+  file.
+
 - **Witness readers on real evidence.** `make test-witness-parity` runs the
   real `subpoena-witness` against the real kernel, spawns in one session
   cgroup and not another, and builds witness-file cases from what it wrote:

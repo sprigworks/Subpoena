@@ -1,16 +1,22 @@
 // Command subpoena-witness runs the kernel-side process witness
 // (pkg/witness/execbpf) and writes one JSON line per exec, for shipping to a
-// log store (tier 2 sends them to Loki). Needs root, cgroup v2 and BTF.
+// log store (tier 2 sends them to Loki). With -net-out it also runs the
+// network witness (pkg/witness/netbpf) and writes one JSON line per outbound
+// connection attempt to that file. Needs root, cgroup v2 and BTF.
 //
-//	subpoena-witness [-cgroup-root dir] [-all] [-out file] [-ready file]
+//	subpoena-witness [-cgroup-root dir] [-all] [-out file] [-net-out file] [-ready file]
 //	subpoena-witness -check-ready file   # exit 0 once the witness is attached
 //
-// By default only execs inside a session cgroup are written; -all writes every
-// exec on the machine, which an argument-based witness query needs. The line
-// format is witness.Line (schema: docs/witness-event.schema.json). A "start"
-// record (witness.Record) opens the file's capture window once the program is
-// attached, and a "stop" record closes it with the capture's health: whether
-// kernel events were lost, or a read or write failed.
+// By default only events inside a session cgroup are written; -all writes
+// every exec and attempt on the machine, which an argument-based witness
+// query needs. The exec line format is witness.Line (schema:
+// docs/witness-event.schema.json), the network line format witness.NetLine
+// (docs/witness-network-event.schema.json). In each file a "start" record
+// (witness.Record) opens the capture window once its program is attached,
+// and a "stop" record closes it with the capture's health: whether kernel
+// events were lost, or a read or write failed. The two kinds of line go to
+// separate files because a reader of the exec file takes every line that is
+// not a record for an exec.
 package main
 
 import (
@@ -19,8 +25,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,13 +36,16 @@ import (
 
 	"github.com/sprigworks/subpoena/pkg/witness"
 	"github.com/sprigworks/subpoena/pkg/witness/execbpf"
+	"github.com/sprigworks/subpoena/pkg/witness/netbpf"
 )
 
 func main() {
-	root := flag.String("cgroup-root", "", "parent of the session cgroups (default $SUBPOENA_CGROUP_ROOT or /sys/fs/cgroup/subpoena)")
-	all := flag.Bool("all", false, "write every exec, not only those in a session cgroup")
-	out := flag.String("out", "-", "file to append JSON lines to (- for stdout)")
-	ready := flag.String("ready", "", "file to create once the program is attached")
+	var o options
+	flag.StringVar(&o.root, "cgroup-root", "", "parent of the session cgroups (default $SUBPOENA_CGROUP_ROOT or /sys/fs/cgroup/subpoena)")
+	flag.BoolVar(&o.all, "all", false, "write every exec and attempt, not only those in a session cgroup")
+	flag.StringVar(&o.out, "out", "-", "file to append exec JSON lines to (- for stdout)")
+	flag.StringVar(&o.netOut, "net-out", "", "also run the network witness and append its JSON lines to this file (- for stdout)")
+	flag.StringVar(&o.ready, "ready", "", "file to create once every witness is attached")
 	checkReady := flag.String("check-ready", "", "exit 0 if this ready file exists, 1 otherwise (for container health checks)")
 	flag.Parse()
 
@@ -44,83 +55,184 @@ func main() {
 		}
 		return
 	}
-	if err := run(*root, *all, *out, *ready); err != nil {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	if err := run(o, kernel, sig); err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-witness:", err)
 		os.Exit(1)
 	}
 }
 
-func run(root string, all bool, out, ready string) error {
-	var dst io.Writer = os.Stdout
-	if out != "-" {
-		f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		dst = f
+type options struct {
+	root, out, netOut, ready string
+	all                      bool
+}
+
+// capturer is a kernel witness: execbpf's or netbpf's.
+type capturer interface {
+	Start() error
+	Stop() error
+}
+
+// witnesses builds the two witnesses, so a test can run the command without
+// loading eBPF.
+type witnesses struct {
+	exec func(root string, on func(execbpf.Event)) capturer
+	net  func(root string, on func(netbpf.Event)) capturer
+}
+
+var kernel = witnesses{
+	exec: func(root string, on func(execbpf.Event)) capturer {
+		return execbpf.New(execbpf.Config{CgroupRoot: root, NoRetain: true, OnEvent: on})
+	},
+	net: func(root string, on func(netbpf.Event)) capturer {
+		return netbpf.New(netbpf.Config{CgroupRoot: root, NoRetain: true, OnEvent: on})
+	},
+}
+
+// sink is one output file. mu orders its lines: an event line is written
+// only while mu is held, and mu is held from the witness's Start until the
+// start record is written.
+type sink struct {
+	mu   sync.Mutex
+	enc  *json.Encoder
+	file *os.File
+	err  error // the first failed event write
+}
+
+func (s *sink) event(v any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.enc.Encode(v); err != nil && s.err == nil {
+		s.err = err
 	}
-	var mu sync.Mutex
-	enc := json.NewEncoder(dst)
-	var writeErr error
-	w := execbpf.New(execbpf.Config{
-		CgroupRoot: root,
-		NoRetain:   true,
-		OnEvent: func(e execbpf.Event) {
-			if e.Kind != execbpf.KindExec || (!all && e.Attribution != witness.ByCgroup) {
-				return
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			args := e.Args
-			if args == nil {
-				args = []string{} // the schema requires an array, never null
-			}
-			if err := enc.Encode(witness.Line{
-				Time: e.Time.UTC(), PID: e.PID, PPID: e.PPID, HostPID: e.HostPID,
-				Comm: e.Comm, Exe: e.Exe, Command: strings.Join(args, " "), Args: args,
-				CgroupID: e.CgroupID, Cgroup: e.Cgroup, TraceID: e.TraceID, Attribution: string(e.Attribution),
-			}); err != nil && writeErr == nil {
-				writeErr = err
-			}
-		},
-	})
-	// The start and stop records bound the capture. A reader trusts an
-	// absence only inside a window closed by a healthy stop, so a witness
-	// killed before it could write one leaves a file that proves nothing.
-	// mu is held from Start until the start record is written: Start hands
-	// events to a reader goroutine, and an exec line written before the
-	// start record would read as outside the window and fail a healthy run.
-	mu.Lock()
-	if err := w.Start(); err != nil {
-		mu.Unlock()
+}
+
+func openSink(path string) (*sink, func(), error) {
+	if path == "-" {
+		return &sink{enc: json.NewEncoder(os.Stdout), file: os.Stdout}, func() {}, nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &sink{enc: json.NewEncoder(io.Writer(f)), file: f}, func() { f.Close() }, nil
+}
+
+// sameFile reports whether two sinks write to one file, however its paths
+// were spelled (relative, "..", a symlink).
+func sameFile(a, b *sink) bool {
+	ai, err1 := a.file.Stat()
+	bi, err2 := b.file.Stat()
+	return err1 == nil && err2 == nil && os.SameFile(ai, bi)
+}
+
+func run(o options, ws witnesses, stopSig <-chan os.Signal) error {
+	errSameFile := errors.New("-net-out and -out must be different files: a reader of the exec file takes every line that is not a record for an exec")
+	if o.netOut != "" && filepath.Clean(o.netOut) == filepath.Clean(o.out) {
+		return errSameFile
+	}
+	execOut, closeExec, err := openSink(o.out)
+	if err != nil {
 		return err
 	}
-	err := enc.Encode(witness.Record{Time: time.Now().UTC(), Record: witness.RecordStart})
-	mu.Unlock()
+	defer closeExec()
+	ew := ws.exec(o.root, func(e execbpf.Event) {
+		if e.Kind != execbpf.KindExec || (!o.all && e.Attribution != witness.ByCgroup) {
+			return
+		}
+		args := e.Args
+		if args == nil {
+			args = []string{} // the schema requires an array, never null
+		}
+		execOut.event(witness.Line{
+			Time: e.Time.UTC(), PID: e.PID, PPID: e.PPID, HostPID: e.HostPID,
+			Comm: e.Comm, Exe: e.Exe, Command: strings.Join(args, " "), Args: args,
+			CgroupID: e.CgroupID, Cgroup: e.Cgroup, TraceID: e.TraceID, Attribution: string(e.Attribution),
+		})
+	})
+	var netOut *sink
+	var nw capturer
+	if o.netOut != "" {
+		var closeNet func()
+		if netOut, closeNet, err = openSink(o.netOut); err != nil {
+			return err
+		}
+		defer closeNet()
+		if sameFile(execOut, netOut) {
+			return errSameFile
+		}
+		nw = ws.net(o.root, func(e netbpf.Event) {
+			if !o.all && e.Attribution != witness.ByCgroup {
+				return
+			}
+			netOut.event(witness.NetLine{
+				Time: e.Time.UTC(), Op: string(e.Op), Protocol: e.Protocol,
+				Dest: netip.AddrPortFrom(e.Dest.Addr().Unmap(), e.Dest.Port()).String(),
+				PID:  e.PID, HostPID: e.HostPID, Comm: e.Comm, SockType: e.SockType,
+				CgroupID: e.CgroupID, Cgroup: e.Cgroup, TraceID: e.TraceID, Attribution: string(e.Attribution),
+			})
+		})
+	}
+
+	// The start and stop records bound each file's capture. A reader trusts
+	// an absence only inside a window closed by a healthy stop, so a witness
+	// killed before it could write one leaves a file that proves nothing.
+	if err := start(ew, execOut); err != nil {
+		return err
+	}
+	if nw != nil {
+		// -net-out asked for network evidence: running exec-only instead
+		// would leave the network file without a window, so fail.
+		if err := start(nw, netOut); err != nil {
+			ew.Stop()
+			return fmt.Errorf("network witness: %w", err)
+		}
+	}
+	stopAll := func() error { return errors.Join(stop(ew, execOut), stop(nw, netOut)) }
+	if o.ready != "" {
+		if err := os.WriteFile(o.ready, []byte("attached\n"), 0o644); err != nil {
+			return errors.Join(err, stopAll())
+		}
+		defer os.Remove(o.ready)
+	}
+	fmt.Fprintln(os.Stderr, "subpoena-witness: attached")
+	<-stopSig
+	return stopAll()
+}
+
+// start starts w and writes s's start record. s.mu is held from Start until
+// the record is written: Start hands events to a reader goroutine, and an
+// event line written before the start record would read as outside the
+// window and fail a healthy run.
+func start(w capturer, s *sink) error {
+	s.mu.Lock()
+	if err := w.Start(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	err := s.enc.Encode(witness.Record{Time: time.Now().UTC(), Record: witness.RecordStart})
+	s.mu.Unlock()
 	if err != nil {
 		w.Stop()
 		return err
 	}
-	if ready != "" {
-		if err := os.WriteFile(ready, []byte("attached\n"), 0o644); err != nil {
-			w.Stop()
-			return err
-		}
-		defer os.Remove(ready)
-	}
-	fmt.Fprintln(os.Stderr, "subpoena-witness: attached")
+	return nil
+}
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	err = w.Stop()
-	mu.Lock()
-	defer mu.Unlock()
-	err = errors.Join(err, writeErr)
-	stop := witness.Record{Time: time.Now().UTC(), Record: witness.RecordStop, Healthy: err == nil}
-	if err != nil {
-		stop.Error = err.Error()
+// stop stops w and writes s's stop record, healthy only if Stop reported no
+// loss or failure and no event write failed. A nil w does nothing.
+func stop(w capturer, s *sink) error {
+	if w == nil {
+		return nil
 	}
-	return errors.Join(err, enc.Encode(stop))
+	err := w.Stop()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = errors.Join(err, s.err)
+	rec := witness.Record{Time: time.Now().UTC(), Record: witness.RecordStop, Healthy: err == nil}
+	if err != nil {
+		rec.Error = err.Error()
+	}
+	return errors.Join(err, s.enc.Encode(rec))
 }

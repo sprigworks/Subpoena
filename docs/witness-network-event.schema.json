@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sprigworks/subpoena/docs/witness-network-event.schema.json",
+  "title": "subpoena-witness network line",
+  "description": "One line of subpoena-witness -net-out output: one outbound connection attempt as the kernel saw it, or a record that opens or closes a capture window. A line with a record field is a record; any other line is an attempt. The records are those of witness-event.schema.json. See docs/ports.md (W). Readers ignore fields they do not know; existing fields keep their name and meaning.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the attempt was seen, or the record written (RFC 3339, UTC)."
+    },
+    "op": {
+      "type": "string",
+      "description": "connect: connect() on an inet socket. sendmsg: a send with an explicit destination (sendto, sendmsg, sendmmsg). Readers keep an op they do not know."
+    },
+    "protocol": {
+      "type": "string",
+      "description": "tcp, udp, icmp, icmpv6, sctp, mptcp, or the IP protocol number."
+    },
+    "dest": {
+      "type": "string",
+      "description": "The destination address and port: ip:port, [ip]:port for IPv6, an IPv4-mapped address in its IPv4 form, no zone. A reader refuses any other form."
+    },
+    "pid": {
+      "type": "integer",
+      "description": "PID in the witness's PID namespace; 0 when the process is not visible there."
+    },
+    "host_pid": {
+      "type": "integer",
+      "description": "PID in the initial PID namespace."
+    },
+    "comm": {
+      "type": "string",
+      "description": "Kernel task name, at most 15 bytes."
+    },
+    "sock_type": {
+      "type": "integer",
+      "description": "The socket type: 1 SOCK_STREAM, 2 SOCK_DGRAM, 3 SOCK_RAW, ..."
+    },
+    "cgroup_id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Kernel cgroup ID."
+    },
+    "cgroup": {
+      "type": "string",
+      "description": "cgroup path without the hierarchy root, root-most first, at most 8 elements, such as subpoena/<trace id>."
+    },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "The session's trace ID, read from its cgroup name. Present only for attempts from inside a session cgroup."
+    },
+    "attribution": {
+      "type": "string",
+      "enum": [
+        "cgroup"
+      ],
+      "description": "How the attempt was tied to trace_id. Present exactly when trace_id is."
+    },
+    "record": {
+      "type": "string",
+      "enum": [
+        "start",
+        "stop"
+      ],
+      "description": "start: the witness is attached and capturing. stop: it has stopped; healthy says whether the capture between start and stop is complete."
+    },
+    "healthy": {
+      "type": "boolean",
+      "description": "On a stop record: true only if no kernel events were lost and no read or write failed."
+    },
+    "error": {
+      "type": "string",
+      "description": "On an unhealthy stop record: what went wrong."
+    }
+  },
+  "if": {
+    "required": [
+      "record"
+    ]
+  },
+  "then": {
+    "required": [
+      "time",
+      "record",
+      "healthy"
+    ]
+  },
+  "else": {
+    "required": [
+      "time",
+      "op",
+      "protocol",
+      "dest",
+      "pid",
+      "host_pid",
+      "comm",
+      "sock_type",
+      "cgroup_id",
+      "cgroup"
+    ]
+  }
+}

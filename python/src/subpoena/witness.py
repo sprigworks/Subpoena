@@ -1,6 +1,7 @@
-"""The witness, read from the file subpoena-witness writes (docs/ports.md, W;
-schema: docs/witness-event.schema.json). A port of witness.ReadLog, and of
-the Sinkhole network witness."""
+"""The witness, read from the files subpoena-witness writes (docs/ports.md, W;
+schemas: docs/witness-event.schema.json, docs/witness-network-event.schema.json).
+A port of witness.ReadLog and witness.ReadNetworkLog, and of the Sinkhole
+network witness."""
 
 from __future__ import annotations
 
@@ -119,7 +120,8 @@ class Log:
         trace ID matches nothing."""
         if not trace_id:
             return []
-        return [self._event(l) for l in self._lines if (l.get("trace_id") or "") == trace_id]
+        trace_id = trace_id.lower()  # as the Go reader and the in-process witness
+        return [self._event(l) for l in self._lines if (l.get("trace_id") or "").lower() == trace_id]
 
     @staticmethod
     def _event(l: dict) -> ProcessEvent:
@@ -145,6 +147,37 @@ def read_log(f: IO[str]) -> Log:
     naming its line number: skipping it could turn an exec into an absence.
     Capture faults (see Log.health) do not stop the read: the execs are still
     evidence that something ran."""
+    lines, health = _scan(f, _KNOWN, "an exec", _check_exec)
+    return Log(lines, health)
+
+
+def _check_types(l: dict, ints: dict, strs: "tuple[str, ...]") -> None:
+    for k, (lo, hi) in ints.items():
+        v = l.get(k)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError(f"{k} is not an integer")
+        if not lo <= v <= hi:
+            raise ValueError(f"{k} {v} is out of range")
+    for k in strs:
+        if l.get(k) is not None and not isinstance(l[k], str):
+            raise ValueError(f"{k} is not a string")
+
+
+def _check_exec(l: dict) -> None:
+    _check_types(l, _INT_FIELDS, _STR_FIELDS)
+    args = l.get("args")
+    if args is not None and (not isinstance(args, list) or not all(isinstance(a, str) for a in args)):
+        raise ValueError("args is not a list of strings")
+
+
+def _scan(f: IO[str], known: "tuple[str, ...]", noun: str, check) -> "tuple[List[dict], Optional[str]]":
+    """Read a witness file's lines and keep its capture windows: the start and
+    stop records, and whether each event lies inside a window. read_log and
+    read_network_log share it, so both files are held to the same rules.
+    check validates an event line's fields, raising ValueError. Returns the
+    event lines and the first capture fault, or None."""
     lines = []
     health: Optional[str] = None
     open_at, records, windows = 0, 0, 0  # open_at: line of the open window's start record
@@ -163,9 +196,9 @@ def read_log(f: IO[str]) -> Log:
             if not isinstance(l, dict):
                 raise ValueError("not a JSON object")
             for k in l:
-                for known in _KNOWN:
-                    if k != known and k.lower() == known.lower():
-                        raise ValueError(f"key {k!r} is {known!r} in another case")
+                for kn in known:
+                    if k != kn and k.lower() == kn.lower():
+                        raise ValueError(f"key {k!r} is {kn!r} in another case")
             if l.get("record") is not None:
                 rec = l["record"]
                 if not l.get("time"):
@@ -192,45 +225,33 @@ def read_log(f: IO[str]) -> Log:
                     raise ValueError(f"unknown record {rec!r}")
                 records += 1
                 continue
-            for k, (lo, hi) in _INT_FIELDS.items():
-                v = l.get(k)
-                if v is None:
-                    continue
-                if isinstance(v, bool) or not isinstance(v, int):
-                    raise ValueError(f"{k} is not an integer")
-                if not lo <= v <= hi:
-                    raise ValueError(f"{k} {v} is out of range")
-            for k in _STR_FIELDS:
-                if l.get(k) is not None and not isinstance(l[k], str):
-                    raise ValueError(f"{k} is not a string")
-            args = l.get("args")
-            if args is not None and (not isinstance(args, list) or not all(isinstance(a, str) for a in args)):
-                raise ValueError("args is not a list of strings")
+            check(l)
             if not l.get("time"):
                 raise ValueError("no time")
             _parse_time(l["time"])
         except ValueError as e:
             raise WitnessError(f"witness: line {n}: {e}") from None
         if not open_at:
-            fault(f"witness: line {n}: an exec outside any capture window")
+            fault(f"witness: line {n}: {noun} outside any capture window")
         lines.append(l)
     if records == 0:
-        health = _NO_RECORDS  # every exec was outside a window too; say why, once
+        health = _NO_RECORDS  # every event was outside a window too; say why, once
     elif open_at:
         fault(f"witness: the capture from line {open_at} never stopped: the witness was killed, "
               "or the file was read before it stopped")
     elif windows > 1:
-        # Execs are tied to a window by file order, not time, and spawned()
-        # filters by trace: a process that ran between two windows is in
-        # neither, so nothing vouches for its absence.
+        # Events are tied to a window by file order, not time, and spawned()
+        # and dialed() filter by trace: something that ran between two
+        # windows is in neither, so nothing vouches for its absence.
         fault(f"witness: the file holds {windows} capture windows, and nothing watched between them; "
               "use one witness run per file")
-    return Log(lines, health)
+    return lines, health
 
 
-# The network witness (pkg/witness's NetworkEvent and Sinkhole). Go's eBPF
-# connect witness (netbpf) is not ported; the sinkhole needs no root and no
-# kernel support.
+# The network witness (pkg/witness's NetworkEvent, NetworkLog and Sinkhole).
+# The kernel-side network witness is Go's netbpf, run by subpoena-witness
+# -net-out; read_network_log reads the file it writes. The sinkhole needs no
+# root and no kernel support, but sees only its own address.
 
 OP_CONNECT = "connect"  # connect() on an inet socket
 OP_SENDMSG = "sendmsg"  # a send with an explicit destination
@@ -438,3 +459,80 @@ class Sinkhole:
 def _drain(s: Sinkhole) -> "tuple[int, Optional[BaseException]]":
     """Sinkhole.stop's drain, replaceable in tests to inject a failed one."""
     return s._drain()
+
+
+# The network file (subpoena-witness -net-out): witness.NetLine's fields, and
+# the ranges Go decodes the integers into (int for the PIDs and sock_type,
+# uint64 for cgroup_id).
+_NET_INT_FIELDS = {"pid": (-(2**63), 2**63 - 1), "host_pid": (-(2**63), 2**63 - 1),
+                   "sock_type": (-(2**63), 2**63 - 1), "cgroup_id": (0, 2**64 - 1)}
+_NET_STR_FIELDS = ("op", "protocol", "dest", "comm", "cgroup", "trace_id", "attribution")
+_NET_KNOWN = ("time", "op", "protocol", "dest", "pid", "host_pid", "comm", "sock_type", "cgroup_id", "cgroup",
+              "trace_id", "attribution", "record", "healthy", "error")
+
+# What Go's netip.ParseAddrPort takes, less a zone: "v4:port" or "[v6]:port".
+_DEST = re.compile(r"^(?:\[([0-9A-Fa-f:.]+)\]|([0-9.]+)):([0-9]+)$")
+
+
+def _parse_dest(s: str) -> AddrPort:
+    """A network line's dest, as the Go reader parses it: an IPv4 address in
+    brackets, an IPv6 address without them, a zone or a port past 65535 is
+    refused; an IPv4-mapped address reads as IPv4."""
+    m = _DEST.fullmatch(s)
+    try:
+        if not m or int(m.group(3)) > 65535:
+            raise ValueError("bad form")
+        addr = ipaddress.IPv6Address(m.group(1)) if m.group(1) else ipaddress.IPv4Address(m.group(2))
+        return AddrPort(addr, int(m.group(3)))
+    except ValueError:
+        raise ValueError(f"dest {json.dumps(s)} is not ip:port ([ip]:port for IPv6)") from None
+
+
+def _check_net(l: dict) -> None:
+    _check_types(l, _NET_INT_FIELDS, _NET_STR_FIELDS)
+    _parse_dest(l.get("dest") or "")
+
+
+class NetworkLog:
+    """What subpoena-witness -net-out wrote, as a network witness."""
+
+    def __init__(self, lines: List[dict], health: Optional[str] = None):
+        self._lines, self._health = lines, health
+
+    def health(self) -> Optional[str]:
+        """The first capture fault in the file, or None, as Log.health.
+        Absence can rest on the file only when this is None."""
+        return self._health
+
+    def __len__(self) -> int:
+        return len(self._lines)
+
+    def lines(self) -> List[dict]:
+        return [dict(l) for l in self._lines]
+
+    def dialed(self, trace_id: str) -> List[NetworkEvent]:
+        """Every attempt whose trace ID, read by the kernel side from its
+        cgroup, is trace_id. Nothing the application controls is consulted.
+        The empty trace ID matches nothing."""
+        if not trace_id:
+            return []
+        trace_id = trace_id.lower()  # as the Go reader and the in-process witness
+        return [self._event(l) for l in self._lines if (l.get("trace_id") or "").lower() == trace_id]
+
+    @staticmethod
+    def _event(l: dict) -> NetworkEvent:
+        g = lambda k, zero: l.get(k) if l.get(k) is not None else zero  # noqa: E731
+        return NetworkEvent(
+            dest=_parse_dest(l.get("dest") or ""), op=g("op", ""), protocol=g("protocol", ""), pid=g("pid", 0), comm=g("comm", ""),
+            cgroup=g("cgroup", ""), cgroup_id=g("cgroup_id", 0), trace_id=g("trace_id", ""),
+            attribution=g("attribution", ""), seen_at=_parse_time(l["time"]),
+        )
+
+
+def read_network_log(f: IO[str]) -> NetworkLog:
+    """Read subpoena-witness -net-out JSON lines, under read_log's rules: the
+    same read errors, and the same capture windows and faults. A dest that is
+    not an IP address and port raises WitnessError too; an IPv4-mapped
+    address is read as IPv4."""
+    lines, health = _scan(f, _NET_KNOWN, "a connection attempt", _check_net)
+    return NetworkLog(lines, health)
