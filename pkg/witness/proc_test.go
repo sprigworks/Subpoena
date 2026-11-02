@@ -176,23 +176,24 @@ func TestLiveProc(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	// A sighting can pair the new command line with the task name read just
-	// before the exec, or catch the exited child with only its name; refresh
-	// then keeps that name as a second, name-only event for the same pid.
-	// That over-report is deliberate, so only the full-line event must be
-	// unique.
-	var evs []ProcessEvent
-	for _, e := range w.Spawned(tid) {
-		if e.NameOnly() && e.PID == cmd.Process.Pid {
-			continue
+	// Racing the exec, a sighting can pair one image's command line with the
+	// other's name or exe, or read the parent's line after a sighting that
+	// read none; refresh then keeps each earlier command as an event of its
+	// own for the same pid. That over-report is deliberate (safe for absence
+	// claims), so the test requires only that every event is the child and
+	// that one of them is the exec'd sleep, seen whole.
+	evs := w.Spawned(tid)
+	found := false
+	for _, e := range evs {
+		if e.PID != cmd.Process.Pid {
+			t.Fatalf("event for pid %d, want only the sleep child (pid %d): %s", e.PID, cmd.Process.Pid, brief(evs))
 		}
-		evs = append(evs, e)
+		if e.Command == sleep+" 0.2" && e.CommandSource == CommandLine && e.Exe != "" && e.PPID == os.Getpid() {
+			found = true
+		}
 	}
-	if len(evs) != 1 {
-		t.Fatalf("want exactly the sleep child (pid %d), got %d events: %s", cmd.Process.Pid, len(evs), brief(w.Spawned(tid)))
-	}
-	if evs[0].PID != cmd.Process.Pid || evs[0].Command != sleep+" 0.2" || evs[0].Exe == "" || evs[0].PPID != os.Getpid() {
-		t.Fatalf("unexpected event pid=%d ppid=%d exe=%q cmd=%q (want pid %d, me %d)", evs[0].PID, evs[0].PPID, evs[0].Exe, evs[0].Command, cmd.Process.Pid, os.Getpid())
+	if !found {
+		t.Fatalf("want the sleep child (pid %d, me %d) with its full command line, got: %s", cmd.Process.Pid, os.Getpid(), brief(evs))
 	}
 }
 
