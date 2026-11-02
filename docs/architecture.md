@@ -110,7 +110,18 @@ first failure message of a failed test: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
 (an error return, exit code, audit row or output). A kill whose first evidence
 is not `witness` rested on the system's own account or its side effects. Tests
-can tag their own messages the same way. `-evidence-dir` keeps every mutant
+can tag their own messages the same way. `--require-witness` opts into a stricter
+gate: a clean failure whose first evidence is `testimony` or `other` is
+`enforcement-mutant-killed-by-self-report` and fails the run. A witness failure
+later in that test or its cleanup cannot redeem it. Selection retries such a
+result on the full suite, and group and pair runs use the same rule, so a
+self-report kill cannot mask another layer. The default remains unchanged.
+The gateway and adopter CI paths select this gate. The Level 0 Python
+quickstart uses ordinary cross mode: its direct dictionary check is `other`,
+not a process/network witness. `make cross-self` also retains ordinary mode
+while the policy for pure-logic guard oracles is decided separately. Tags
+are reviewed claims, not authenticated proof of a message's origin; never add
+`witness:` to a return-value or span assertion to satisfy the gate. `-evidence-dir` keeps every mutant
 run's full `go test -json` output, killed ones included. `-j N` runs N single
 mutants at once, each in its own copy of the module (group runs stay
 sequential); on cross-self it cut 490 s to 135 s at `-j 8` with the same

@@ -260,3 +260,12 @@ def test_selection_resolves_symlinked_temporary_root(tmp_path, monkeypatch):
 def test_evidence_path_empty_without_evidence_directory(tmp_path):
     rep = cross.run(project(tmp_path))
     assert rep.results[0].evidence_file == ''
+
+
+def test_require_witness_group_cannot_mask_self_report(tmp_path):
+    root = project(tmp_path, LAYERED, TEST.replace('witness:', 'testimony:'))
+    rep = cross.run(root, require_witness=True, select=True, jobs=2)
+    assert rep.failed()
+    assert [r.outcome for r in rep.results[:2]] == [cross.SURVIVED, cross.SURVIVED]
+    assert rep.results[2].outcome == cross.KILLED_BY_SELF_REPORT
+    assert all(not r.accepted for r in rep.results)

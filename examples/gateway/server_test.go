@@ -33,13 +33,11 @@ func TestHTTPDenyIs403AndSpawnsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Stop()
+	harness.WatchSpawns(t, w, "", harness.SpawnRule{Allowed: []string{}})
 	srv := httptest.NewServer(gateway.New(h.Tracer("http-test")).Handler())
 	defer srv.Close()
 
 	resp := post(t, srv, `{"user":"mallory","host":"prod-db1","command":"sleep","args":["0.15"]}`)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status %d, want 403", resp.StatusCode)
-	}
 	traceID := resp.Header.Get("X-Trace-Id")
 	w.Stop()
 	if err := w.Health(); err != nil {
@@ -50,11 +48,14 @@ func TestHTTPDenyIs403AndSpawnsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	harness.RequireNoSpawn(t, w, traceID)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status %d, want 403", resp.StatusCode)
+	}
 	harness.RequireAbsent(t, tr, invariants.MustLoad(invariants.NoExecAfterDeny))
 	if len(tr.Spans(traceID)) == 0 {
 		t.Fatalf("X-Trace-Id %q not found among %v", traceID, tr.TraceIDs())
 	}
-	harness.RequireNoSpawn(t, w, traceID)
 }
 
 func TestHTTPBadBody(t *testing.T) {

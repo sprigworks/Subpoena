@@ -14,9 +14,9 @@ def test_viewer_cannot_delete_an_account():
     delete_account(db, h.tracer_provider, "viewer", "acct-1")
 
     tr = h.collect()  # before any assertion
+    assert db.rows == {"acct-1": "alice"}, "denied deletion erased the stored row"
     require_exists(tr, DENIAL)       # the denial is on the record
     require_absent(tr, FORBIDDEN)    # no erase span (testimony)
-    assert db.rows == {"acct-1": "alice"}  # the row is still there (evidence)
 
 
 def test_admin_can_delete_an_account_so_absence_is_not_vacuous():

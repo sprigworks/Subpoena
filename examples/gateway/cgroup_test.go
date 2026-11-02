@@ -115,10 +115,9 @@ func TestDeniedSessionCgroupStaysEmpty(t *testing.T) {
 	gw := gateway.New(r.h.Tracer("denied"), gateway.WithCgroups(&cgroup.Manager{Root: root}))
 
 	ctx, sess := gw.Open(context.Background(), gateway.User{Name: "mallory"})
+	harness.WatchSpawns(t, r.w, traceOf(ctx), harness.SpawnRule{Allowed: []string{}})
 	defer sess.Close()
-	if _, err := gw.Run(ctx, sess, "prod-db1", "sleep", sleepArg); !errors.Is(err, gateway.ErrDenied) {
-		t.Fatalf("got %v", err)
-	}
+	_, runErr := gw.Run(ctx, sess, "prod-db1", "sleep", sleepArg)
 	r.w.Stop()
 	if err := r.w.Health(); err != nil {
 		t.Fatalf("witness capture incomplete: %v", err)
@@ -127,11 +126,14 @@ func TestDeniedSessionCgroupStaysEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	harness.RequireNoSpawn(t, r.w, traceOf(ctx))
+	if !errors.Is(runErr, gateway.ErrDenied) {
+		t.Fatalf("got %v", runErr)
+	}
 	harness.RequireAbsent(t, tr, invariants.MustLoad(invariants.NoExecAfterDeny))
 	if procs := procsOf(t, root, traceOf(ctx)); len(procs) != 0 {
 		t.Fatalf("cgroup.procs of a denied session = %v", procs)
 	}
-	harness.RequireNoSpawn(t, r.w, traceOf(ctx))
 }
 
 type captured struct {
@@ -310,6 +312,7 @@ func TestRealCgroupSessionIsWitnessedByCgroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Stop()
+	harness.WatchSpawns(t, w, "", harness.SpawnRule{Allowed: []string{"sleep " + sleepArg}})
 	gw := gateway.New(h.Tracer("real"), gateway.WithCgroups(&cgroup.Manager{Root: root}))
 
 	ctx, sess := gw.Open(context.Background(), gateway.User{Name: "alice"})
@@ -319,10 +322,9 @@ func TestRealCgroupSessionIsWitnessedByCgroup(t *testing.T) {
 	}
 	// A second, denied session in flight at the same time.
 	ctx2, sess2 := gw.Open(context.Background(), gateway.User{Name: "mallory"})
+	harness.WatchSpawns(t, w, traceOf(ctx2), harness.SpawnRule{Allowed: []string{}})
 	defer sess2.Close()
-	if _, err := gw.Run(ctx2, sess2, "prod-db1", "sleep", sleepArg); !errors.Is(err, gateway.ErrDenied) {
-		t.Fatalf("got %v", err)
-	}
+	_, runErr := gw.Run(ctx2, sess2, "prod-db1", "sleep", sleepArg)
 	w.Stop()
 	if err := w.Health(); err != nil {
 		t.Fatalf("witness capture incomplete: %v", err)
@@ -331,6 +333,10 @@ func TestRealCgroupSessionIsWitnessedByCgroup(t *testing.T) {
 	tr, err := h.Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
+	}
+	harness.RequireNoSpawn(t, w, traceOf(ctx2))
+	if !errors.Is(runErr, gateway.ErrDenied) {
+		t.Fatalf("got %v", runErr)
 	}
 	harness.RequireExists(t, tr, correlationQuery(semconv.ValSubpoenaWitnessCorrelationCgroup))
 	harness.RequireAbsent(t, tr, invariants.MustLoad(invariants.NoExecAfterDeny))
