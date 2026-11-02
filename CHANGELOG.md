@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.1.0-alpha.4 and Python 0.1.0a4 (2026-11-03)
+
+Tagged `v0.1.0-alpha.4` and `python/v0.1.0a4`. Hardens Subpoena's own checks;
+no new language surface.
+
+- **Cross `--require-witness` (Go and Python).** Opt-in strict mode: a clean
+  kill whose first evidence is not a witness becomes
+  `enforcement-mutant-killed-by-self-report` and fails the run. Selection
+  and group masking honor that outcome. The gateway and adopter examples run
+  strict, with their witness assertions first; the Level 0 Python quickstart
+  and `cross-self` stay in ordinary mode. The default is unchanged. (#19)
+- **Lint resolves telemetry constants.** Go `unknown-telemetry` now resolves
+  constant values with `go/types` (lexical fallback for unchecked files), so
+  a constant can no longer hide an unknown key. Both Level 0 quickstarts are
+  linted in CI. Vocabulary exemptions need a printed reason and must
+  suppress a real finding; unwitnessed enforcement can be exempted only by a
+  reasoned marker on one function. Missing, misplaced, duplicate or stale
+  markers, and unused invocation exemptions, exit 2 in both linters. (#18)
+- **Tier 2 finalizes kernel capture before OATS judges absence.** A
+  fixture-only controller (`conformance/oatscapture`) closes and drains the
+  witness, waits for it to exit and validates the complete log before the
+  absence assertions run. Both cases also require one `start`, one `stop`
+  and a healthy, error-free stop record in Loki. Healthy kernel capture does
+  not imply lossless collector or Loki delivery. (#17)
+
 ## v0.1.0-alpha.3 and Python 0.1.0a3 (2026-11-01)
 
 Tagged `v0.1.0-alpha.3` and `python/v0.1.0a3`. Python gains network

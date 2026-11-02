@@ -204,8 +204,11 @@ to reviewers and to tooling.
 
 Cross-service registry migration policy is still open (`docs/decisions.md`).
 The Python port passes its contract checks for the harness, the TraceQL
-evaluator, the witness reader and its absence checks, and has
-cross-examination for pytest and AST lint (`docs/ports.md`). TypeScript has generated names
+evaluator, the witness reader, spawn absence checks and network absence
+checks with the loopback sinkhole. It has cross-examination for pytest
+(layer groups, `-j` and `-select` included) and AST lint; registry-drift
+stays Go-only, and it reads the witness file rather than running a witness
+(`docs/ports.md`). TypeScript has generated names
 (`generated/ts/semconv.ts`) and no harness. An exec backstop in the open core
 was decided and is not built (`docs/decisions.md`, "The exec backstop"). Tetragon was
 the first tier-2 witness; outside Kubernetes its events lack the session
