@@ -184,7 +184,6 @@ CI covers each of these on every pull request. See [CONTRIBUTING.md](CONTRIBUTIN
 - `docs/architecture.md` — what was actually built, in text.
 - `docs/traceql-subset.md`, `docs/migrating-an-existing-service.md` — the subset grammar and the migration playbook.
 - `docs/ports.md` — the contract for a Python or TypeScript harness, and how each part is checked.
-- `docs/background/tdd-vs-telemetry.md` — background: an early survey of whether OTel assertions can replace test suites, kept for the record. The design documents above supersede it.
 
 ## Layout
 
