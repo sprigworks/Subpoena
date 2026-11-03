@@ -1,10 +1,10 @@
 # Subpoena
 
-[![ci](https://github.com/sprigworks/Subpoena/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sprigworks/Subpoena/actions/workflows/ci.yml)
-[![kernel](https://github.com/sprigworks/Subpoena/actions/workflows/kernel.yml/badge.svg?branch=main)](https://github.com/sprigworks/Subpoena/actions/workflows/kernel.yml)
+[![ci](https://github.com/sprigworks/subpoena/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sprigworks/subpoena/actions/workflows/ci.yml)
+[![kernel](https://github.com/sprigworks/subpoena/actions/workflows/kernel.yml/badge.svg?branch=main)](https://github.com/sprigworks/subpoena/actions/workflows/kernel.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/sprigworks/subpoena.svg)](https://pkg.go.dev/github.com/sprigworks/subpoena)
 [![PyPI](https://img.shields.io/pypi/v/subpoena)](https://pypi.org/project/subpoena/)
-[![Release](https://img.shields.io/github/v/release/sprigworks/Subpoena?include_prereleases)](https://github.com/sprigworks/Subpoena/releases)
+[![Release](https://img.shields.io/github/v/release/sprigworks/subpoena?include_prereleases)](https://github.com/sprigworks/subpoena/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 Subpoena is a testing framework for code that enforces a rule: an auth check,
@@ -18,8 +18,10 @@ that kind of code in three ways.
    enforces a rule is also the code that reports it did, so its spans only
    count as testimony. A witness the app doesn't control (`/proc` polling, or
    eBPF probes in the Linux kernel, for process execs and outbound connections)
-   records what actually ran. A capture the witness can't vouch for fails the
-   test.
+   records what actually ran. A capture the witness knows is broken fails the
+   test. The `/proc` witness polls, so it can miss a process that starts and
+   exits between two scans; `Coverage()` reports the worst gap, and the eBPF
+   witness, which sees every exec in the kernel, closes it.
 3. **Cross-examination checks that the tests can tell.** `subpoena-cross`
    deletes each marked enforcement statement in turn (each deletion is a
    mutant) and requires the suite to go red. A mutant that survives means the
@@ -58,7 +60,10 @@ func TestNonAdminDeleteNeverPurges(t *testing.T) {
 Here `refused` and `purgeAfter` are TraceQL strings, for example
 `{ name = "account.delete.authorize" && span.account.delete.allowed = false } >> { name = "account.delete.purge" }`.
 `RequireNoSpawn` returns Inconclusive, and fails the test, when the witness
-can't vouch for its capture.
+reports its capture as unhealthy (a scan error, a missed child walk, or a
+witness read before it stopped). A healthy `/proc` capture still cannot rule
+out a process shorter than its polling gap, which is why the quickstart keeps
+its probe alive and why tier 2 uses the eBPF witness.
 
 Run it, Go 1.25+ on Linux, no privileges needed:
 
@@ -132,7 +137,7 @@ make test         # tier 1: harness, TraceQL, witness, lint, cross-examination, 
 make check        # build, vet, test, subpoena-lint, subpoena-cross over examples/gateway, cross-self, examples/platform
 make python       # the Python port: pytest and the shared conformance cases
 make conformance  # the TraceQL subset against a real Tempo (Docker)
-make oats         # tier 2: OATS with the eBPF witness (rootful Docker, cgroup v2, BTF)
+make oats         # tier 2: OATS with the eBPF witness (rootful Docker, cgroup v2, BTF; OATS needs Go 1.26)
 make alerts       # tier 3: the alert rule in Grafana and Tempo (Docker)
 make test-ebpf    # the eBPF witnesses against the real kernel (privileged container)
 make test-cgroup  # real-cgroup tests without root, in a delegated systemd scope
@@ -179,7 +184,7 @@ CI covers each of these on every pull request. See [CONTRIBUTING.md](CONTRIBUTIN
 - `docs/architecture.md` — what was actually built, in text.
 - `docs/traceql-subset.md`, `docs/migrating-an-existing-service.md` — the subset grammar and the migration playbook.
 - `docs/ports.md` — the contract for a Python or TypeScript harness, and how each part is checked.
-- `docs/background/tdd-vs-telemetry.md` — the analysis that started the project: whether OTel assertions can replace test suites, and what they can do instead.
+- `docs/background/tdd-vs-telemetry.md` — background: an early survey of whether OTel assertions can replace test suites, kept for the record. The design documents above supersede it.
 
 ## Layout
 

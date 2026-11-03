@@ -44,12 +44,12 @@ Each piece exists somewhere. What Subpoena adds is the combination, with witness
 | Domain semconv registry + codegen | [OpenTelemetry Weaver](https://github.com/open-telemetry/weaver) | Custom YAML registries that import upstream semconv; `registry check`, `diff`, `generate` | Generates constants and docs, not assertions |
 | Registry → compile-time enforcement | [Qyl.OpenTelemetry.SemanticConventions](https://github.com/ANcpLua/Qyl.OpenTelemetry.SemanticConventions) (.NET) | Weaver-generated constants plus Roslyn analyzers | .NET only; no test harness |
 | In-memory capture for unit tests | OTel SDKs: Java [`opentelemetry-sdk-testing`](https://central.sonatype.com/artifact/io.opentelemetry/opentelemetry-sdk-testing), Python/Node `InMemorySpanExporter` | Deterministic, no collector | Nothing checks completeness before an absence assertion |
-| Trace-based integration tests | [Tracetest](https://docs.tracetest.io/concepts/tests) | Trigger, wait for trace, assert with selectors | Collector-backed only; repo [quiet since June 2025](https://gittrend.io/repo/kubeshop/tracetest) |
+| Trace-based integration tests | [Tracetest](https://docs.tracetest.io/concepts/tests) | Trigger, wait for trace, assert with selectors | Collector-backed only; no commits since [June 2025](https://github.com/kubeshop/tracetest/commits/main) |
 | Acceptance tests against a real stack | [Grafana OATS](https://github.com/grafana/oats) | YAML cases with TraceQL/PromQL/LogQL against LGTM | No unit tier, no witnesses |
 | Assert on traces for AI agents | [agentevals](https://pypi.org/project/agentevals-cli/), [Microsoft ASSERT](https://github.com/responsibleai/ASSERT/releases) | Score agent behaviour from OTel traces | Score behaviour; do not verify enforcement or external effects |
 | System-call observers in tests | [AssertSyscall](https://www.nuget.org/packages/assertsyscall.nunit), [netaudit](https://github.com/CyberSecAuto-Labs/netaudit) | strace outside the process under test; netaudit attributes each `connect()` to the test that made it | Attribute to a test, not to a trace; no third verdict for incomplete capture |
 | Mutation testing aimed at security | [Loise et al. 2017](https://xdevroey.be/publications/loise-2017/), [AutoMutSec](https://sol.sbc.org.br/index.php/sast/article/view/45863) | Security-aware mutation operators; AutoMutSec mutates Spring Security authorization policies | Judge the suite by its assertions; no mutant that keeps the audit record while removing the effect |
-| Independent witness for process execution | [Cilium Tetragon](https://tetragon.io/docs/concepts/) | eBPF `process_exec` events with lineage; can kill on policy | No trace correlation; outside Kubernetes it does not report the session cgroup |
+| Independent witness for process execution | [Cilium Tetragon](https://tetragon.io/docs/concepts/) | eBPF `process_exec` events with lineage; can kill on policy | No trace correlation; outside Kubernetes, v1.7.1 did not report the session cgroup in our tests |
 | Formal lineage | [Runtime verification](https://cris.biu.ac.il/en/publications/runtime-verification-from-propositional-to-first-order-temporal-l-2/) | Temporal logic over finite traces with a third verdict, *inconclusive* | Academic |
 
 Two of these shaped the design directly. Runtime verification had already answered what a negative assertion means over a partial trace: a third verdict. The agent-eval tools show people already assert on OTel traces, but on behaviour and quality, not on enforcement. The witness layer is the gap.
@@ -170,7 +170,7 @@ The proposal this document grew from is in the repository history ([`7a11727:doc
 - [Qyl.OpenTelemetry.SemanticConventions](https://github.com/ANcpLua/Qyl.OpenTelemetry.SemanticConventions)
 - [opentelemetry-sdk-testing (Java)](https://tessl.io/registry/tessl/maven-io-opentelemetry--opentelemetry-sdk-testing)
 - [In-memory span exporters across languages](https://oneuptime.com/blog/post/2026-02-06-in-memory-span-exporters-unit-tests/view)
-- [Tracetest — tests concept](https://docs.tracetest.io/concepts/tests); [repo activity](https://gittrend.io/repo/kubeshop/tracetest)
+- [Tracetest — tests concept](https://docs.tracetest.io/concepts/tests); [commit history](https://github.com/kubeshop/tracetest/commits/main)
 - [Grafana OATS](https://beta.pkg.go.dev/github.com/grafana/oats@v0.1.1)
 - [Tempo TraceQL structural operators](https://grafana.com/docs/tempo/latest/release-notes/v2-3.md)
 - [agentevals](https://pypi.org/project/agentevals-cli/)

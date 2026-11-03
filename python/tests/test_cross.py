@@ -564,3 +564,16 @@ def test_require_witness_rejects_testimony_before_teardown_witness(tmp_path):
     '''}, require_witness=True)
     assert r.outcome == cross.KILLED_BY_SELF_REPORT and rep.failed()
     assert r.evidence == "testimony"
+
+
+def test_tooling_directories_are_not_source(tmp_path):
+    (tmp_path / "app.py").write_text("x = 1\n")
+    for name in ("env", ".venv", "pkg.egg-info", ".nox"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "m.py").write_text("x = 1\n")
+    (tmp_path / "env" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    # A package that only shares a name with a common venv is still source.
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "m.py").write_text("x = 1\n")
+    found = sorted(os.path.relpath(p, tmp_path) for p in cross._python_files(str(tmp_path)))
+    assert found == ["app.py", os.path.join("build", "m.py")]

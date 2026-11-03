@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Python cross skips virtual environments under any name.** A directory
+  holding `pyvenv.cfg` (for example a venv named `env`) is no longer copied
+  into every mutant's tree or walked for source; `.nox` and `.ruff_cache`
+  join the skipped names.
+- **Docs.** The README states the `/proc` witness's polling gap where it
+  makes the witness claim, and the decisions no longer describe a second
+  product's licensing.
+
 ## v0.1.0-alpha.4 and Python 0.1.0a4 (2026-11-03)
 
 Tagged `v0.1.0-alpha.4` and `python/v0.1.0a4`. Hardens Subpoena's own checks;
