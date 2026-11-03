@@ -80,7 +80,15 @@ _POINT = "subpoena:enforcement_point"
 _STATEMENT = "subpoena:enforcement"
 _SIMPLE = (ast.Return, ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Raise, ast.Pass,
            ast.Break, ast.Continue, ast.Delete, ast.Assert)
-_SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", ".tox", ".pytest_cache", "node_modules", ".mypy_cache"}
+_SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", ".tox", ".nox", ".pytest_cache", "node_modules", ".mypy_cache", ".ruff_cache"}
+
+
+def _skipped(parent: str, name: str) -> bool:
+    """Whether a directory is tooling, not source: a known cache or environment
+    name, egg-info, or a virtual environment under any name (it has pyvenv.cfg)."""
+    if name in _SKIP_DIRS or name.endswith(".egg-info"):
+        return True
+    return os.path.isfile(os.path.join(parent, name, "pyvenv.cfg"))
 
 
 class CrossError(Exception):
@@ -310,7 +318,7 @@ def _statements(fn: ast.AST):
 
 def _python_files(root: str):
     for d, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if x not in _SKIP_DIRS and not x.endswith(".egg-info")]
+        dirs[:] = [x for x in dirs if not _skipped(d, x)]
         for f in files:
             if f.endswith(".py"):
                 yield os.path.join(d, f)
@@ -509,7 +517,7 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
     with tempfile.TemporaryDirectory(prefix="subpoena-cross-") as tmp:
         template = os.path.join(tmp, "snapshot")
         def ignore(directory, names):
-            ignored = set(shutil.ignore_patterns(*_SKIP_DIRS, "*.egg-info")(directory, names))
+            ignored = {name for name in names if _skipped(directory, name)}
             if evidence_dir:
                 ignored.update(name for name in names if os.path.realpath(os.path.join(directory, name)) ==
                                os.path.realpath(evidence_dir))

@@ -8,20 +8,13 @@ The decisions behind Subpoena, and why they were made. [design.md](design.md) ex
 
 Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL evaluator, witnesses, lint and cross-examination. It is infrastructure, and developer-tool adoption runs on trust and contributions, which a restrictive license would kill. The agent-session registry could also be proposed upstream as an OpenTelemetry semantic convention.
 
-[Petiole](https://petiole.dev), a separate product from the same team, holds the agent-aware layer. Its license is not final.
-
-| Layer | What it holds | License |
-| --- | --- | --- |
-| Subpoena | Registry format, harness, evaluator, observe-only witnesses, lint, cross-examination, conformance suite, and an optional exec backstop (decided, not built) | Apache-2.0 |
-| Petiole | Mapping agents and routing tokens to sessions, the signed provenance chain, evidence reports, confinement beyond exec (Landlock, seccomp, microVM) | Source-available, not final |
-
-**Where the line is.** Subpoena holds generic, application-agnostic primitives: observing execs and connections, and an optional exec backstop, decided but not yet built, that would kill processes in a session's cgroup. Petiole holds anything agent-aware, including guardrails and runtime protection for AI agents. Keeping the witnesses and backstop in Subpoena also lets Petiole use them.
+**Where the line is.** Subpoena holds generic, application-agnostic primitives: observing execs and connections, and an optional exec backstop, decided but not yet built, that would kill processes in a session's cgroup. Everything Subpoena ships is in this repository, under Apache-2.0. Agent-specific runtime protection (mapping agents to sessions, signed provenance, confinement beyond exec such as Landlock, seccomp or microVMs) is out of scope.
 
 ## The TraceQL evaluator
 
 **Decision:** tier 1 evaluates a documented subset of TraceQL in Go (`pkg/traceql`). A conformance suite runs every case through both the subset and a real Tempo and requires identical verdicts.
 
-**Why:** Tempo is AGPL-3.0 and cannot be linked into an Apache-2.0 library. The suite is the standard; the grammar is whatever it currently covers ([traceql-subset.md](traceql-subset.md)). Where Tempo's behaviour is inconsistent, as with conditions on array attributes, the evaluator refuses the query instead of guessing.
+**Why:** Tempo is AGPL-3.0. Linking its engine into this library would make the combined work subject to the AGPL, and Subpoena is meant to stay usable under Apache-2.0 alone. The suite is the standard; the grammar is whatever it currently covers ([traceql-subset.md](traceql-subset.md)). Where Tempo's behaviour is inconsistent, as with conditions on array attributes, the evaluator refuses the query instead of guessing.
 
 ## Witnesses
 
@@ -42,7 +35,7 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 
 **Decision:** Subpoena may ship an optional backstop that kills an exec inside a denied session's cgroup. **Decided, not built.**
 
-**Why:** Petiole confines exec only for what it launches itself, so it cannot backstop processes on hosts it does not wrap, and many Subpoena users will never run Petiole.
+**Why:** a sandbox confines exec only for processes it launches itself. A backstop on the session cgroup covers every process in the session wherever it was started, on any host the witness runs on.
 
 **Rules:** in a test run, a backstop intervention is a failure, because it means the application's own enforcement failed. Cross-examination runs with the backstop observing only, so it measures the application and not the kernel.
 
@@ -58,7 +51,7 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 
 **Decision:** tier 2 is built on Grafana OATS. Tracetest is a reference, not a dependency.
 
-**Why:** OATS is maintained and uses TraceQL directly, so an invariant moves to tier 2 unchanged. Tracetest has been quiet since mid-2025.
+**Why:** OATS is maintained and uses TraceQL directly, so an invariant moves to tier 2 unchanged. Tracetest has had no commits since June 2025.
 
 ## Registry governance
 

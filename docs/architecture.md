@@ -209,7 +209,7 @@ checks with the loopback sinkhole. It has cross-examination for pytest
 (layer groups, `-j` and `-select` included) and AST lint; registry-drift
 stays Go-only, and it reads the witness file rather than running a witness
 (`docs/ports.md`). TypeScript has generated names
-(`generated/ts/semconv.ts`) and no harness. An exec backstop in the open core
+(`generated/ts/semconv.ts`) and no harness. An optional exec backstop
 was decided and is not built (`docs/decisions.md`, "The exec backstop"). Tetragon was
 the first tier-2 witness; outside Kubernetes its events lack the session
 cgroup, so Subpoena has its own (`witnesses/README.md`).

@@ -9,8 +9,8 @@ is the same string you paste into OATS (tier 2) and a Grafana alert rule
 
 **Licensing decides this, not engineering.** Grafana Tempo is AGPL-3.0.
 Linking `github.com/grafana/tempo/pkg/traceql` into this Apache-2.0 library
-would make the combined work subject to the AGPL, which is incompatible with
-Subpoena's open-core plan. Querying a running Tempo over its HTTP API carries
+would make the combined work subject to the AGPL, and Subpoena is meant to be
+usable under Apache-2.0 alone. Querying a running Tempo over its HTTP API carries
 no such obligation, so Tempo remains the reference evaluator for the
 conformance suite (`conformance/README.md`), never a linked dependency.
 
