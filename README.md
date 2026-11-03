@@ -62,15 +62,15 @@ Here `refused` and `purgeAfter` are TraceQL strings, for example
 `RequireNoSpawn` returns Inconclusive, and fails the test, when the witness
 reports its capture as unhealthy (a scan error, a missed child walk, or a
 witness read before it stopped). A healthy `/proc` capture still cannot rule
-out a process shorter than its polling gap, which is why the quickstart keeps
-its probe alive and why tier 2 uses the eBPF witness.
+out a process shorter than its polling gap, which is why the quickstart's
+`sleep` child outlives the polling interval and why tier 2 uses the eBPF witness.
 
 Run it, Go 1.25+ on Linux, no privileges needed:
 
 ```
 git clone https://github.com/sprigworks/subpoena
 cd subpoena/examples/quickstart
-make check
+make check    # about a minute (the root make check is the 15-minute one)
 ```
 
 The tests pass, then cross-examination deletes the refusal and the suite
@@ -125,7 +125,8 @@ Details in [docs/architecture.md](docs/architecture.md).
 | Lint (`subpoena-lint`) | yes | yes, eight AST rules; registry-drift stays Go-only |
 | Tiers 2 and 3 (OATS, alert rules) | same files, any language | same files, any language |
 
-The Python package is `pip install subpoena`; see [python/README.md](python/README.md).
+Add the Go module with `go get github.com/sprigworks/subpoena@latest`. The
+Python package is `pip install subpoena`; see [python/README.md](python/README.md).
 TypeScript is next, and has generated names already. Every port meets the
 contract in [docs/ports.md](docs/ports.md), and shared conformance cases check
 each part.
