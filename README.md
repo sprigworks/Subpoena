@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.png">
-  <img alt="Subpoena: your spans are testimony. Subpoena the witness. Trace-native testing for OpenTelemetry." src="docs/assets/banner-light.png">
+  <img alt="Subpoena: your spans are testimony. Subpoena the witness. Testing for code that says no." src="docs/assets/banner-light.png">
 </picture>
 
 # Subpoena
