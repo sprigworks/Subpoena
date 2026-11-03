@@ -10,7 +10,7 @@
   makes the witness claim, and the decisions no longer describe a second
   product's licensing.
 
-## v0.1.0-alpha.4 and Python 0.1.0a4 (2026-11-03)
+## v0.1.0-alpha.4 and Python 0.1.0a4 (2026-11-02)
 
 Tagged `v0.1.0-alpha.4` and `python/v0.1.0a4`. Hardens Subpoena's own checks;
 no new language surface.
