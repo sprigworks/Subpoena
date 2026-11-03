@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.png">
+  <img alt="Subpoena: your spans are testimony. Subpoena the witness. Trace-native testing for OpenTelemetry." src="docs/assets/banner-light.png">
+</picture>
+
 # Subpoena
 
 [![ci](https://github.com/sprigworks/subpoena/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sprigworks/subpoena/actions/workflows/ci.yml)
@@ -26,6 +31,10 @@ that kind of code in three ways.
    deletes each marked enforcement statement in turn (each deletion is a
    mutant) and requires the suite to go red. A mutant that survives means the
    tests would still pass with the protection gone.
+
+<img alt="Terminal output of make check in examples/quickstart: tests pass, lint is clean, then subpoena-cross removes the refusal in Authorize and the suite goes red, killing the mutant." src="docs/assets/quickstart-demo.png">
+
+*`make check` in [`examples/quickstart`](examples/quickstart): cross-examination deletes the auth check, and the suite goes red.*
 
 **Status: alpha, v0.1.0-alpha.4.** APIs will change. Go is the reference
 implementation, and Python is a port (see [Languages](#languages)).
