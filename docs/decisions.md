@@ -12,7 +12,7 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 
 ## Where the test-evidence report and bundle live
 
-**Decision:** Subpoena holds the generic report and the generic test-evidence bundle. Aggregating many assertion runs into one page, binding one run into a versioned manifest, and verifying that manifest are application-agnostic primitives, like the rest of this repository: they work on anyone's test results and know nothing about the system under test. What stays out is what is already out of scope above — agent and session context, signed provenance, chains and a compliance workflow are not Subpoena's.
+**Decision:** Subpoena holds the generic report and the generic test-evidence bundle. Aggregating many assertion runs into one page, binding one run into a versioned manifest, and verifying that manifest are application-agnostic primitives, like the rest of this repository: they work on anyone's test results and know nothing about the system under test. What stays out is what is specific to one application or workflow: agent and session context, and a compliance workflow. A bundle may be signed by the CI or observer identity, never by the process under test. Hash chains wait until their trust anchor and ordering are defined.
 
 **Why:** an adopter who runs Subpoena and nothing else still has to be able to show what was tested. A readable page and a record a reviewer can check cannot depend on a second product.
 
