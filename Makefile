@@ -16,7 +16,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: all build vet fmt test lint lint-drift cross cross-self conform python test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: demo all build vet fmt test lint lint-drift cross cross-self conform python test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -33,10 +33,15 @@ fmt:
 test:
 	go test ./...
 
+# The failure ordinary tests miss, run three ways (examples/saidno).
+demo:
+	./examples/saidno/demo.sh
+
 # Lint the example gateway with subpoena-lint (must be clean). The gateway is
 # the whole service the registry describes, so dead-telemetry applies.
 lint:
 	go run ./cmd/subpoena-lint -dead-telemetry ./examples/gateway
+	go run ./cmd/subpoena-lint ./examples/saidno
 
 # registry-drift: does a change set touch registry/ and a test that asserts on
 # the changed identifiers? Working tree vs HEAD by default; in CI or on a
@@ -47,6 +52,7 @@ lint-drift:
 # Cross-examination: remove each enforcement statement; the suite must go red.
 cross:
 	go run ./cmd/subpoena-cross --require-witness ./examples/gateway
+	go run ./cmd/subpoena-cross --require-witness ./examples/saidno
 
 # Subpoena's own fail-closed guards, cross-examined like any adopter's.
 CROSS_SELF := ./pkg/harness ./pkg/witness ./internal/cross ./conformance/oatscapture
@@ -141,7 +147,7 @@ oats:
 	docker volume ls -q --filter name=_witness-events | grep '^oats-' | xargs -r docker volume rm >/dev/null; exit $$rc
 
 # Everything that runs without Docker or eBPF.
-check: build vet test lint cross cross-self platform
+check: build vet test lint cross cross-self platform demo
 
 # Regenerate the constants from the registry with Weaver: Go, Python and
 # TypeScript (one module each, the same names).

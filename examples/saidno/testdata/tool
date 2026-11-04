@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stands in for a tool an agent asks the gateway to run. Like many real
+# programs, it does its work whatever flags it's given. The sleep keeps it
+# alive past the /proc witness's polling gap.
+sleep 0.2

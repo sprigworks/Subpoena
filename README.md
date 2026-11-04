@@ -36,6 +36,8 @@ that kind of code in three ways.
 
 *`make check` in [`examples/quickstart`](examples/quickstart): cross-examination deletes the auth check, and the suite goes red.*
 
+To see a failure ordinary tests miss, run `make demo`. A gateway answers 403 and logs the denial, but it has already run the tool ([`examples/saidno`](examples/saidno)).
+
 **Status: alpha, v0.1.0-alpha.4.** APIs will change. Go is the reference
 implementation, and Python is a port (see [Languages](#languages)).
 
@@ -165,6 +167,7 @@ CI covers each of these on every pull request. See [CONTRIBUTING.md](CONTRIBUTIN
 
 | Example | What it shows |
 | --- | --- |
+| [`examples/saidno`](examples/saidno) | A failure ordinary tests miss: `make demo` runs them side by side |
 | [`examples/quickstart`](examples/quickstart) | The smallest setup in Go: one rule, no registry, a witness and cross-examination |
 | [`examples/python-quickstart`](examples/python-quickstart) | The smallest setup in Python: one rule, two pytest tests, cross-examination |
 | [`examples/adopter`](examples/adopter) | A separate module adopting Subpoena: Weaver registry, generated names, lint, cross |
@@ -217,7 +220,7 @@ cmd/subpoena-invgen/  writes invariants/names.go (also for other modules)
 cmd/subpoena-traceql/ the Go evaluator as a command (the port protocol)
 cmd/subpoena-conform/ checks any language's evaluator against the corpus
 python/               the Python port: harness, TraceQL subset, witness reader and checks, cross
-examples/             quickstart, python-quickstart, adopter, platform, gateway (see above)
+examples/             saidno, quickstart, python-quickstart, adopter, platform, gateway (see above)
 conformance/          shared cases for every port, and the subset-vs-Tempo test
 docs/                 design, decisions, architecture, TraceQL subset, ports, migration
 ```

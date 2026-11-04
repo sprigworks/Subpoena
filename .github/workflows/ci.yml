@@ -29,6 +29,12 @@ jobs:
         run: go run ./cmd/subpoena-lint -dead-telemetry ./examples/gateway
       - name: cross-examination over examples/gateway
         run: go run ./cmd/subpoena-cross --require-witness ./examples/gateway
+      - name: subpoena-lint over examples/saidno
+        run: go run ./cmd/subpoena-lint ./examples/saidno
+      - name: cross-examination over examples/saidno
+        run: go run ./cmd/subpoena-cross --require-witness ./examples/saidno
+      - name: the demo comes out as its README says
+        run: make demo
       - name: cross-examination over Subpoena's own guards
         run: make cross-self
       # Evidence, not a pass bar: the runner's process count, full-scan and
