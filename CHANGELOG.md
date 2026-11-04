@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`make demo` and `examples/saidno`.** A gateway answers 403 and logs the
+  denial, but it has already run the tool: ordinary tests stay green and
+  the witness goes red. A witness that loses capture reports Inconclusive where a
+  naive check passes.
 - **Python cross skips virtual environments under any name.** A directory
   holding `pyvenv.cfg` (for example a venv named `env`) is no longer copied
   into every mutant's tree or walked for source; `.nox` and `.ruff_cache`
