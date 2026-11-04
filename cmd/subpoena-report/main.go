@@ -9,7 +9,7 @@
 // output.
 //
 // Exit status: 0 nothing failed under -fail-on, 1 a result failed or was
-// inconclusive, 2 usage or load error.
+// inconclusive or an input could not be read, 2 usage or load error.
 package main
 
 import (
@@ -23,6 +23,7 @@ import (
 
 func main() { os.Exit(run(os.Args[1:])) }
 
+//subpoena:enforcement_point
 func run(args []string) int {
 	fs := flag.NewFlagSet("subpoena-report", flag.ContinueOnError)
 	from := fs.String("from", report.FormatSubpoena, "input format: subpoena or run-results")
@@ -30,9 +31,8 @@ func run(args []string) int {
 	mdPath := fs.String("md", "", "write the readable page here (default: standard output)")
 	jsonPath := fs.String("json", "", "write the machine-readable data file here")
 	failOn := fs.String("fail-on", "any", "exit 1 on any|fail|inconclusive|none")
-	maxFailures := fs.Int("max-failures", 20, "cap the failures listed per claim (0 lists every one)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: subpoena-report [-from subpoena|run-results] [-claims file.json] [-md out.md] [-json out.json] [-fail-on any|fail|inconclusive|none] [-max-failures n] <path>...")
+		fmt.Fprintln(os.Stderr, "usage: subpoena-report [-from subpoena|run-results] [-claims file.json] [-md out.md] [-json out.json] [-fail-on any|fail|inconclusive|none] <path>...")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -65,9 +65,9 @@ func run(args []string) int {
 		return 2
 	}
 	rep := report.Build(doc)
-	rep.AddUnreadable(notes.Unreadable)
+	rep.AddLoadNotes(notes) //subpoena:enforcement
 
-	page := report.Markdown(rep, *maxFailures)
+	page := report.Markdown(rep)
 	if *mdPath == "" && *jsonPath == "" {
 		fmt.Print(page)
 	}
@@ -122,15 +122,23 @@ func written(md, js string) string {
 	}
 }
 
+// exitFor reports whether the run should exit 1. An unreadable input is a
+// failure under every setting that looks at failures at all: a result nobody
+// could read is neither a pass nor something -fail-on can select away.
+//
+//subpoena:enforcement_point
 func exitFor(failOn string, t report.Totals) bool {
-	switch failOn {
-	case "none":
+	if failOn == "none" {
 		return false
-	case "fail":
-		return t.Failed > 0 || t.Unreadable > 0
-	case "inconclusive":
-		return t.Inconclusive > 0
-	default:
-		return t.Failed > 0 || t.Inconclusive > 0 || t.Unreadable > 0
 	}
+	if t.Unreadable > 0 { //subpoena:enforcement_guard false
+		return true
+	}
+	if t.Inconclusive > 0 && failOn != "fail" { //subpoena:enforcement_guard false
+		return true
+	}
+	if t.Failed > 0 && failOn != "inconclusive" { //subpoena:enforcement_guard false
+		return true
+	}
+	return false
 }

@@ -156,14 +156,14 @@ func TestUnreadableInputIsReportedAndCounts(t *testing.T) {
 	r := Build(doc(Run{RunID: "r1", CaptureComplete: boolp(true), Assertions: []Assertion{
 		{ID: "a", Source: SourceTestimony, Kind: KindExists, Verdict: VerdictPass},
 	}}))
-	r.AddUnreadable([]Unreadable{{Path: "cut-off.json", Reason: "unexpected end of JSON input"}})
+	r.AddLoadNotes(LoadNotes{Unreadable: []Unreadable{{Path: "cut-off.json", Reason: "unexpected end of JSON input"}}})
 	if r.Totals.Unreadable != 1 {
 		t.Fatalf("unreadable = %d; want 1", r.Totals.Unreadable)
 	}
 	if r.Proven() {
 		t.Error("Proven() = true with an unreadable input; want false")
 	}
-	page := Markdown(r, 0)
+	page := Markdown(r)
 	for _, want := range []string{"Unreadable input", "cut-off.json", "unexpected end of JSON input"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page is missing %q", want)
@@ -186,7 +186,7 @@ func TestResultLeadsWithRunsTouched(t *testing.T) {
 	if r.Totals.RunsWithFailed != 1 {
 		t.Fatalf("runs with a failed check = %d; want 1", r.Totals.RunsWithFailed)
 	}
-	page := Markdown(r, 0)
+	page := Markdown(r)
 	if !strings.Contains(page, "1 of 2 runs (50%) recorded at least one failed or inconclusive check") {
 		t.Errorf("headline does not lead with runs touched:\n%s", firstLines(page, 10))
 	}
@@ -222,7 +222,7 @@ func TestBatchesSplitOnAGap(t *testing.T) {
 	if got := inv["late_check"].RunsPerBatch; len(got) != 2 || got[0] != 0 || got[1] != 1 {
 		t.Errorf("late_check runs per batch = %v; want [0 1]", got)
 	}
-	page := Markdown(r, 0)
+	page := Markdown(r)
 	for _, want := range []string{"## Batches", "| Runs by batch |", "2 · 0", "0 · 1"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page is missing %q:\n%s", want, page)
@@ -241,8 +241,8 @@ func TestFailureLineNamesTheBatch(t *testing.T) {
 		mk("b1", base, VerdictFail),
 		mk("b2", base.Add(5*time.Hour), VerdictPass),
 	))
-	page := Markdown(r, 0)
-	if !strings.Contains(page, "run `b1` (batch 1, testimony)") {
+	page := Markdown(r)
+	if !strings.Contains(page, "`b1` failed (batch 1, testimony, `a`)") {
 		t.Errorf("failure line does not name the batch:\n%s", page)
 	}
 }
@@ -259,7 +259,7 @@ func TestSingleBatchHasNoBatchSection(t *testing.T) {
 	if len(r.Batches) != 1 {
 		t.Fatalf("batches = %d; want 1", len(r.Batches))
 	}
-	if strings.Contains(Markdown(r, 0), "## Batches") {
+	if strings.Contains(Markdown(r), "## Batches") {
 		t.Error("page has a batch section for a single batch")
 	}
 }
@@ -272,11 +272,11 @@ func TestExercisedColumnOnlyWhenRecorded(t *testing.T) {
 	if anyExercised(plain.Invariants) {
 		t.Error("exercised reported for input that never recorded it")
 	}
-	page := Markdown(plain, 0)
+	page := Markdown(plain)
 	if strings.Contains(page, "| Exercised |") {
 		t.Error("exercised column present with nothing recorded")
 	}
-	if !strings.Contains(page, "where the input does not") {
+	if !strings.Contains(page, "does not record how often") {
 		t.Error("page does not say it cannot state how often a check was exercised")
 	}
 
@@ -292,7 +292,7 @@ func TestExercisedColumnOnlyWhenRecorded(t *testing.T) {
 	if !inv["b"].ExercisedRecorded || inv["b"].Exercised != 0 {
 		t.Errorf("b = %+v; want exercised recorded as 0", inv["b"])
 	}
-	if !strings.Contains(Markdown(recorded, 0), "| Exercised |") {
+	if !strings.Contains(Markdown(recorded), "| Exercised |") {
 		t.Error("exercised column missing when the input records it")
 	}
 }
@@ -305,13 +305,14 @@ func TestMarkdownStatesFailuresAndInconclusive(t *testing.T) {
 			{ID: "no_disallowed_egress", Source: SourceTestimony, Kind: KindAbsent, Verdict: VerdictInconclusive, Detail: "capture incomplete"},
 		}},
 	))
-	page := Markdown(r, 0)
+	page := Markdown(r)
 	for _, want := range []string{
 		"No denied chunk in context",
 		"# Test evidence report",
 		"**Not verified.**",
-		"**Cites the source** (`cites_the_source`)",
-		"**audit-fee** — run `r1` (testimony), checked: no cite span",
+		"**Cites the source** — 1 of 1 run failed",
+		"- audit-fee: 1 of 1 run",
+		"`r1` failed audit-fee (testimony, `cites_the_source`): `no cite span`",
 		"Inconclusive is a failure",
 		"2 of 3 assertion results were not proven",
 	} {
@@ -334,25 +335,6 @@ func TestFailuresAreListed(t *testing.T) {
 	refs := r.Invariants[0].Failures
 	if len(refs) != 2 || refs[0].RunID != "r1" || refs[1].RunID != "r2" {
 		t.Fatalf("failures = %+v; want r1 then r2", refs)
-	}
-	page := Markdown(r, 1)
-	if !strings.Contains(page, "and 1 result more") {
-		t.Errorf("cap not reported:\n%s", page)
-	}
-}
-
-func TestLimitCapsListedFailures(t *testing.T) {
-	var refs []ResultRef
-	for _, id := range []string{"a", "b", "c"} {
-		refs = append(refs, ResultRef{RunID: id, Source: SourceTestimony, Detail: "x"})
-	}
-	var b strings.Builder
-	listResults(&b, refs, 2)
-	if got := strings.Count("\n"+b.String(), "\n- "); got != 3 { // two results and the remainder line
-		t.Errorf("listed %d lines, want 3:\n%s", got, b.String())
-	}
-	if !strings.Contains(b.String(), "1 result more") {
-		t.Errorf("missing remainder line:\n%s", b.String())
 	}
 }
 
@@ -455,11 +437,11 @@ func TestTruncatedRunFileIsUnreadableNotSkipped(t *testing.T) {
 		t.Fatalf("unreadable = %+v; want the cut-off file", notes.Unreadable)
 	}
 	r := Build(doc)
-	r.AddUnreadable(notes.Unreadable)
+	r.AddLoadNotes(notes)
 	if r.Proven() {
 		t.Error("Proven() = true with a cut-off input; want false")
 	}
-	page := Markdown(r, 0)
+	page := Markdown(r)
 	if !strings.Contains(page, "cut.json") || !strings.Contains(page, "Unreadable input") {
 		t.Errorf("page does not report the cut-off input:\n%s", page)
 	}

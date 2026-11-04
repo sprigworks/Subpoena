@@ -37,8 +37,10 @@ const (
 	VerdictInconclusive = "inconclusive"
 )
 
-// Kinds are the assertion shapes. Only KindAbsent interacts with capture
-// completeness: an absence can be proven only from a complete capture.
+// Kinds are the assertion shapes. A pass stands on an incomplete capture only
+// when the kind says it does not rest on absence: KindExists (a span you saw is
+// there) or KindOther. KindAbsent, a missing kind and any other spelling cannot
+// pass on a capture that is not stated to be complete.
 const (
 	KindAbsent = "absent"
 	KindExists = "exists"
@@ -113,6 +115,9 @@ type Window struct {
 	From    string `json:"from,omitempty"`
 	To      string `json:"to,omitempty"`
 	Seconds int64  `json:"seconds,omitempty"`
+	// Untimed counts runs with no usable capture time, which the span leaves
+	// out.
+	Untimed int `json:"untimed_runs,omitempty"`
 }
 
 // Batch is one sitting: runs no more than BatchGap apart. A batch with no
@@ -140,6 +145,11 @@ type Inputs struct {
 	HarnessFingerprint []string `json:"harness_fingerprints,omitempty"`
 	Models             []string `json:"models,omitempty"`
 	Labels             int      `json:"labels"`
+	// FilesRead is how many files yielded runs. FilesSkipped is how many were
+	// found and set aside as not this format. A run whose file is missing is in
+	// neither: the report can only count what it was given.
+	FilesRead    int `json:"files_read,omitempty"`
+	FilesSkipped int `json:"files_skipped,omitempty"`
 }
 
 // Capture counts runs by whether the capture was complete. Unstated counts a
@@ -178,14 +188,21 @@ type Invariant struct {
 	// Exercised is how many runs recorded that the check had something to
 	// check. ExercisedRecorded is false when the input never said, in which
 	// case Exercised means nothing and the page leaves the column blank.
-	Exercised         int  `json:"exercised,omitempty"`
-	ExercisedRecorded bool `json:"exercised_recorded,omitempty"`
+	Exercised         int  `json:"exercised"`
+	ExercisedRecorded bool `json:"exercised_recorded"`
 	// RunsPerBatch is one count per batch, in the order the batches are
 	// reported. A zero says the check never ran in that sitting.
-	RunsPerBatch []int       `json:"runs_per_batch,omitempty"`
-	Sources      []string    `json:"sources"`
-	Failures     []ResultRef `json:"failures,omitempty"`
-	Unproven     []ResultRef `json:"inconclusive_results,omitempty"`
+	RunsPerBatch []int `json:"runs_per_batch,omitempty"`
+	// RunsPerLabel counts the runs of this check for each label, so a failure
+	// can be stated as a share of the runs that asked that question.
+	RunsPerLabel map[string]int `json:"runs_per_label,omitempty"`
+	// Kinds and Queries are what the check looks for: every distinct kind and
+	// query recorded for it, passing or not.
+	Kinds    []string    `json:"kinds,omitempty"`
+	Queries  []string    `json:"queries,omitempty"`
+	Sources  []string    `json:"sources"`
+	Failures []ResultRef `json:"failures,omitempty"`
+	Unproven []ResultRef `json:"inconclusive_results,omitempty"`
 }
 
 // ResultRef points a failure back at the run that recorded it. Batch is set
@@ -199,9 +216,9 @@ type ResultRef struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// Build aggregates the runs of every document into one report. A pass with
-// kind absent in a run whose capture was incomplete is reported as
-// inconclusive, the same rule the harness applies to an absence on an
+// Build aggregates the runs of every document into one report. A pass that
+// could rest on absence, in a run whose capture is not stated to be complete,
+// is reported as inconclusive: the rule the harness applies to an absence on an
 // incomplete snapshot.
 func Build(docs ...Document) *Report {
 	r := &Report{
@@ -258,6 +275,9 @@ func Build(docs ...Document) *Report {
 		if run.Label != "" {
 			labels[run.Label] = true
 		}
+		if !tr.timed {
+			r.Window.Untimed++
+		}
 		if tr.timed {
 			if minT.IsZero() || tr.at.Before(minT) {
 				minT = tr.at
@@ -281,6 +301,16 @@ func Build(docs ...Document) *Report {
 			verdict, reason := effectiveVerdict(a, complete)
 			ib.runsChecked[run.RunID] = true
 			ib.sources[src] = true
+			if kind := normalize(a.Kind); kind != "" {
+				ib.kinds[kind] = true
+			}
+			if a.Detail != "" {
+				ib.queries[a.Detail] = true
+			}
+			if ib.labelRuns[run.Label] == nil {
+				ib.labelRuns[run.Label] = map[string]bool{}
+			}
+			ib.labelRuns[run.Label][run.RunID] = true
 			if ib.batchRuns[batchPos] == nil {
 				ib.batchRuns[batchPos] = map[string]bool{}
 			}
@@ -355,6 +385,9 @@ func Build(docs ...Document) *Report {
 			Exercised:         ib.exercised,
 			ExercisedRecorded: ib.exercisedRecorded,
 			RunsPerBatch:      ib.perBatch(len(order)),
+			RunsPerLabel:      ib.perLabel(),
+			Kinds:             sortedKeys(ib.kinds),
+			Queries:           sortedKeys(ib.queries),
 			Sources:           ib.sortedSources(),
 			Failures:          sortedRefs(ib.failures),
 			Unproven:          sortedRefs(ib.unproven),
@@ -363,10 +396,12 @@ func Build(docs ...Document) *Report {
 	return r
 }
 
-// AddUnreadable records input files that could not be read. Each counts as a
-// failure: an unread file is not a pass.
-func (r *Report) AddUnreadable(us []Unreadable) {
-	r.Unreadable = append(r.Unreadable, us...)
+// AddLoadNotes records what Load found beside the runs. Each unreadable input
+// counts as a failure: an unread file is not a pass.
+func (r *Report) AddLoadNotes(notes LoadNotes) {
+	r.Inputs.FilesRead += notes.Read
+	r.Inputs.FilesSkipped += len(notes.Skipped)
+	r.Unreadable = append(r.Unreadable, notes.Unreadable...)
 	r.Totals.Unreadable = len(r.Unreadable)
 }
 
@@ -517,6 +552,9 @@ type invariantBuilder struct {
 	exercisedRecorded bool
 	runsChecked       map[string]bool
 	sources           map[string]bool
+	kinds             map[string]bool
+	queries           map[string]bool
+	labelRuns         map[string]map[string]bool
 	batchRuns         map[int]map[string]bool
 	failures          []ResultRef
 	unproven          []ResultRef
@@ -526,6 +564,9 @@ func newInvariantBuilder() *invariantBuilder {
 	return &invariantBuilder{
 		runsChecked: map[string]bool{},
 		sources:     map[string]bool{},
+		kinds:       map[string]bool{},
+		queries:     map[string]bool{},
+		labelRuns:   map[string]map[string]bool{},
 		batchRuns:   map[int]map[string]bool{},
 	}
 }
@@ -539,20 +580,41 @@ func (b *invariantBuilder) perBatch(n int) []int {
 	return out
 }
 
+// perLabel is the number of runs of this check under each label.
+func (b *invariantBuilder) perLabel() map[string]int {
+	out := make(map[string]int, len(b.labelRuns))
+	for label, runs := range b.labelRuns {
+		out[label] = len(runs)
+	}
+	return out
+}
+
 func (b *invariantBuilder) sortedSources() []string { return sortedKeys(b.sources) }
 
+// effectiveVerdict is the verdict the report counts. It never improves on the
+// input: an unrecognized verdict and a pass the capture cannot support are both
+// inconclusive.
+//
+//subpoena:enforcement_point
 func effectiveVerdict(a Assertion, captureComplete bool) (string, string) {
-	v := strings.ToLower(strings.TrimSpace(a.Verdict))
-	switch v {
-	case VerdictPass, VerdictFail, VerdictInconclusive:
-	default:
+	v := normalize(a.Verdict)
+	if v != VerdictPass && v != VerdictFail && v != VerdictInconclusive { //subpoena:enforcement_guard false
 		return VerdictInconclusive, fmt.Sprintf("unrecognized verdict %q", a.Verdict)
 	}
-	if v == VerdictPass && !captureComplete && strings.EqualFold(a.Kind, KindAbsent) {
-		return VerdictInconclusive, "capture incomplete, absence not proven"
+	if v == VerdictPass && !captureComplete && !standsOnIncompleteCapture(a.Kind) { //subpoena:enforcement_guard false
+		return VerdictInconclusive, "capture incomplete, and this pass could rest on an absence"
 	}
 	return v, ""
 }
+
+// standsOnIncompleteCapture reports whether the kind says a pass does not rest
+// on absence. An unknown or missing kind has not said so.
+func standsOnIncompleteCapture(kind string) bool {
+	k := normalize(kind)
+	return k == KindExists || k == KindOther
+}
+
+func normalize(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
 func source(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {

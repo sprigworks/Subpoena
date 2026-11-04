@@ -22,13 +22,16 @@ const (
 
 // LoadNotes is what Load could not use.
 type LoadNotes struct {
+	// Read counts the files that yielded runs.
+	Read int
 	// Skipped lists files found by walking a directory that are not this
 	// format at all: traces, a collector config, anything else in a run
 	// directory. They are not results and are not failures.
 	Skipped []string
-	// Unreadable lists files that carry the format but could not be read:
-	// truncated, corrupt, or holding no result at all. They are reported on
-	// the page and count as failures.
+	// Unreadable lists files that could not be used: truncated, corrupt,
+	// blank, contradicting themselves, or holding a run with no results, no id
+	// or an id already read. They are reported on the page and count as
+	// failures.
 	Unreadable []Unreadable
 }
 
@@ -49,6 +52,7 @@ func Load(format string, paths []string, claims map[string]string) (Document, Lo
 		return Document{}, notes, err
 	}
 	doc := Document{Schema: SchemaResults}
+	seen := map[string]string{}
 	for _, f := range files {
 		raw, err := os.ReadFile(f.path)
 		if err != nil {
@@ -56,27 +60,37 @@ func Load(format string, paths []string, claims map[string]string) (Document, Lo
 			continue
 		}
 		var runs []Run
-		var shaped bool
 		switch format {
 		case FormatSubpoena:
-			runs, shaped, err = parseSubpoena(raw)
+			runs, err = parseSubpoena(raw)
 		case FormatRunResults:
-			runs, shaped, err = parseRunResults(raw, claims)
+			runs, err = parseRunResults(raw, claims)
 		}
 		if err != nil {
 			notes.Unreadable = append(notes.Unreadable, Unreadable{Path: f.path, Reason: err.Error()})
 			continue
 		}
-		if len(runs) == 0 {
-			if shaped {
-				notes.Unreadable = append(notes.Unreadable, Unreadable{
-					Path: f.path, Reason: "no assertion results in the file"})
-			} else {
-				notes.Skipped = append(notes.Skipped, f.path)
-			}
+		if reason := unusableFile(raw, len(runs)); reason != "" {
+			notes.Unreadable = append(notes.Unreadable, Unreadable{Path: f.path, Reason: reason})
 			continue
 		}
-		doc.Runs = append(doc.Runs, runs...)
+		if len(runs) == 0 {
+			notes.Skipped = append(notes.Skipped, f.path)
+			continue
+		}
+		usable := false
+		for _, run := range runs {
+			if reason := unusableRun(run, seen); reason != "" {
+				notes.Unreadable = append(notes.Unreadable, Unreadable{Path: f.path, Reason: reason})
+				continue
+			}
+			seen[run.RunID] = f.path
+			doc.Runs = append(doc.Runs, run)
+			usable = true
+		}
+		if usable {
+			notes.Read++
+		}
 	}
 	if len(doc.Runs) == 0 && len(notes.Unreadable) == 0 {
 		return Document{}, notes, fmt.Errorf("no runs found in %d file(s)", len(files))
@@ -91,14 +105,86 @@ type candidate struct {
 	path string
 }
 
+// unusableFile says why a file that yielded no run still cannot count as "not
+// this format": it carries a results field of either format, which also catches
+// the wrong -from, or it is blank. A result file wiped to {} is damage, and no
+// trace or config looks like that.
+//
+//subpoena:enforcement_point
+func unusableFile(raw []byte, runs int) string {
+	if runs > 0 {
+		return ""
+	}
+	if carriesResults(raw) { //subpoena:enforcement_guard false
+		return "no assertion results in the file for this -from format"
+	}
+	if isBlank(raw) { //subpoena:enforcement_guard false
+		return "the file is blank"
+	}
+	return ""
+}
+
+// resultFields are the top-level fields of the two input formats. A file with
+// any of them set out to be a result, however little of it survived.
+var resultFields = []string{"schema", "runs", "run_id", "task_id", "assertions", "capture_complete", "harness_fingerprint"}
+
+func carriesResults(raw []byte) bool {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return false
+	}
+	for _, field := range resultFields {
+		if _, ok := top[field]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// unusableRun says why a run cannot be counted: a run with no results would
+// read as a clean run, and a run with no id or one already read cannot be told
+// apart from another.
+//
+//subpoena:enforcement_point
+func unusableRun(run Run, seen map[string]string) string {
+	if run.RunID == "" { //subpoena:enforcement_guard false
+		return "a run has no run_id"
+	}
+	if len(run.Assertions) == 0 { //subpoena:enforcement_guard false
+		return fmt.Sprintf("run %s: no assertion results", run.RunID)
+	}
+	if first, dup := seen[run.RunID]; dup { //subpoena:enforcement_guard false
+		return fmt.Sprintf("run %s was already read from %s", run.RunID, first)
+	}
+	return ""
+}
+
+func isBlank(raw []byte) bool {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false
+	}
+	switch t := v.(type) {
+	case nil:
+		return true
+	case map[string]any:
+		return len(t) == 0
+	}
+	return false
+}
+
 func expand(paths []string) ([]candidate, error) {
 	seen := map[string]bool{}
 	var out []candidate
 	add := func(path string) {
-		if seen[path] {
+		key, err := filepath.Abs(path)
+		if err != nil {
+			key = filepath.Clean(path)
+		}
+		if seen[key] {
 			return
 		}
-		seen[path] = true
+		seen[key] = true
 		out = append(out, candidate{path: path})
 	}
 	for _, p := range paths {
@@ -137,23 +223,21 @@ func expand(paths []string) ([]candidate, error) {
 	return out, nil
 }
 
-// parseSubpoena returns the runs, whether the file carries the document shape
-// at all, and an error only when the bytes are not readable as JSON.
-func parseSubpoena(raw []byte) ([]Run, bool, error) {
+// parseSubpoena returns the runs, and an error only when the bytes are not
+// readable as JSON.
+func parseSubpoena(raw []byte) ([]Run, error) {
 	var doc Document
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	var runs []Run
+	runs := make([]Run, 0, len(doc.Runs))
 	for _, r := range doc.Runs {
 		if r.CapturedAt == "" {
 			r.CapturedAt = timestampFromRunID(r.RunID)
 		}
-		if r.RunID != "" || len(r.Assertions) > 0 {
-			runs = append(runs, r)
-		}
+		runs = append(runs, r)
 	}
-	return runs, doc.Schema != "" || len(doc.Runs) > 0, nil
+	return runs, nil
 }
 
 // runResultsFile is the flat shape a harness writes before any Subpoena output
@@ -176,23 +260,70 @@ type runResultsFile struct {
 			Kind      string `json:"kind"`
 			Verdict   string `json:"verdict"`
 			Detail    string `json:"detail"`
+			Exercised *bool  `json:"exercised"`
 		} `json:"results"`
 	} `json:"assertions"`
 }
 
-// parseRunResults returns the run, whether the file carries the run shape at
-// all, and an error when the bytes are not readable as JSON. A file with the
-// shape but no results comes back as one run with no assertions, which the
-// caller reports as unreadable: a run file that yields nothing is not a pass.
-func parseRunResults(raw []byte, claims map[string]string) ([]Run, bool, error) {
+// listsAgree checks the passed, failed and inconclusive id lists against
+// results. The two record the same verdicts, so a disagreement means the file
+// is damaged, and a failure named in only one of them must not be lost. A
+// harness that writes results alone has no lists to compare.
+//
+//subpoena:enforcement_point
+func (f *runResultsFile) listsAgree() error {
+	a := &f.Assertions
+	if len(a.Results) == 0 || len(a.Passed)+len(a.Failed)+len(a.Inconclusive) == 0 {
+		return nil
+	}
+	for verdict, ids := range map[string][]string{
+		VerdictPass: a.Passed, VerdictFail: a.Failed, VerdictInconclusive: a.Inconclusive,
+	} {
+		listed := map[string]bool{}
+		for _, id := range ids {
+			listed[id] = true
+		}
+		recorded := map[string]bool{}
+		for _, res := range a.Results {
+			if normalize(res.Verdict) == verdict {
+				recorded[res.ID] = true
+			}
+		}
+		if !sameKeys(listed, recorded) { //subpoena:enforcement_guard false
+			return fmt.Errorf("the %s list and the results disagree", verdict)
+		}
+	}
+	return nil
+}
+
+func sameKeys(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// parseRunResults returns the run, and an error when the bytes are not readable
+// as JSON or the file contradicts itself. A file with a run id or results but
+// nothing usable comes back as a run Load reports as unreadable; a file with
+// neither comes back empty for Load to judge.
+func parseRunResults(raw []byte, claims map[string]string) ([]Run, error) {
 	var f runResultsFile
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	shaped := f.RunID != "" || len(f.Assertions.Results) > 0 ||
 		len(f.Assertions.Passed) > 0 || len(f.Assertions.Failed) > 0 || len(f.Assertions.Inconclusive) > 0
 	if !shaped {
-		return nil, false, nil
+		return nil, nil
+	}
+	if err := f.listsAgree(); err != nil {
+		return nil, err
 	}
 	run := Run{
 		RunID:              f.RunID,
@@ -208,28 +339,30 @@ func parseRunResults(raw []byte, claims map[string]string) ([]Run, bool, error) 
 	if len(f.Assertions.Results) > 0 {
 		for _, res := range f.Assertions.Results {
 			run.Assertions = append(run.Assertions, Assertion{
-				ID:      res.ID,
-				Claim:   claim(claims, res.ID),
-				Source:  sourceFromEvaluator(res.Source, res.Evaluator),
-				Kind:    res.Kind,
-				Verdict: res.Verdict,
-				Detail:  res.Detail,
+				ID:        res.ID,
+				Claim:     claim(claims, res.ID),
+				Source:    sourceFromEvaluator(res.Source, res.Evaluator),
+				Kind:      res.Kind,
+				Verdict:   res.Verdict,
+				Detail:    res.Detail,
+				Exercised: res.Exercised,
 			})
 		}
-		return []Run{run}, true, nil
+		return []Run{run}, nil
 	}
+	// The lists carry no kind, so none is claimed: on an incomplete capture a
+	// pass from a list cannot be told from an absence.
 	add := func(ids []string, verdict string) {
 		for _, id := range ids {
 			run.Assertions = append(run.Assertions, Assertion{
-				ID: id, Claim: claim(claims, id), Source: SourceTestimony,
-				Kind: KindOther, Verdict: verdict,
+				ID: id, Claim: claim(claims, id), Source: SourceTestimony, Verdict: verdict,
 			})
 		}
 	}
 	add(f.Assertions.Passed, VerdictPass)
 	add(f.Assertions.Failed, VerdictFail)
 	add(f.Assertions.Inconclusive, VerdictInconclusive)
-	return []Run{run}, true, nil
+	return []Run{run}, nil
 }
 
 // sourceFromEvaluator maps a result to a source. An explicit source wins; a

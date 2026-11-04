@@ -7,14 +7,19 @@ import (
 	"time"
 )
 
-// Markdown renders the readable page. maxFailures caps the examples listed for
-// one claim; 0 lists every one. The data file always holds all of them.
-func Markdown(r *Report, maxFailures int) string {
+// Markdown renders the readable page: a short body in the reader's terms, then
+// two appendices holding what each check looks for and every run that did not
+// pass. Nothing is capped, so the page is complete without the data file.
+func Markdown(r *Report) string {
 	var b strings.Builder
 	p := func(format string, args ...any) { fmt.Fprintf(&b, format, args...) }
 
 	p("# Test evidence report\n\n")
-	p("**What this covers.** %s, %s.\n\n", plural(r.Inputs.Runs, "test run"), window(r.Window))
+	p("**What this covers.** %s, %s", plural(r.Inputs.Runs, "test run"), window(r.Window))
+	if r.Window.Untimed > 0 && r.Window.From != "" {
+		p("; %s no usable time, so that span leaves it out", untimed(r.Window.Untimed))
+	}
+	p(".\n\n")
 	if len(r.Batches) > 1 {
 		p("**Sittings.** %s, separated by more than %s. A check that exists in one of them is "+
 			"not counted against the others.\n\n", plural(len(r.Batches), "batch"), duration(int64(BatchGap.Seconds())))
@@ -26,14 +31,13 @@ func Markdown(r *Report, maxFailures int) string {
 	p("\n\n")
 	p("**How this was observed.** %s\n\n", observed(r.Sources))
 	p("**Capture.** %s\n\n", capture(r.Capture))
+	p("**Input files.** %s\n\n", inputFiles(r.Inputs, len(r.Unreadable)))
 	p("**Result.** %s\n\n", result(r.Totals, r.Inputs.Runs))
 	p("**Not verified.** Nothing here has been signed or tamper-checked, and none of these runs " +
 		"has been through a verification step. This page restates what the run files recorded.\n\n")
 
 	if len(r.Batches) > 1 {
 		p("## Batches\n\n")
-		p("Each batch is one sitting. Run ids, checks present and outcomes differ between them, " +
-			"so a total across batches can hide which sitting a check ever ran in.\n\n")
 		p("| Batch | Runs | Window | Checks | Results | Passed | Failed | Inconclusive | Runs with a failure |\n")
 		p("| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 		for _, bt := range r.Batches {
@@ -47,8 +51,7 @@ func Markdown(r *Report, maxFailures int) string {
 	p("## What was checked\n\n")
 	perBatch := len(r.Batches) > 1
 	exercised := anyExercised(r.Invariants)
-	var cols []string
-	cols = append(cols, "Claim", "Runs with a result")
+	cols := []string{"Claim", "Passes if", "Runs with a result"}
 	if perBatch {
 		cols = append(cols, "Runs by batch")
 	}
@@ -60,11 +63,11 @@ func Markdown(r *Report, maxFailures int) string {
 	for i := range align {
 		align[i] = "---:"
 	}
-	align[0], align[len(cols)-1] = "---", "---"
+	align[0], align[1], align[len(cols)-1] = "---", "---", "---"
 	p("| %s |\n", strings.Join(cols, " | "))
 	p("| %s |\n", strings.Join(align, " | "))
 	for _, inv := range orderedInvariants(r.Invariants) {
-		row := []string{cell(inv.Claim), comma(inv.RunsChecked)}
+		row := []string{cell(inv.Claim), passesIf(inv.Kinds), comma(inv.RunsChecked)}
 		if perBatch {
 			row = append(row, perBatchCell(inv))
 		}
@@ -76,12 +79,18 @@ func Markdown(r *Report, maxFailures int) string {
 		p("| %s |\n", strings.Join(row, " | "))
 	}
 	p("\n")
-	p("A run counts here whether or not the check had anything to check in it. A passing check " +
-		"for something that never happened is not evidence that it works: where the input does not " +
-		"record how often a check was exercised, this page cannot say.\n\n")
+	p("A check that passes if something is **not found** also passes in any run where that thing " +
+		"never came up, so a high count is not proof the check was tested. ")
+	if exercised {
+		p("**Exercised** is how many runs recorded having something to check; a dash means the input " +
+			"did not say.\n\n")
+	} else {
+		p("The input does not record how often a check had anything to check, so these counts say " +
+			"how often a check ran, not how often it was tested.\n\n")
+	}
 	if perBatch {
-		p("**Runs by batch** is one count per batch, in the order of the Batches table above; a " +
-			"zero means the check never ran in that sitting.\n\n")
+		p("**Runs by batch** is one count per batch, in the order of the Batches table; a zero means " +
+			"the check never ran in that sitting.\n\n")
 	}
 
 	p("## What was not proven\n\n")
@@ -92,23 +101,23 @@ func Markdown(r *Report, maxFailures int) string {
 	} else {
 		p("### Failed (%s over %s)\n\n", plural(r.Totals.Failed, "result"), plural(len(failed), "check"))
 		for _, inv := range failed {
-			p("**%s** (`%s`) — %s\n\n", inv.Claim, inv.ID, verdictLine(inv.RunsChecked, inv.Failed, "failed"))
-			listResults(&b, inv.Failures, maxFailures)
+			p("**%s** — %s\n\n", inv.Claim, verdictLine(inv.RunsChecked, inv.Failed, "failed"))
+			listQuestions(&b, inv, inv.Failures)
 		}
 	}
 	if len(inconclusive) == 0 {
 		p("### Inconclusive\n\nNone.\n\n")
 	} else {
 		p("### Inconclusive (%s over %s)\n\n", plural(r.Totals.Inconclusive, "result"), plural(len(inconclusive), "check"))
-		p("An inconclusive result is a failure: the capture could not support the claim.\n\n")
+		p("An inconclusive result is a failure: the run could not support the claim.\n\n")
 		for _, inv := range inconclusive {
-			p("**%s** (`%s`) — %s\n\n", inv.Claim, inv.ID, verdictLine(inv.RunsChecked, inv.Inconclusive, "inconclusive"))
-			listResults(&b, inv.Unproven, maxFailures)
+			p("**%s** — %s\n\n", inv.Claim, verdictLine(inv.RunsChecked, inv.Inconclusive, "inconclusive"))
+			listQuestions(&b, inv, inv.Unproven)
 		}
 	}
 	if len(r.Unreadable) > 0 {
-		p("### Unreadable input (%s)\n\n", plural(len(r.Unreadable), "file"))
-		p("These were given to this report and could not be read, so their results are missing. " +
+		p("### Unreadable input (%s)\n\n", plural(len(r.Unreadable), "file problem"))
+		p("These were given to this report and could not be used, so their results are missing. " +
 			"A result that could not be read is counted as a failure, not a pass.\n\n")
 		for _, u := range r.Unreadable {
 			p("- `%s`: %s\n", u.Path, u.Reason)
@@ -116,22 +125,151 @@ func Markdown(r *Report, maxFailures int) string {
 		p("\n")
 	}
 
-	p("### How to read this\n\n")
+	p("## How to read this\n\n")
 	p("- **Claim** is the wording supplied with the run results, or the check's id turned into a " +
-		"sentence when the input supplies none. It is not checked against the query: what was " +
-		"actually checked is the query in each failed line below.\n")
-	p("- **Runs with a result** says how often a check ran, not how often it had anything to test.\n")
+		"sentence when none is supplied. This report does not test it against the query: Appendix A " +
+		"shows what each check actually looks for.\n")
 	p("- **Observed by** names the origin of a result. *testimony* is the system's own account: " +
 		"a span, a return value, a log line. *witness* is an independent observer, which is " +
 		"evidence; *other* is neither. A claim resting on testimony alone is not independently " +
 		"confirmed, and two sources are never added together.\n")
 	p("- **Inconclusive is a failure.** It is never counted as passed and never omitted.\n")
-	p("- A run whose capture is not stated to be complete cannot prove an absence: those passes " +
-		"are reported as inconclusive here.\n")
+	p("- A run whose capture is not stated to be complete cannot prove an absence: a pass that " +
+		"could rest on one is reported as inconclusive here.\n")
 	p("- This page states what was checked and what was found. It is not a claim about anything " +
-		"outside the runs listed above, and a failure is a check that did not hold — not by itself " +
-		"a finding about why.\n")
+		"outside the runs listed, and a failure is a check that did not hold — not by itself a " +
+		"finding about why.\n\n")
+
+	p("## Appendix A: what each check looks for\n\n")
+	for _, inv := range orderedInvariants(r.Invariants) {
+		how := ""
+		if rule := passesIf(inv.Kinds); rule != seeAppendix {
+			how = ", passes if " + rule
+		}
+		p("- **%s** (`%s`)%s: %s\n", inv.Claim, inv.ID, how, queries(inv.Queries))
+	}
+	p("\n")
+
+	if len(failed)+len(inconclusive) > 0 {
+		p("## Appendix B: every result that did not pass\n\n")
+		for _, inv := range failed {
+			listRuns(&b, inv, inv.Failures, "failed")
+		}
+		for _, inv := range inconclusive {
+			listRuns(&b, inv, inv.Unproven, "inconclusive")
+		}
+		p("\n")
+	}
 	return b.String()
+}
+
+// seeAppendix is the table's answer for a check that is not a plain found or
+// not found, such as a match on the output.
+const seeAppendix = "see Appendix A"
+
+// passesIf says in a reader's words what makes a check pass. It is read from
+// the kind the run recorded, so it cannot overstate the query.
+func passesIf(kinds []string) string {
+	if len(kinds) == 1 {
+		switch kinds[0] {
+		case KindExists:
+			return "found"
+		case KindAbsent:
+			return "not found"
+		}
+	}
+	return seeAppendix
+}
+
+// queries shows what a check looks for. A check whose query varies by question
+// shows the first; the data file holds them all.
+func queries(qs []string) string {
+	switch len(qs) {
+	case 0:
+		return "no query recorded"
+	case 1:
+		return code(qs[0])
+	}
+	return fmt.Sprintf("%s (one of %d variants, by question)", code(qs[0]), len(qs))
+}
+
+func code(s string) string {
+	if strings.Contains(s, "`") {
+		return "`` " + s + " ``"
+	}
+	return "`" + s + "`"
+}
+
+// listQuestions states results that did not pass in the reader's terms: which
+// question, out of how many runs that asked it, and in which batch.
+func listQuestions(b *strings.Builder, inv Invariant, refs []ResultRef) {
+	type tally struct {
+		n       int
+		batches map[int]bool
+	}
+	byLabel := map[string]*tally{}
+	var labels []string
+	for _, ref := range refs {
+		t := byLabel[ref.Label]
+		if t == nil {
+			t = &tally{batches: map[int]bool{}}
+			byLabel[ref.Label] = t
+			labels = append(labels, ref.Label)
+		}
+		t.n++
+		if ref.Batch > 0 {
+			t.batches[ref.Batch] = true
+		}
+	}
+	sort.Strings(labels)
+	for _, label := range labels {
+		t := byLabel[label]
+		name := label
+		if name == "" {
+			name = "runs with no label"
+		}
+		fmt.Fprintf(b, "- %s: %s of %s%s\n", name, comma(t.n), plural(inv.RunsPerLabel[label], "run"), batchNote(t.batches))
+	}
+	b.WriteString("\n")
+}
+
+func batchNote(batches map[int]bool) string {
+	if len(batches) == 0 {
+		return ""
+	}
+	nums := make([]int, 0, len(batches))
+	for n := range batches {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+	parts := make([]string, len(nums))
+	for i, n := range nums {
+		parts[i] = fmt.Sprintf("%d", n)
+	}
+	if len(parts) == 1 {
+		return " (batch " + parts[0] + ")"
+	}
+	return " (batches " + strings.Join(parts, ", ") + ")"
+}
+
+// listRuns is the full record: one line per result, with the run to look up
+// and what was checked.
+func listRuns(b *strings.Builder, inv Invariant, refs []ResultRef, verdict string) {
+	for _, ref := range refs {
+		where := ref.Source
+		if ref.Batch > 0 {
+			where = fmt.Sprintf("batch %d, %s", ref.Batch, ref.Source)
+		}
+		what := strings.TrimSpace(ref.Detail)
+		if what == "" {
+			what = "no detail recorded"
+		}
+		name := ""
+		if ref.Label != "" {
+			name = ref.Label + " "
+		}
+		fmt.Fprintf(b, "- `%s` %s %s(%s, `%s`): %s\n", ref.RunID, verdict, name, where, inv.ID, code(what))
+	}
 }
 
 func anyExercised(invs []Invariant) bool {
@@ -159,6 +297,13 @@ func perBatchCell(inv Invariant) string {
 	return strings.Join(parts, " · ")
 }
 
+func untimed(n int) string {
+	if n == 1 {
+		return "1 run has"
+	}
+	return comma(n) + " runs have"
+}
+
 func batchWindow(bt Batch) string {
 	if bt.From == "" {
 		return "no run times"
@@ -169,34 +314,6 @@ func batchWindow(bt Batch) string {
 		return bt.From + " to " + bt.To
 	}
 	return fmt.Sprintf("%s to %s UTC", from.Format("2006-01-02 15:04"), to.Format("15:04"))
-}
-
-// listResults prints one line per failed result: the question the run asked
-// (its label), the run id, what observed it, and what was checked.
-func listResults(b *strings.Builder, refs []ResultRef, max int) {
-	shown := refs
-	if max > 0 && len(shown) > max {
-		shown = shown[:max]
-	}
-	for _, ref := range shown {
-		what := strings.TrimSpace(ref.Detail)
-		if what == "" {
-			what = "no detail recorded"
-		}
-		where := ref.Source
-		if ref.Batch > 0 {
-			where = fmt.Sprintf("batch %d, %s", ref.Batch, ref.Source)
-		}
-		if ref.Label != "" {
-			fmt.Fprintf(b, "- **%s** — run `%s` (%s), checked: %s\n", ref.Label, ref.RunID, where, what)
-			continue
-		}
-		fmt.Fprintf(b, "- run `%s` (%s), checked: %s\n", ref.RunID, where, what)
-	}
-	if max > 0 && len(refs) > max {
-		fmt.Fprintf(b, "- … and %s more, in the data file.\n", plural(len(refs)-max, "result"))
-	}
-	b.WriteString("\n")
 }
 
 func orderedInvariants(invs []Invariant) []Invariant {
@@ -294,6 +411,19 @@ func capture(c Capture) string {
 	return strings.Join(parts, ", ") + "."
 }
 
+// inputFiles says how many files became runs and what happened to the rest, so
+// a reader can compare the count with the runs they expected.
+func inputFiles(in Inputs, unreadable int) string {
+	s := fmt.Sprintf("%s read as results", plural(in.FilesRead, "file"))
+	if in.FilesSkipped > 0 {
+		s += fmt.Sprintf("; %s set aside as not results", plural(in.FilesSkipped, "other file"))
+	}
+	if unreadable > 0 {
+		s += fmt.Sprintf("; %s", plural(unreadable, "problem"))
+	}
+	return s + ". This page counts only what it was given: a run whose file is missing does not appear."
+}
+
 // result leads with what did not come out clean — an input that could not be
 // read first, then how many runs a failure touched — because a share of
 // results makes a bad run set look small.
@@ -303,15 +433,18 @@ func result(t Totals, runs int) string {
 	if t.Unreadable > 0 {
 		parts = append(parts, fmt.Sprintf("%s could not be read", plural(t.Unreadable, "input file")))
 	}
-	if t.Failed == 0 && t.Inconclusive == 0 {
+	switch {
+	case total == 0:
+		parts = append(parts, "no assertion results were read")
+	case t.Failed == 0 && t.Inconclusive == 0:
 		parts = append(parts, fmt.Sprintf("all %s passed", plural(total, "assertion result")))
-	} else {
+	default:
+		if runs > 0 {
+			parts = append(parts, fmt.Sprintf("%s of %s runs (%s) recorded at least one failed or inconclusive check",
+				comma(t.RunsWithFailed), comma(runs), percent(t.RunsWithFailed, runs)))
+		}
 		parts = append(parts, fmt.Sprintf("%s of %s assertion results were not proven: %s failed, %s inconclusive",
 			comma(t.Failed+t.Inconclusive), comma(total), comma(t.Failed), comma(t.Inconclusive)))
-	}
-	if runs > 0 && (t.Failed > 0 || t.Inconclusive > 0) {
-		parts = append(parts, fmt.Sprintf("%s of %s runs (%s) recorded at least one failed or inconclusive check",
-			comma(t.RunsWithFailed), comma(runs), percent(t.RunsWithFailed, runs)))
 	}
 	s := strings.Join(parts, "; ")
 	return strings.ToUpper(s[:1]) + s[1:] + "."
