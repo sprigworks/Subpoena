@@ -121,6 +121,32 @@ Any matching trace is a violation. It is evaluated three times:
 Promotion between tiers is copy and paste; a test checks the strings match.
 Details in [docs/architecture.md](docs/architecture.md).
 
+## A readable report from many runs
+
+A run leaves one result per assertion. `subpoena-report` turns a set of runs
+into one short page for a reader outside the team, plus one machine-readable
+data file:
+
+```
+subpoena-report -from run-results -md report.md -json report.json ./eval/runs
+```
+
+Per assertion the page states the claim, whether it passes on something found
+or not found, how many runs carried a result, and what passed, failed or was
+inconclusive. It states failures per question, and its appendices hold every
+check's query and every failed run. It labels each result by what
+observed it — an independent witness (evidence) or the application's own
+telemetry (testimony) — and never presents two sources as one strength. Runs
+far apart in time are reported as separate batches, an inconclusive result is a
+failure, an absent check in a run whose capture was not stated complete is
+reported inconclusive, and an input that is damaged or cannot be read is a
+failure rather than a pass.
+
+The report is a generic aggregator over assertion results; nothing specific to
+an application, an agent or a session is in scope for it. See
+[docs/evidence-reports.md](docs/evidence-reports.md).
+
+
 ## Languages
 
 | | Go | Python |
@@ -194,6 +220,7 @@ CI covers each of these on every pull request. See [CONTRIBUTING.md](CONTRIBUTIN
 - `docs/architecture.md` — what was actually built, in text.
 - `docs/traceql-subset.md`, `docs/migrating-an-existing-service.md` — the subset grammar and the migration playbook.
 - `docs/ports.md` — the contract for a Python or TypeScript harness, and how each part is checked.
+- `docs/evidence-reports.md` — the readable report from many runs, its input formats and the data file it writes.
 
 ## Layout
 
@@ -216,10 +243,12 @@ cmd/subpoena-witness/ runs a witness, JSON lines out
 cmd/subpoena-invgen/  writes invariants/names.go (also for other modules)
 cmd/subpoena-traceql/ the Go evaluator as a command (the port protocol)
 cmd/subpoena-conform/ checks any language's evaluator against the corpus
+cmd/subpoena-report/  one page and one data file from many assertion runs
+pkg/report/           aggregate assertion results into a report
 python/               the Python port: harness, TraceQL subset, witness reader and checks, cross
 examples/             quickstart, python-quickstart, adopter, platform, gateway (see above)
 conformance/          shared cases for every port, and the subset-vs-Tempo test
-docs/                 design, decisions, architecture, TraceQL subset, ports, migration
+docs/                 design, decisions, architecture, TraceQL subset, ports, migration, evidence reports
 ```
 
 Licensed under Apache-2.0.
