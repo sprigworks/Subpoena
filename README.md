@@ -136,7 +136,7 @@ Details in [docs/architecture.md](docs/architecture.md).
 
 Add the Go module with `go get github.com/sprigworks/subpoena@latest`. The
 Python package is `pip install subpoena`; see [python/README.md](python/README.md).
-TypeScript is next, and has generated names already. Every port meets the
+TypeScript is planned, and has generated names already. Every port meets the
 contract in [docs/ports.md](docs/ports.md), and shared conformance cases check
 each part.
 
