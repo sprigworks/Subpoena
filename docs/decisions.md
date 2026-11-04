@@ -10,6 +10,17 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 
 **Where the line is.** Subpoena holds generic, application-agnostic primitives: observing execs and connections, and an optional exec backstop, decided but not yet built, that would kill processes in a session's cgroup. Everything Subpoena ships is in this repository, under Apache-2.0. Agent-specific runtime protection (mapping agents to sessions, signed provenance, confinement beyond exec such as Landlock, seccomp or microVMs) is out of scope.
 
+## Where the test-evidence report and bundle live
+
+**Decision:** Subpoena holds the generic report and the generic test-evidence bundle. Aggregating many assertion runs into one page, binding one run into a versioned manifest, and verifying that manifest are application-agnostic primitives, like the rest of this repository: they work on anyone's test results and know nothing about the system under test. What stays out is what is already out of scope above — agent and session context, signed provenance, chains and a compliance workflow are not Subpoena's.
+
+**Why:** an adopter who runs Subpoena and nothing else still has to be able to show what was tested. A readable page and a record a reviewer can check cannot depend on a second product.
+
+**How the two fit together:** Subpoena works the results out once and writes them as a data file beside the readable page. A product that adds its own, agent-aware report reads that data file and recomputes nothing, so a reader ends up with one report in which each layer supplies its own facts.
+
+**Status:** the many-run report is built (`cmd/subpoena-report`, `pkg/report`, [evidence-reports.md](evidence-reports.md)). The single-run bundle and its verifier are not.
+
+
 ## The TraceQL evaluator
 
 **Decision:** tier 1 evaluates a documented subset of TraceQL in Go (`pkg/traceql`). A conformance suite runs every case through both the subset and a real Tempo and requires identical verdicts.
