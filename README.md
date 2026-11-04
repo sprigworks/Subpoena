@@ -131,12 +131,15 @@ data file:
 subpoena-report -from run-results -md report.md -json report.json ./eval/runs
 ```
 
-Per assertion the page states the claim, how many runs checked it, and what
-passed, failed or was inconclusive, then lists every failure with its run. It
-labels each result by what observed it — an independent witness (evidence) or
-the application's own telemetry (testimony) — and never presents two sources as
-one strength. An inconclusive result is a failure, and an absence in a run whose
-capture was not stated complete is reported inconclusive, never pass.
+Per assertion the page states the claim, how many runs carried a result, and
+what passed, failed or was inconclusive, then lists every failure with the
+question it asked and the query that was checked. It labels each result by what
+observed it — an independent witness (evidence) or the application's own
+telemetry (testimony) — and never presents two sources as one strength. Runs
+far apart in time are reported as separate batches, an inconclusive result is a
+failure, an absent check in a run whose capture was not stated complete is
+reported inconclusive, and an input file that cannot be read is a failure
+rather than a pass.
 
 The report is a generic aggregator over assertion results; nothing specific to
 an application, an agent or a session is in scope for it. See

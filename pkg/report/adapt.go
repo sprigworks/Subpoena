@@ -20,73 +20,86 @@ const (
 	FormatRunResults = "run-results"
 )
 
+// LoadNotes is what Load could not use.
+type LoadNotes struct {
+	// Skipped lists files found by walking a directory that are not this
+	// format at all: traces, a collector config, anything else in a run
+	// directory. They are not results and are not failures.
+	Skipped []string
+	// Unreadable lists files that carry the format but could not be read:
+	// truncated, corrupt, or holding no result at all. They are reported on
+	// the page and count as failures.
+	Unreadable []Unreadable
+}
+
 // Load reads every path in the given format and returns one document. A path
-// is a file, a glob, or a directory (walked for *.json files). A directory
-// walk skips a file that does not parse in the format, so a run directory
-// holding traces beside its results is fine; a file named outright must parse.
-// claims, when non-nil, supplies a title for an assertion id that carries none.
-func Load(format string, paths []string, claims map[string]string) (Document, []string, error) {
+// is a file, a glob, or a directory (walked for *.json files). claims, when
+// non-nil, supplies a title for an assertion id that carries none.
+//
+// A file that cannot be read is never silently dropped: it comes back in
+// LoadNotes.Unreadable, for the caller to put on the page and count as a
+// failure. A file that is simply not this format is a benign skip.
+func Load(format string, paths []string, claims map[string]string) (Document, LoadNotes, error) {
+	var notes LoadNotes
 	if format != FormatSubpoena && format != FormatRunResults {
-		return Document{}, nil, fmt.Errorf("unknown format %q (want %s or %s)", format, FormatSubpoena, FormatRunResults)
+		return Document{}, notes, fmt.Errorf("unknown format %q (want %s or %s)", format, FormatSubpoena, FormatRunResults)
 	}
 	files, err := expand(paths)
 	if err != nil {
-		return Document{}, nil, err
+		return Document{}, notes, err
 	}
 	doc := Document{Schema: SchemaResults}
-	var skipped []string
 	for _, f := range files {
 		raw, err := os.ReadFile(f.path)
 		if err != nil {
-			if f.explicit {
-				return Document{}, skipped, err
-			}
-			skipped = append(skipped, f.path)
+			notes.Unreadable = append(notes.Unreadable, Unreadable{Path: f.path, Reason: err.Error()})
 			continue
 		}
 		var runs []Run
-		var err2 error
+		var shaped bool
 		switch format {
 		case FormatSubpoena:
-			runs, err2 = parseSubpoena(raw)
+			runs, shaped, err = parseSubpoena(raw)
 		case FormatRunResults:
-			runs, err2 = parseRunResults(raw, claims)
+			runs, shaped, err = parseRunResults(raw, claims)
 		}
-		if err2 != nil || len(runs) == 0 {
-			if f.explicit {
-				if err2 == nil {
-					err2 = fmt.Errorf("no runs in %s", f.path)
-				}
-				return Document{}, skipped, err2
+		if err != nil {
+			notes.Unreadable = append(notes.Unreadable, Unreadable{Path: f.path, Reason: err.Error()})
+			continue
+		}
+		if len(runs) == 0 {
+			if shaped {
+				notes.Unreadable = append(notes.Unreadable, Unreadable{
+					Path: f.path, Reason: "no assertion results in the file"})
+			} else {
+				notes.Skipped = append(notes.Skipped, f.path)
 			}
-			skipped = append(skipped, f.path)
 			continue
 		}
 		doc.Runs = append(doc.Runs, runs...)
 	}
-	if len(doc.Runs) == 0 {
-		return Document{}, skipped, fmt.Errorf("no runs found in %d file(s)", len(files))
+	if len(doc.Runs) == 0 && len(notes.Unreadable) == 0 {
+		return Document{}, notes, fmt.Errorf("no runs found in %d file(s)", len(files))
 	}
 	if claims != nil {
 		applyClaims(&doc, claims)
 	}
-	return doc, skipped, nil
+	return doc, notes, nil
 }
 
 type candidate struct {
-	path     string
-	explicit bool // named outright or produced by a glob, not found by walking
+	path string
 }
 
 func expand(paths []string) ([]candidate, error) {
 	seen := map[string]bool{}
 	var out []candidate
-	add := func(path string, explicit bool) {
+	add := func(path string) {
 		if seen[path] {
 			return
 		}
 		seen[path] = true
-		out = append(out, candidate{path: path, explicit: explicit})
+		out = append(out, candidate{path: path})
 	}
 	for _, p := range paths {
 		if strings.ContainsAny(p, "*?[") {
@@ -95,7 +108,7 @@ func expand(paths []string) ([]candidate, error) {
 				return nil, err
 			}
 			for _, m := range matches {
-				add(m, true)
+				add(m)
 			}
 			continue
 		}
@@ -104,7 +117,7 @@ func expand(paths []string) ([]candidate, error) {
 			return nil, err
 		}
 		if !info.IsDir() {
-			add(p, true)
+			add(p)
 			continue
 		}
 		err = filepath.WalkDir(p, func(path string, d fs.DirEntry, err error) error {
@@ -112,7 +125,7 @@ func expand(paths []string) ([]candidate, error) {
 				return err
 			}
 			if !d.IsDir() && strings.EqualFold(filepath.Ext(path), ".json") {
-				add(path, false)
+				add(path)
 			}
 			return nil
 		})
@@ -124,10 +137,12 @@ func expand(paths []string) ([]candidate, error) {
 	return out, nil
 }
 
-func parseSubpoena(raw []byte) ([]Run, error) {
+// parseSubpoena returns the runs, whether the file carries the document shape
+// at all, and an error only when the bytes are not readable as JSON.
+func parseSubpoena(raw []byte) ([]Run, bool, error) {
 	var doc Document
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var runs []Run
 	for _, r := range doc.Runs {
@@ -138,7 +153,7 @@ func parseSubpoena(raw []byte) ([]Run, error) {
 			runs = append(runs, r)
 		}
 	}
-	return runs, nil
+	return runs, doc.Schema != "" || len(doc.Runs) > 0, nil
 }
 
 // runResultsFile is the flat shape a harness writes before any Subpoena output
@@ -165,13 +180,19 @@ type runResultsFile struct {
 	} `json:"assertions"`
 }
 
-func parseRunResults(raw []byte, claims map[string]string) ([]Run, error) {
+// parseRunResults returns the run, whether the file carries the run shape at
+// all, and an error when the bytes are not readable as JSON. A file with the
+// shape but no results comes back as one run with no assertions, which the
+// caller reports as unreadable: a run file that yields nothing is not a pass.
+func parseRunResults(raw []byte, claims map[string]string) ([]Run, bool, error) {
 	var f runResultsFile
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if f.RunID == "" && len(f.Assertions.Results) == 0 {
-		return nil, fmt.Errorf("not a run-results file")
+	shaped := f.RunID != "" || len(f.Assertions.Results) > 0 ||
+		len(f.Assertions.Passed) > 0 || len(f.Assertions.Failed) > 0 || len(f.Assertions.Inconclusive) > 0
+	if !shaped {
+		return nil, false, nil
 	}
 	run := Run{
 		RunID:              f.RunID,
@@ -195,7 +216,7 @@ func parseRunResults(raw []byte, claims map[string]string) ([]Run, error) {
 				Detail:  res.Detail,
 			})
 		}
-		return []Run{run}, nil
+		return []Run{run}, true, nil
 	}
 	add := func(ids []string, verdict string) {
 		for _, id := range ids {
@@ -208,7 +229,7 @@ func parseRunResults(raw []byte, claims map[string]string) ([]Run, error) {
 	add(f.Assertions.Passed, VerdictPass)
 	add(f.Assertions.Failed, VerdictFail)
 	add(f.Assertions.Inconclusive, VerdictInconclusive)
-	return []Run{run}, nil
+	return []Run{run}, true, nil
 }
 
 // sourceFromEvaluator maps a result to a source. An explicit source wins; a

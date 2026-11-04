@@ -59,12 +59,13 @@ func run(args []string) int {
 		claims = c
 	}
 
-	doc, skipped, err := report.Load(*from, fs.Args(), claims)
+	doc, notes, err := report.Load(*from, fs.Args(), claims)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-report:", err)
 		return 2
 	}
 	rep := report.Build(doc)
+	rep.AddUnreadable(notes.Unreadable)
 
 	page := report.Markdown(rep, *maxFailures)
 	if *mdPath == "" && *jsonPath == "" {
@@ -90,10 +91,16 @@ func run(args []string) int {
 
 	fmt.Fprintf(os.Stderr, "subpoena-report: %d runs, %d results: %d passed, %d failed, %d inconclusive",
 		rep.Inputs.Runs, rep.Inputs.Assertions, rep.Totals.Passed, rep.Totals.Failed, rep.Totals.Inconclusive)
-	if len(skipped) > 0 {
-		fmt.Fprintf(os.Stderr, " (%d file(s) skipped)", len(skipped))
+	if n := len(notes.Unreadable); n > 0 {
+		fmt.Fprintf(os.Stderr, ", %d input file(s) unreadable", n)
+	}
+	if n := len(notes.Skipped); n > 0 {
+		fmt.Fprintf(os.Stderr, " (%d file(s) not in this format)", n)
 	}
 	fmt.Fprintln(os.Stderr)
+	for _, u := range notes.Unreadable {
+		fmt.Fprintf(os.Stderr, "subpoena-report: unreadable: %s: %s\n", u.Path, u.Reason)
+	}
 	if *mdPath != "" || *jsonPath != "" {
 		fmt.Fprintf(os.Stderr, "subpoena-report: wrote %s\n", written(*mdPath, *jsonPath))
 	}
@@ -120,10 +127,10 @@ func exitFor(failOn string, t report.Totals) bool {
 	case "none":
 		return false
 	case "fail":
-		return t.Failed > 0
+		return t.Failed > 0 || t.Unreadable > 0
 	case "inconclusive":
 		return t.Inconclusive > 0
 	default:
-		return t.Failed > 0 || t.Inconclusive > 0
+		return t.Failed > 0 || t.Inconclusive > 0 || t.Unreadable > 0
 	}
 }
