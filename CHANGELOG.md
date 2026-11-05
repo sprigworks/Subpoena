@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Cross can remove a Go function's last `return`.** Deleting it did not
+  compile, so the mutant came back `invalid` with advice to fix a placement
+  that had no fix. Cross now puts a return of zero values in its place:
+  `return nil, ErrDenied` becomes `return nil, nil`. A return that is already
+  zero values (`return false`) stays `invalid`, and says to mark the guard.
 - **A crash shows the package that died.** It printed the last lines of the
   whole run, usually the `--- PASS` lines of an unrelated package. It now
   prints that package's panic, or its last lines after a `log.Fatal`.

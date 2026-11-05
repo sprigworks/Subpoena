@@ -7,6 +7,10 @@
 // //subpoena:enforcement on the statement's first line, inside a function
 // marked //subpoena:enforcement_point.
 //
+// A removed return the function cannot end without is replaced by a return of
+// zero values, as Python's pass ends a function with None: return nil, ErrDenied
+// becomes a return of nil, nil. A return of zero values has no such stand-in.
+//
 // A guard is marked on its if line with //subpoena:enforcement_guard true (or
 // false): the mutant forces the condition to that bypass value. The value is
 // a reviewed claim, like the markers: a wrong one forces enforcement on, which
@@ -89,6 +93,12 @@ type Mutant struct {
 	end     int
 	point   int    // byte offset of the enclosing function declaration in File
 	src     []byte // file bytes the offsets were computed from; not a later reread
+	// zero is the return of zero values that can stand in for a removed return,
+	// "" if there is none; fnEnd is the offset of its function's closing brace,
+	// which is where the compiler reports a missing return. useZero applies it.
+	zero    string
+	fnEnd   int
+	useZero bool
 }
 
 // Name identifies the mutant in reports: function, file and line.
@@ -97,6 +107,9 @@ func (m Mutant) Name() string { return fmt.Sprintf("%s (%s:%d)", m.Func, m.File,
 // replacement is the text the mutant puts in place of Removed. A forced
 // condition keeps the original expression, so variables it uses stay used.
 func (m Mutant) replacement() string {
+	if m.useZero {
+		return m.zero + " /* replaced by subpoena-cross */"
+	}
 	switch m.Bypass {
 	case "true":
 		return "(" + m.Removed + ") || true /* forced by subpoena-cross */"
@@ -122,6 +135,11 @@ type Result struct {
 	// first is the failure this field sits beside, and so is a t.Log, which go
 	// test prints the same way. It only tells the reader where to look.
 	LaterWitness string
+	// ZeroReturns lists the zero-value returns that stood in for returns the
+	// function could not end without, so a mutant could compile.
+	ZeroReturns []string
+	// Hint says what to do about an Invalid result, when cross can tell.
+	Hint string
 	// EvidenceFile is where the full go test -json output was kept, if
 	// Options.EvidenceDir is set.
 	EvidenceFile string
@@ -504,18 +522,38 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 
 	out, err := goIn(ctx, o.Timeout, sb, "build", pkgs)
 	if err != nil {
-		// Removing a statement may leave an import unused (the removed line
-		// was its only use); drop those imports and build again.
-		pruned := false
+		// Removing a statement may leave a function with no return at its end,
+		// or an import unused (the removed line was its only use). Stand in a
+		// zero-value return, drop those imports, and build again. A zero return
+		// is one line, as the removal's comment is, so the line numbers in out
+		// still hold for the imports.
+		retry := false
 		for _, file := range files {
+			changed := false
+			if ms, ok := zeroMissingReturns(byFile[file], file, out); ok {
+				b, err := applyMutants(ms[0].src, ms)
+				if err != nil {
+					return res, fmt.Errorf("cross: %s: %w", file, err)
+				}
+				byFile[file], mutated[file], changed = ms, b, true
+				for _, m := range ms {
+					if m.useZero {
+						res.ZeroReturns = append(res.ZeroReturns, m.zero)
+						fmt.Fprintf(o.Log, "  %s cannot end without a return: %s\n", m.Name(), m.zero)
+					}
+				}
+			}
 			if b, ok := pruneUnusedImports(mutated[file], file, out); ok {
-				if err := os.WriteFile(filepath.Join(tmp, filepath.FromSlash(file)), b, 0o644); err != nil {
+				mutated[file], changed = b, true
+			}
+			if changed {
+				if err := os.WriteFile(filepath.Join(tmp, filepath.FromSlash(file)), mutated[file], 0o644); err != nil {
 					return res, err
 				}
-				pruned = true
+				retry = true
 			}
 		}
-		if pruned {
+		if retry {
 			out, err = goIn(ctx, o.Timeout, sb, "build", pkgs)
 		}
 	}
@@ -537,6 +575,9 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			res.Outcome, res.Output = TimedOut, tail(out, 20)
 		} else {
 			res.Outcome, res.Output = Invalid, tail(out, 20) //subpoena:enforcement
+			if missingReturnRE.MatchString(out) {
+				res.Hint = finalReturnHint
+			}
 		}
 	} else {
 		raw, err := testOut, testErr
@@ -1093,6 +1134,9 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 				Removed: string(src[s:e]), Bypass: mk.bypass, Group: mk.group,
 				start: s, end: e, point: fset.Position(fd.Pos()).Offset, src: src,
 			}
+			if ret, ok := st.(*ast.ReturnStmt); ok && !mk.guard {
+				m.zero, m.fnEnd = zeroReturn(src, fset, fd, ret)
+			}
 			out = append(out, m)
 			return true
 		})
@@ -1124,6 +1168,54 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 		return nil, stray //subpoena:enforcement
 	}
 	return out, nil
+}
+
+// zeroReturn returns the statement that can stand in for ret where the
+// function cannot end without a return, and the offset of that function's
+// closing brace. *new(T) is T's zero value for any T, so no type needs
+// resolving. A return of zero values already has no stand-in: it would be the
+// same statement, and a mutant that changes nothing proves nothing.
+//
+//subpoena:enforcement_point
+func zeroReturn(src []byte, fset *token.FileSet, fd *ast.FuncDecl, ret *ast.ReturnStmt) (string, int) {
+	typ, body := fd.Type, fd.Body
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.FuncLit); ok && lit.Body.Pos() <= ret.Pos() && ret.Pos() < lit.Body.End() {
+			typ, body = lit.Type, lit.Body
+		}
+		return true
+	})
+	if typ.Results == nil {
+		return "", 0
+	}
+	if !slices.ContainsFunc(ret.Results, func(e ast.Expr) bool { return !isZeroValue(e) }) {
+		return "", 0 //subpoena:enforcement
+	}
+	var zeros []string
+	for _, field := range typ.Results.List {
+		text := string(src[fset.Position(field.Type.Pos()).Offset:fset.Position(field.Type.End()).Offset])
+		if strings.Contains(text, "\n") {
+			return "", 0 // one line only: the line numbers of a retried build depend on it
+		}
+		for range max(1, len(field.Names)) {
+			zeros = append(zeros, "*new("+text+")")
+		}
+	}
+	return "return " + strings.Join(zeros, ", "), fset.Position(body.Rbrace).Offset
+}
+
+// isZeroValue reports whether e is plainly a zero value. A named constant that
+// happens to be zero is not seen here.
+func isZeroValue(e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.Ident:
+		return x.Name == "nil" || x.Name == "false"
+	case *ast.BasicLit:
+		return x.Value == "0" || x.Value == `""` || x.Value == "``"
+	case *ast.CompositeLit:
+		return len(x.Elts) == 0
+	}
+	return false
 }
 
 // misplaced says why a marker matched no statement.
@@ -1232,6 +1324,55 @@ func absoluteReplaces(ctx context.Context, root, tmp string) error {
 	return nil
 }
 
+var missingReturnRE = regexp.MustCompile(`(?m)^(?:\./)?(\S+\.go):(\d+):\d+: missing return$`)
+
+// finalReturnHint is the advice for a return with no stand-in.
+const finalReturnHint = "the function cannot end without this return, and it already returns zero values, so no mutant can stand in for it; " +
+	"mark the if that reaches it with //" + MarkerGuard + ", or move the decision into an if that can carry the marker"
+
+// zeroMissingReturns turns on the zero-value return of each mutant whose
+// function the compiler reports as missing a return, and reports whether it
+// turned on any. A return the function can do without stays removed: a stand-in
+// there would end the function where the mutant must carry on.
+func zeroMissingReturns(ms []Mutant, file, buildOut string) ([]Mutant, bool) {
+	lines := map[int]bool{}
+	for _, m := range missingReturnRE.FindAllStringSubmatch(buildOut, -1) {
+		if reportedFile(m[1], file) {
+			var n int
+			fmt.Sscan(m[2], &n)
+			lines[n] = true
+		}
+	}
+	out := slices.Clone(ms)
+	changed := false
+	for i, m := range out {
+		if m.zero != "" && lines[lineAfterRemovals(m.fnEnd, ms)] {
+			out[i].useZero, changed = true, true
+		}
+	}
+	return out, changed
+}
+
+// lineAfterRemovals is the line of a snapshot offset once ms are applied: a
+// removed statement leaves one line however many it spanned.
+func lineAfterRemovals(offset int, ms []Mutant) int {
+	src := ms[0].src
+	line := 1 + bytes.Count(src[:offset], []byte("\n"))
+	for _, m := range ms {
+		if m.Bypass == "" && m.end <= offset {
+			line -= bytes.Count(src[m.start:m.end], []byte("\n"))
+		}
+	}
+	return line
+}
+
+// reportedFile reports whether a path in compiler output is file, a
+// module-relative path.
+func reportedFile(reported, file string) bool {
+	r, f := filepath.ToSlash(filepath.Clean(reported)), filepath.ToSlash(filepath.Clean(file))
+	return r == f || strings.HasSuffix(f, "/"+r)
+}
+
 var unusedImportRE = regexp.MustCompile(`(?m)^(?:\./)?(\S+\.go):(\d+):\d+: "[^"]+" imported (?:as \S+ )?and not used`)
 
 // pruneUnusedImports removes from src (the mutated file, at module-relative
@@ -1241,7 +1382,7 @@ var unusedImportRE = regexp.MustCompile(`(?m)^(?:\./)?(\S+\.go):(\d+):\d+: "[^"]
 func pruneUnusedImports(src []byte, file, buildOut string) ([]byte, bool) {
 	drop := map[int]bool{}
 	for _, m := range unusedImportRE.FindAllStringSubmatch(buildOut, -1) {
-		if filepath.ToSlash(filepath.Clean(m[1])) != filepath.ToSlash(filepath.Clean(file)) && !strings.HasSuffix(filepath.ToSlash(file), "/"+filepath.ToSlash(m[1])) {
+		if !reportedFile(m[1], file) {
 			continue
 		}
 		var n int

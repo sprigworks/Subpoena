@@ -69,6 +69,9 @@ func main() {
 				fmt.Printf("  at %s:%d, removed: %s\n", m.File, m.Line, strings.Join(strings.Fields(m.Removed), " "))
 			}
 		}
+		for _, z := range r.ZeroReturns {
+			fmt.Printf("  the function cannot end without a return, so this mutant has: %s\n", z)
+		}
 		switch r.Outcome {
 		case cross.Killed, cross.KilledBySelfReport:
 			fmt.Printf("  suite went red; failing: %s\n", strings.Join(r.Failing, ", "))
@@ -82,6 +85,9 @@ func main() {
 			}
 		case cross.Survived:
 			fmt.Println("  suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced")
+			if len(r.ZeroReturns) > 0 {
+				fmt.Println("  unless the marked return gave those same values (a constant that is zero): then mark the guard instead")
+			}
 		case cross.Masked:
 			if len(r.MaskedBy) > 0 {
 				fmt.Printf("  stayed green alone; red with group=%s. Masked by: %s\n", r.Mutant.Group, strings.Join(r.MaskedBy, ", "))
@@ -103,7 +109,11 @@ func main() {
 			}
 			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
 		case cross.Invalid:
-			fmt.Println("  mutant did not compile, so it proves nothing; fix the marker placement:")
+			if r.Hint != "" {
+				fmt.Println("  mutant did not compile, so it proves nothing: " + r.Hint)
+			} else {
+				fmt.Println("  mutant did not compile, so it proves nothing; fix the marker placement:")
+			}
 			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
 		}
 	}

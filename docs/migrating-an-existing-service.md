@@ -204,6 +204,16 @@ the enforcing. Cross-examination (step 6) deletes that statement and requires th
 to fail. A function with the first marker but not the second makes
 cross-examination exit with an error naming it.
 
+A marked `return` can be the one a Go function cannot end without: the last
+statement, or a denial in a `switch` case. Deleting it would not compile, so
+cross replaces it with a return of zero values, and `return nil, ErrDenied`
+becomes `return nil, nil`. That is the mutant to catch: the caller is told
+nothing went wrong. If the marked return is already zero values, as `return
+false` is, the replacement would change nothing, so cross reports the mutant
+`invalid`. Mark the guard that leads to it instead, or give the decision an
+`if` to carry the marker. The same goes for a constant that happens to be
+zero, which cross cannot see: that mutant survives.
+
 Two more shapes are common in real services. A guard such as
 `if ctx.Err() == nil { runner.Run(cmd) }` gets
 `//subpoena:enforcement_guard true` on the `if` line: cross forces the
