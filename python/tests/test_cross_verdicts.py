@@ -44,6 +44,7 @@ def outcome(tmp_path, files, *args, **kw):
 
 OUTSIDE = '''
     import os
+    import auth
 
     def test_first_run_only():
         mark = {mark!r}
@@ -68,6 +69,8 @@ def test_a_self_report_kill_is_confirmed_too(tmp_path):
 
 
 FLAKE = '''
+    import auth
+
     def test_flaky():
         path = {path!r}
         try:
@@ -214,6 +217,7 @@ def test_a_crash_beside_an_assertion_is_a_crash_in_either_order(tmp_path, a, b, 
 
 def test_the_inner_pytest_runs_without_pytest_randomly(tmp_path):
     r = outcome(tmp_path, {"auth.py": GATE, "test_a.py": """
+        import auth
         def test_blocked(request):
             assert request.config.pluginmanager.is_blocked("randomly")
     """})
