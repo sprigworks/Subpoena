@@ -512,3 +512,53 @@ func TestOnlyTheRunsMarkMakesAWitness(t *testing.T) {
 		})
 	}
 }
+
+// A test's text is not the go command's: a real t.Fatal holding "[build failed]"
+// is a kill, and a panic holding "[setup failed]" a crash (repros i2-buildtext,
+// i3-buildpanic).
+func TestBuildFailedIsReadOnlyFromGoTestsOwnLine(t *testing.T) {
+	for text, want := range map[string]Outcome{
+		`t.Fatal("deploy log said FAIL example.com/x [build failed] and mallory was let in")`: Killed,
+		`panic("[setup failed]")`: Crashed,
+	} {
+		test := `package mini
+
+import "testing"
+
+func TestDenied(t *testing.T) {
+	if Check("mallory") == nil {
+		` + text + `
+	}
+}
+`
+		rep, err := run(t, module(t, map[string]string{"gate.go": gateGo, "gate_test.go": test}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := rep.Results[0]; r.Outcome != want {
+			t.Fatalf("%s: want %s, got %s\n%s", text, want, r.Outcome, r.Output)
+		}
+	}
+}
+
+// go test passes a package it has no tests for, so a fault in one shows first
+// in go build, on every mutant, as if each had broken it. It is the module's
+// fault, so it stops the run before any mutant (repros i5-nomain, i4-linkfail).
+func TestABaselineThatDoesNotBuildIsAnError(t *testing.T) {
+	dir := module(t, map[string]string{"gate.go": gateGo, "gate_test.go": strings.Replace(denyOnly, "denied", "Check", 1), "tool/tool.go": "package main\n"})
+	_, err := run(t, dir)
+	if err == nil || !strings.Contains(err.Error(), "baseline does not build") {
+		t.Fatalf("want a baseline error, got %v", err)
+	}
+}
+
+const denyOnly = `package mini
+
+import "testing"
+
+func TestDenied(t *testing.T) {
+	if denied("mallory") == nil {
+		t.Fatal("mallory was let in")
+	}
+}
+`

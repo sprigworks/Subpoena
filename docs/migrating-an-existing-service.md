@@ -326,10 +326,15 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 | `registry-drift` | A registry change and a test that uses it are in one change set; a human confirms the test was not bent to fit |
 
 Cross-examination is the check that matters most. It requires a green baseline, removes
-each marked enforcement statement in a temporary copy, and runs the tests. A red
-suite is `enforcement-mutant-killed`. A green suite is
-`enforcement-mutant-survived`: your tests cannot tell enforced from unenforced.
-Strengthen them. Never remove the marker to make it pass. A suite that runs
+each marked enforcement statement in a temporary copy, and runs the tests. A
+suite red on an assertion is `enforcement-mutant-killed`, once the tests that
+failed pass again without the mutant; if one fails there too it is
+`enforcement-mutant-unconfirmed`, which fails the run: fix the flake or the state
+it left. A kill means a test noticed, not that a test examined the refusal: an
+allowed-path test can kill a removal that stops the allowed path too, so read the
+first evidence (`docs/architecture.md`, "What a kill does not prove"). A green
+suite is `enforcement-mutant-survived`: your tests cannot tell enforced from
+unenforced. Strengthen them. Never remove the marker to make it pass. A suite that runs
 past `-timeout` is `enforcement-mutant-timeout`, which fails the run too: make
 the test that should catch the mutant fail fast instead of hanging. A suite
 that goes red only by a crash (a panic, a runtime fatal error, `os.Exit`, or a
@@ -338,7 +343,10 @@ broke. A failure ahead of the panic does not save it, from `t.Error`, testify or
 Ginkgo v2: in the output they are text anything could print. Each kill prints its first evidence (`witness`, `testimony` or
 `other`). Where an enforcement point has a witness test, aim for `witness`; an
 `other` kill means an exit code or error check ended the test before the
-witness was read (`harness.WatchSpawns` reads it at cleanup anyway). Go test
+witness was read (`harness.WatchSpawns` reads it at cleanup anyway). A
+`witness:` tag counts only from the harness, since the code under test can print
+the same text: a test that asks a witness itself fails through
+`harness.WitnessErrorf`. Go test
 prints `t.Log` and `t.Error` alike, so a log line ahead of the witness check
 counts as the first evidence; cross names the witness failure that came later,
 and the fix is to log after the check. A layer

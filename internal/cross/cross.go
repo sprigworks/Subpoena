@@ -13,6 +13,12 @@
 // the refusal itself (return p.Check(u) would become return false), and a call
 // can be the work the allowed path needs (return s.Authorize(admins)).
 //
+// A kill says a test noticed the mutant, not that the test examined the refusal.
+// Removing an early return or an assignment can stop the allowed path too, as a
+// wrong guard value does, and then a test of the allowed path alone kills it.
+// Nothing in the output tells the two apart: docs/architecture.md, "What a kill
+// does not prove".
+//
 // A guard is marked on its if line with //subpoena:enforcement_guard true (or
 // false): the mutant forces the condition to that bypass value. The value is
 // a reviewed claim, like the markers: a wrong one forces enforcement on, which
@@ -377,6 +383,15 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	}
 	if baselineErr != nil {
 		return nil, baselineErr //subpoena:enforcement
+	}
+	// go test passes a package it has no tests for, but each mutant is built
+	// first, so a fault there would come back as every mutant invalid.
+	var buildErr error
+	if out, err := goIn(ctx, o.Timeout, primary, "build", "-buildvcs=false", pkgs); err != nil {
+		buildErr = fmt.Errorf("cross: baseline does not build, cannot judge mutants: %s", tail(out, 20))
+	}
+	if buildErr != nil {
+		return nil, buildErr //subpoena:enforcement
 	}
 
 	if o.Select {
@@ -1901,8 +1916,10 @@ func timedOut(out string, err error) bool {
 }
 
 var (
-	failRE  = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
-	buildRE = regexp.MustCompile(`\[(build|setup) failed\]`)
+	failRE = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
+	// buildRE matches go test's own line. The text alone can be anything a test
+	// or a panic printed.
+	buildRE = regexp.MustCompile(`(?m)^FAIL\s+\S+\s+\[(build|setup) failed\]$`)
 )
 
 func buildFailed(out string) bool { return buildRE.MatchString(out) }

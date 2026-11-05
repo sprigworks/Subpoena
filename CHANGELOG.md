@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The wrong cause is no longer called a build failure.** A test or panic whose
+  text held `[build failed]` or `[setup failed]` came back `invalid`, read from
+  anywhere in the output. Cross now reads only `go test`'s own line. A package
+  `go test` passes for having no tests, but which does not build, made every
+  mutant `invalid` as "did not compile"; it now stops the run at the baseline.
+- **Docs say what a kill does not prove.** An early return, an assignment or a
+  wrong guard can stop the allowed path too, and then an allowed-path test kills
+  the mutant with the refusal unexamined. This is known and cross does not
+  close it; `docs/architecture.md` says how to read a kill for it.
 - **The code under test cannot supply witness evidence.** Python read `witness:`
   anywhere in the message, which holds pytest's diff of the app's own values; it
   now reads the tag only at the start of the test's own message. Go read it from

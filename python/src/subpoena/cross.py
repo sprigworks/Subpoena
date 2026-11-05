@@ -22,6 +22,9 @@ that can carry the allow decision, so it is invalid. Mark the guard. Verdicts:
   collected a test from, or a conftest.py), or a subpoena
   teardown check such as watch_spawns, or webtest's check of the status a test
   expected. An assert in the code under test is a crash, as a panic is in Go.
+  A kill says a test noticed, not that it examined the refusal: a removal that
+  stops the allowed path too is killed by an allowed-path test alone
+  (docs/architecture.md, "What a kill does not prove").
 - unconfirmed: a kill, but a test that failed also failed in one of _RERUNS
   reruns without the mutant, each on a fresh copy: state outside the copy, or a
   flake. A rare flake can pass them all. The run fails.

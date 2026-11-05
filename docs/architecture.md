@@ -182,6 +182,24 @@ with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.
 
+### What a kill does not prove
+
+A kill says that a test failed on an assertion once the marked statement was
+gone. It does not say that the test examined the refusal. This gap is known and
+cross does not close it. Removing an early return, an assignment or a `continue`
+can stop the allowed path as well (`user = None`, then the admin is refused), and
+so can a wrong guard value. Enforcement is then forced on, a test of the allowed
+path alone fails, and that is a kill, though no test ever asks about a refused
+user. A mutant that crashes a handler can read the same way when the test sees
+it second-hand: `assert 500 == 200`, or an `EOF` after `net/http` recovered the
+panic. Nothing in the output tells these apart from a real test of the refusal,
+so read each kill's first evidence: `admin was refused` on the mutant of a
+refusal is this gap. Then write the test of the refused path, which is the one
+that shows the enforcement is gone. Python's `None` on a marked return and
+Go's stand-in are held back for this reason, and only there: other removals
+run. `--require-witness` narrows the gap, since a witness failure is about the
+effect, not about the return value.
+
 Enforcement that is a condition, not a statement, is marked on the `if` line
 with `//subpoena:enforcement_guard true` (or `false`). The value is the one that
 lets the action through, and the mutant forces the condition to it. The value
