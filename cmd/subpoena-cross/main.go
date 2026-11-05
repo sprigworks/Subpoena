@@ -83,6 +83,10 @@ func main() {
 				fmt.Printf("  a witness failure came later: %s\n", r.LaterWitness)
 				fmt.Println("  if the line above is a t.Log, not an assertion, move it after the witness check: go test prints both alike")
 			}
+		case cross.Unconfirmed:
+			fmt.Printf("  suite went red, but these tests also failed without the mutant: %s\n", strings.Join(r.Failing, ", "))
+			fmt.Println("  leftover state outside the copy, or a flake: the red run proves nothing. Fix the test:")
+			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
 		case cross.Survived:
 			fmt.Println("  suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced")
 			if len(r.ZeroReturns) > 0 {

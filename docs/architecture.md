@@ -94,10 +94,22 @@ checks, per enforcement point, that the suite notices when enforcement is gone.
 It copies the module to a temp directory, discovers enforcement points from
 that copy, and removes the statement marked
 `//subpoena:enforcement` inside each `//subpoena:enforcement_point` function,
-and runs the tests. A red suite kills the mutant. A green suite means the tests
+and runs the tests. A suite that goes red on a test's assertion kills the mutant,
+if that test passes without it. A green suite means the tests
 cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
-mutant that does not compile is "invalid", never "killed". A removed `return`
+mutant that does not compile is "invalid", never "killed". Every run starts from
+a fresh copy, so no test sees what another case left there. After a kill, its
+failed tests run again without the mutant, three times, each on a fresh copy.
+If one fails, or does not finish, the verdict is
+`enforcement-mutant-unconfirmed` and the run fails: something other than the
+mutant turned it red, such as state outside the copy. The same goes for a test
+that fails alone because it needs the tests before it. A flake needs more than
+one rerun to show: a test that fails half the time passes one rerun half the
+time. Three reruns leave such a test a one-in-eight way past, and a test that
+fails one run in fifty passes them nearly always, so a kill on a flaky suite
+stays a weak claim. Cross narrows this and does not close it: fix the flake, and
+confirm a surprising kill by rerunning cross. A removed `return`
 the function cannot end without gets a return of zero values in its place only
 when that turns an error to nil and changes nothing else; any other such return
 stays invalid, since zero can be the refusal itself (`return p.Check(u)`). That
@@ -188,8 +200,8 @@ statement or guard marker outside an enforcement point, a point marker that is
 not on a function's doc comment, and a misspelt `//subpoena:enforcement...`
 comment. A run whose context is canceled is an error, never a verdict.
 
-Discovery, mutation and restoration use the same saved file bytes. Before each
-mutation, cross-examination checks that the copied file still matches discovery
+Discovery and mutation use the same saved file bytes. Before each
+mutation, cross-examination checks that the fresh copy still matches discovery
 and refuses if it has changed. The CLI prints `snapshot <sha256> <path>` for
 each mutant-bearing file, so its reported offsets and removals can be tied to
 those bytes. These hashes cover only files containing mutants, not tests, the

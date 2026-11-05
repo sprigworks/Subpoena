@@ -4,6 +4,8 @@ package cross
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -252,4 +254,162 @@ func TestDenied(t *testing.T) {
 	if r := rep.Results[0]; r.Outcome != Crashed {
 		t.Fatalf("want crashed, got %s %q", r.Outcome, r.FirstFailure)
 	}
+}
+
+// Tests here fail by state left from an earlier run: only that, and not the
+// mutant, can turn them red. Each module has two mutants, so a run at -j 1
+// shares a worker between them.
+const twoGates = gateGo + `
+//subpoena:enforcement_point
+func Check2(u string) error {
+	if u == "mallory" {
+		return ErrDenied //subpoena:enforcement
+	}
+	return nil
+}
+`
+
+// A test that leaves a file in the copy must not trip on it in the next case:
+// each case gets a fresh copy, as the baseline does (repro e4-state).
+func TestStateLeftInTheCopyIsNoKill(t *testing.T) {
+	const test = `package mini
+
+import (
+	"os"
+	"testing"
+)
+
+func TestWorkdirIsFresh(t *testing.T) {
+	if err := os.Mkdir("out", 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+`
+	for _, jobs := range []int{1, 2} {
+		rep, err := Run(context.Background(), Options{Target: module(t, map[string]string{"gate.go": twoGates, "gate_test.go": test}), Jobs: jobs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rep.Results {
+			if r.Outcome != Survived {
+				t.Fatalf("-j %d: want survived, got %s %q", jobs, r.Outcome, r.FirstFailure)
+			}
+		}
+	}
+}
+
+// State outside the copy survives a fresh copy, so a red test is run again
+// without the mutant, and failing there too it proves nothing (repro
+// e4b-outside-state).
+func TestATestRedWithoutTheMutantIsNoKill(t *testing.T) {
+	mark := filepath.Join(t.TempDir(), "mark")
+	test := `package mini
+
+import (
+	"os"
+	"testing"
+)
+
+func TestFirstRunOnly(t *testing.T) {
+	const mark = "` + mark + `"
+	if _, err := os.Stat(mark); err == nil {
+		t.Fatal("already initialised")
+	}
+	os.WriteFile(mark, nil, 0o644)
+}
+`
+	rep, err := run(t, module(t, map[string]string{"gate.go": gateGo, "gate_test.go": test}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rep.Results[0]
+	if r.Outcome != Unconfirmed || !rep.Failed() || !strings.Contains(r.Output, "already initialised") {
+		t.Fatalf("want unconfirmed, got %s %q\n%s", r.Outcome, r.FirstFailure, r.Output)
+	}
+}
+
+// A flake can pass one rerun, so a kill takes killReruns of them (repro
+// e5-flake, made certain: this test fails on its second and fourth runs, which
+// are the mutant run and the second rerun). With one rerun it comes back a kill.
+func TestAFlakeNeedsMoreThanOneRerun(t *testing.T) {
+	count := filepath.Join(t.TempDir(), "count")
+	test := `package mini
+
+import (
+	"os"
+	"testing"
+)
+
+func TestFlaky(t *testing.T) {
+	const count = "` + count + `"
+	b, _ := os.ReadFile(count)
+	b = append(b, 'x')
+	os.WriteFile(count, b, 0o644)
+	if len(b) == 2 || len(b) == 4 {
+		t.Fatal("upstream was slow")
+	}
+}
+`
+	reruns := killReruns
+	defer func() { killReruns = reruns }()
+	for n, want := range map[int]Outcome{1: Killed, 3: Unconfirmed} {
+		os.Remove(count)
+		killReruns = n
+		rep, err := run(t, module(t, map[string]string{"gate.go": gateGo, "gate_test.go": test}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := rep.Results[0]; r.Outcome != want {
+			t.Fatalf("%d reruns: want %s, got %s %q", n, want, r.Outcome, r.FirstFailure)
+		}
+	}
+}
+
+// A self-report kill is a kill too: the same check holds it.
+func TestASelfReportKillIsConfirmedToo(t *testing.T) {
+	mark := filepath.Join(t.TempDir(), "mark")
+	test := `package mini
+
+import (
+	"os"
+	"testing"
+)
+
+func TestFirstRunOnly(t *testing.T) {
+	const mark = "` + mark + `"
+	if _, err := os.Stat(mark); err == nil {
+		t.Fatal("already initialised")
+	}
+	os.WriteFile(mark, nil, 0o644)
+}
+`
+	rep, err := Run(context.Background(), Options{Target: module(t, map[string]string{"gate.go": gateGo, "gate_test.go": test}), RequireWitness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Outcome != Unconfirmed {
+		t.Fatalf("want unconfirmed, got %s", r.Outcome)
+	}
+}
+
+// A rerun's names come from the events, top-level names only, since -run reads
+// a slash as a subtest level; a package with no failed test is not rerun.
+func TestFailedTestsNamesWhatToRerun(t *testing.T) {
+	names, pkgs := failedTests(strings.Join([]string{
+		`{"Action":"fail","Package":"p","Test":"TestA/sub"}`,
+		`{"Action":"fail","Package":"p","Test":"TestA"}`,
+		`{"Action":"pass","Package":"p","Test":"TestB"}`,
+		`{"Action":"fail","Package":"p"}`,
+		`{"Action":"fail","Package":"q"}`,
+		`{"Action":"fail","Package":"r","Test":"TestC"}`,
+	}, "\n"))
+	if strings.Join(names, " ") != "TestA TestC" || strings.Join(pkgs, " ") != "p r" {
+		t.Fatalf("got %v %v", names, pkgs)
+	}
+}
+
+func init() {
+	// One rerun keeps this suite's many real kills cheap; a test that needs
+	// more sets it.
+	killReruns = 1
 }

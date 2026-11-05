@@ -54,6 +54,13 @@ const (
 	MarkerGuard            = "subpoena:enforcement_guard"
 )
 
+// killReruns is how many times a kill's failed tests run again without the
+// mutant, each on a fresh copy. One rerun catches a test that fails half the
+// time only half the time, so it is more than one. A test that fails rarely
+// will still pass them: cross's reruns narrow a flake's way to a kill, and do
+// not close it. See docs/architecture.md.
+var killReruns = 3
+
 // maxGroup bounds a layer group, so the search for masking layers (one run per
 // pair of members) stays small.
 const maxGroup = 8
@@ -73,6 +80,10 @@ const (
 	// TimedOut means the suite did not finish within Options.Timeout. A hang
 	// may be the mutant's doing or the host's, so it is not a kill.
 	TimedOut Outcome = "enforcement-mutant-timeout"
+	// Unconfirmed means the suite went red on an assertion, but a test that
+	// failed also failed in a rerun without the mutant: leftover state or a
+	// flake, so the mutant may have had no part in it. A kill it is not.
+	Unconfirmed Outcome = "enforcement-mutant-unconfirmed"
 	// Crashed means the suite went red with no clean failure message: a test
 	// binary died (panic, runtime fatal error, os.Exit), or a test failed
 	// without saying why. A crash is not evidence that the enforcement is tested, so it
@@ -322,21 +333,22 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		}
 		return sb
 	}
-	primary := inCopy(tmp)
-	// Further workers get copies of the discovery copy, made after the
-	// replaces were rewritten: the same bytes, so the drift check holds.
-	workers := []sandbox{primary}
-	for i := 1; i < min(o.Jobs, len(mutants)); i++ {
+	// Nothing runs in the discovery copy. Each worker has a directory that a
+	// fresh copy of it replaces before every run, made after the replaces were
+	// rewritten: the same bytes, so the drift check holds, and no case sees what
+	// a test left in another. The directory stays, so the build cache holds too.
+	var workers []sandbox
+	for range max(1, min(o.Jobs, len(mutants))) {
 		dir, err := os.MkdirTemp("", "subpoena-cross-")
 		if err != nil {
 			return nil, err
 		}
 		defer os.RemoveAll(dir)
-		if err := copyTree(tmp, dir); err != nil {
-			return nil, fmt.Errorf("cross: copy tree: %w", err)
-		}
-		workers = append(workers, inCopy(dir))
+		sb := inCopy(dir)
+		sb.template = tmp
+		workers = append(workers, sb)
 	}
+	primary := workers[0]
 
 	pkgs := "./" + rep.Target + "/..."
 	if rep.Target == "." {
@@ -348,6 +360,9 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	}
 	// The verdict is kept apart from the return so that cross-examining
 	// this function (make cross-self) can remove the return and still compile.
+	if err := primary.fresh(); err != nil {
+		return nil, err
+	}
 	var baselineErr error
 	if raw, err := goIn(ctx, o.Timeout, primary, "test", "-json", "-count=1", pkgs); err != nil {
 		baselineErr = fmt.Errorf("cross: baseline suite is not green, cannot judge mutants: %s", baselineReason(raw, err))
@@ -357,6 +372,9 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	}
 
 	if o.Select {
+		if err := primary.fresh(); err != nil {
+			return nil, err
+		}
 		fmt.Fprintf(o.Log, "select: running each test alone with coverage\n")
 		if o.selected, err = selectTests(ctx, o, primary, pkgs, mutants); err != nil {
 			return nil, err
@@ -461,15 +479,19 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	return rep, nil
 }
 
-// runCase applies the mutants together to the snapshot copy, builds, runs the
-// suite and restores the snapshot. The first mutant is the Result's Mutant;
-// the rest are With. A canceled ctx is an error, never a verdict: the go
-// command it stopped proves nothing about the mutant.
+// runCase applies the mutants together to a fresh copy of the snapshot, builds
+// and runs the suite, and runs the failed tests of a kill again without the
+// mutants. The first mutant is the Result's Mutant; the rest are With. A
+// canceled ctx is an error, never a verdict: the go command it stopped proves
+// nothing about the mutant.
 //
 //subpoena:enforcement_point
 func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutant) (res Result, err error) {
 	tmp := sb.dir
 	res = Result{Mutant: ms[0], With: ms[1:]}
+	if err := sb.fresh(); err != nil {
+		return res, err
+	}
 	byFile := map[string][]Mutant{}
 	var files []string
 	for _, m := range ms {
@@ -497,15 +519,6 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 		}
 		mutated[file] = b
 	}
-	// Restore every touched file to the snapshot, not a later reread, however
-	// this case ends.
-	defer func() {
-		for _, file := range files {
-			if werr := os.WriteFile(filepath.Join(tmp, filepath.FromSlash(file)), byFile[file][0].src, 0o644); werr != nil && err == nil {
-				err = fmt.Errorf("cross: restore %s: %w", file, werr)
-			}
-		}
-	}()
 	for _, file := range files {
 		if err := os.WriteFile(filepath.Join(tmp, filepath.FromSlash(file)), mutated[file], 0o644); err != nil {
 			return res, err
@@ -616,6 +629,9 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 					if o.RequireWitness && ev != EvidenceWitness {
 						res.Outcome = KilledBySelfReport //subpoena:enforcement
 					}
+					if err := confirmKill(ctx, o, sb, raw, &res); err != nil {
+						return res, err
+					}
 				}
 			}
 		} else {
@@ -626,6 +642,55 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 		return res, fmt.Errorf("cross: %s timed out, and on this platform its test binary may still be running and could fail later mutants; rerun with a larger -timeout or on a unix host", ms[0].Name())
 	}
 	return res, nil
+}
+
+// confirmKill runs the tests that failed in raw again without the mutant,
+// killReruns times, each on a fresh copy. A test that fails there too, or does
+// not finish, was red for a reason other than the mutant, or may have been.
+// That is state outside the copy, or a flake, and a kill needs neither. A test
+// that needs the tests before it to pass alone comes back the same way: that
+// costs a real kill, and a false one costs more.
+//
+//subpoena:enforcement_point
+func confirmKill(ctx context.Context, o Options, sb sandbox, raw string, res *Result) error {
+	names, pkgs := failedTests(raw)
+	for i := range names {
+		names[i] = regexp.QuoteMeta(names[i])
+	}
+	args := append([]string{"test", "-count=1", "-run", "^(" + strings.Join(names, "|") + ")$"}, pkgs...)
+	for n := range killReruns {
+		if err := sb.fresh(); err != nil {
+			return err
+		}
+		fmt.Fprintf(o.Log, "  rerun %d of %d without the mutant: %s\n", n+1, killReruns, strings.Join(names, " "))
+		out, err := goIn(ctx, o.Timeout, sb, args...)
+		if ctx.Err() != nil {
+			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
+		}
+		if err != nil {
+			res.Outcome, res.Output = Unconfirmed, tail(out, 20) //subpoena:enforcement
+			return nil
+		}
+	}
+	return nil
+}
+
+// failedTests lists the top-level tests that failed in raw, and their packages.
+func failedTests(raw string) (names, pkgs []string) {
+	for _, line := range strings.Split(raw, "\n") {
+		var e struct{ Action, Package, Test string }
+		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || e.Action != "fail" || e.Test == "" {
+			continue
+		}
+		name, _, _ := strings.Cut(e.Test, "/")
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+		if !slices.Contains(pkgs, e.Package) {
+			pkgs = append(pkgs, e.Package)
+		}
+	}
+	return names, pkgs
 }
 
 // testText turns go test -json output back into the plain text go test
@@ -1689,10 +1754,23 @@ func copyTree(src, dst string) error {
 	})
 }
 
-// sandbox is one copy of the module that mutants are run in, and the GOWORK
-// its go commands use ("" to inherit the environment's).
+// sandbox is one copy of the module that mutants are run in, the GOWORK its go
+// commands use ("" to inherit the environment's), and the discovery copy it is
+// made from.
 type sandbox struct {
-	dir, work string
+	dir, work, template string
+}
+
+// fresh replaces the copy with the discovery copy, so a run sees nothing an
+// earlier run left. The path stays: the go build cache keys on it.
+func (sb sandbox) fresh() error {
+	if err := os.RemoveAll(sb.dir); err != nil {
+		return fmt.Errorf("cross: reset copy: %w", err)
+	}
+	if err := copyTree(sb.template, sb.dir); err != nil {
+		return fmt.Errorf("cross: copy tree: %w", err)
+	}
+	return nil
 }
 
 // runSingles runs each mutant alone, on as many copies as there are workers,
