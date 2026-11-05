@@ -850,3 +850,43 @@ def test_a_file_one_process_loaded_is_loaded():
     w3 = {"kind": "worker_finished", "missing": ["a.py", "b.py"]}
     assert cross.classify(1, [fail, w1, w2, done], "")[0] == KILLED
     assert cross.classify(1, [fail, w1, w3, done], "")[0] == INVALID
+
+
+def test_baseline_timeout_says_so(tmp_path):
+    files = {"auth.py": AUTH, "test_auth.py": """
+        import time
+        def test_hang():
+            time.sleep(60)
+    """}
+    with pytest.raises(CrossError, match=r"(?s)baseline suite is not green.*did not finish within.*--timeout"):
+        cross.run(project(tmp_path, files), timeout=8)
+
+
+def test_baseline_red_test_is_named(tmp_path):
+    files = {"auth.py": AUTH, "test_auth.py": """
+        def test_broken():
+            assert 1 == 2, "the reason"
+    """}
+    with pytest.raises(CrossError, match=r"(?s)test_auth.py::test_broken.*the reason"):
+        cross.run(project(tmp_path, files))
+
+
+def test_baseline_with_no_tests_says_so(tmp_path):
+    with pytest.raises(CrossError, match="collected no tests"):
+        cross.run(project(tmp_path, {"auth.py": AUTH}))
+
+
+def test_baseline_collection_error_is_named(tmp_path):
+    files = {"auth.py": AUTH, "test_auth.py": "import no_such_module\n"}
+    with pytest.raises(CrossError, match=r"could not collect.*test_auth.py"):
+        cross.run(project(tmp_path, files))
+
+
+@pytest.mark.parametrize("code,records,want", [
+    (None, [], "did not finish within"),
+    (1, [{"kind": "tampered"}], "not this run's"),
+    (-9, [], "exited -9"),
+    (0, [], "exited 0 without finishing"),
+])
+def test_baseline_reason(code, records, want):
+    assert want in cross._baseline_reason(code, records, 300)

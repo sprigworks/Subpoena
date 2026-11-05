@@ -347,8 +347,8 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	// The verdict is kept apart from the return so that cross-examining
 	// this function (make cross-self) can remove the return and still compile.
 	var baselineErr error
-	if out, err := goIn(ctx, o.Timeout, primary, "test", "-count=1", pkgs); err != nil {
-		baselineErr = fmt.Errorf("cross: baseline suite is not green, cannot judge mutants:\n%s", tail(out, 40))
+	if raw, err := goIn(ctx, o.Timeout, primary, "test", "-json", "-count=1", pkgs); err != nil {
+		baselineErr = fmt.Errorf("cross: baseline suite is not green, cannot judge mutants: %s", baselineReason(raw, err))
 	}
 	if baselineErr != nil {
 		return nil, baselineErr //subpoena:enforcement
@@ -835,6 +835,65 @@ var (
 	ginkgoPanicRE  = regexp.MustCompile(`^\s*• \[PANICKED\] \[`)
 	testifyTraceRE = regexp.MustCompile(`^\s+Error Trace:\s+\S+_test\.go:\d+$`)
 )
+
+// baselineReason says why a baseline run failed. Timeouts come first and
+// apart, since a timeout on a busy host is not a red test, and their output
+// can be empty. raw is go test -json output, which also shows what was still
+// running when go test was stopped.
+func baselineReason(raw string, err error) string {
+	text := failedOutput(raw)
+	reason := err.Error()
+	switch {
+	case errors.Is(err, errTimeout):
+		reason += "; raise -timeout. A timeout on a busy host is not a red test"
+	case testTimeoutRE.MatchString(text):
+		reason = "a test binary timed out at go test's own limit, which is not a red test"
+	}
+	if open := unfinished(raw); timedOut(text, err) && len(open) > 0 {
+		reason += "\nstill running: " + strings.Join(open, ", ")
+	}
+	if text == "" {
+		return reason + "\ngo test printed nothing"
+	}
+	if at := testTimeoutRE.FindStringIndex(text); at != nil {
+		// Its first lines name the running tests; a goroutine dump follows.
+		lines := strings.Split(text[at[0]:], "\n")
+		return reason + "\n" + strings.Join(lines[:min(40, len(lines))], "\n")
+	}
+	return reason + "\n" + tail(text, 40)
+}
+
+// failedOutput is the output that can say why go test failed: go's own
+// messages, build output, and what failed tests and packages printed. go test
+// -json is verbose, and a passing test's log says nothing of why a run went red.
+func failedOutput(raw string) string {
+	type event struct{ Action, Package, Test, Output string }
+	passed := map[[2]string]bool{}
+	var evs []event
+	var b strings.Builder
+	for _, l := range strings.Split(raw, "\n") {
+		var e event
+		if !strings.HasPrefix(l, "{") || json.Unmarshal([]byte(l), &e) != nil {
+			e = event{Action: "go", Output: l + "\n"}
+			if l == "" {
+				continue
+			}
+		}
+		evs = append(evs, e)
+		if e.Action == "pass" {
+			passed[[2]string{e.Package, e.Test}] = true
+		}
+	}
+	for _, e := range evs {
+		if e.Action != "output" && e.Action != "build-output" && e.Action != "go" {
+			continue
+		}
+		if !passed[[2]string{e.Package, e.Test}] && !passed[[2]string{e.Package, ""}] && !framingRE.MatchString(e.Output) {
+			b.WriteString(e.Output)
+		}
+	}
+	return strings.TrimRight(ansiRE.ReplaceAllString(b.String(), ""), "\n")
+}
 
 // framingRE matches the lines go test adds around a test's own output.
 var framingRE = regexp.MustCompile(`^(=== (RUN|PAUSE|CONT|NAME)|\s*--- (PASS|SKIP)|PASS$|ok\s|\?\s)`)

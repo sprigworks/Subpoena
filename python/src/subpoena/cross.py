@@ -455,6 +455,30 @@ def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, L
     return KILLED, [r["test"] for r in fails], "other", first
 
 
+def _baseline_reason(code, records, timeout) -> str:
+    """Why a baseline run was not clean. Pytest's output can be empty (a
+    timeout kills it mid-run), so this never rests on it."""
+    if code is None:
+        return (f"pytest did not finish within the timeout ({timeout:g}s); raise --timeout. "
+                "A timeout on a busy host is not a red test")
+    if any(r.get("kind") == "tampered" for r in records):
+        return "the report holds a line that is not this run's"
+    errors = [r for r in records if r.get("kind") == "collect_error"]
+    if errors:
+        return f"pytest could not collect {errors[0].get('node') or 'the tests'}"
+    fails = [r for r in records if r.get("kind") == "failure"]
+    if fails:
+        first = fails[0]
+        lines = str(first.get("message", "")).strip().splitlines()
+        text = f"{first.get('type', 'failure')}: {lines[0]}" if lines else first.get("type", "failure")
+        return f"{first.get('test')} failed: {text}"
+    if code == 5:
+        return "pytest collected no tests"
+    if any(r.get("kind") == "finished" for r in records):
+        return f"pytest exited {code}"
+    return f"pytest exited {code} without finishing"
+
+
 def _clean(code, records):
     return (code == 0 and any(r.get("kind") == "finished" for r in records) and
             not any(r.get("kind") in {"tampered", "failure", "collect_error"} for r in records))
@@ -587,7 +611,8 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
         log(f"baseline: pytest {' '.join(args)}")
         code, out, records, _ = baseline()
         if not _clean(code, records):
-            raise CrossError("cross: baseline suite is not green, cannot judge mutants:\n" + _tail(out, 40))
+            raise CrossError("cross: baseline suite is not green, cannot judge mutants: "
+                             + _baseline_reason(code, records, timeout) + "\n" + _tail(out, 40))
         selected_tests = {}
         if select:
             if any(r.get("kind") == "worker_finished" for r in records):

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A red baseline says why, in Go and Python.** `baseline suite is not green`
+  could end with nothing after it: a timeout left no output, and the last 40
+  lines could be all `ok` and `[no test files]`. It now gives the reason first
+  (a timeout, with what was still running and `-timeout` to raise; the failing
+  test; a collection error; no tests) and drops what passing tests printed.
 - **Python cross works under pytest-xdist.** Workers start after the plugin
   takes its settings out of the environment, so they recorded nothing: with
   `-- -n 4`, a real kill came back `crashed`, or `invalid` if only workers
