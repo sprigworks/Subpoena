@@ -430,3 +430,116 @@ func TestAllow(t *testing.T) {
 		t.Fatalf("want a kill on the assertion, got %+v", r)
 	}
 }
+
+// A crash reports the package that died. go test -json interleaves packages,
+// and the last lines usually belong to one that passed.
+func TestCrashOutputNamesThePackageThatDied(t *testing.T) {
+	ev := func(action, pkg, test, out string) string {
+		b, err := json.Marshal(struct{ Action, Package, Test, Output string }{action, pkg, test, out})
+		if err != nil {
+			panic(err)
+		}
+		return string(b)
+	}
+	pass := []string{
+		ev("output", "good", "TestG", "=== RUN   TestG\n"),
+		ev("output", "good", "TestG", "--- PASS: TestG (0.00s)\n"),
+		ev("pass", "good", "TestG", ""),
+		ev("output", "good", "", "PASS\n"),
+		ev("output", "good", "", "ok  \tgood\t0.1s\n"),
+		ev("pass", "good", "", ""),
+	}
+	join := func(lines ...[]string) string {
+		var all []string
+		for _, l := range lines {
+			all = append(all, l...)
+		}
+		return strings.Join(all, "\n")
+	}
+	t.Run("log.Fatal, no crash line", func(t *testing.T) {
+		got := crashOutput(join([]string{
+			ev("output", "dead", "TestF", "=== RUN   TestF\n"),
+			ev("output", "dead", "TestF", "level=info msg=starting\n"),
+			ev("output", "dead", "TestF", "level=fatal msg=\"bind: address already in use\"\n"),
+			ev("output", "dead", "", "FAIL\tdead\t0.2s\n"),
+			ev("fail", "dead", "", ""),
+		}, pass), 20)
+		for _, want := range []string{"package dead", "level=fatal"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("want %q in:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "=== RUN") || strings.Contains(got, "TestG") {
+			t.Errorf("noise from a passing package or test framing:\n%s", got)
+		}
+	})
+	t.Run("a panic starts the output, ahead of a longer stack", func(t *testing.T) {
+		lines := []string{
+			ev("output", "dead", "TestF", "setup line\n"),
+			ev("output", "dead", "TestF", "panic: boom\n"),
+		}
+		for range 50 {
+			lines = append(lines, ev("output", "dead", "TestF", "stack frame\n"))
+		}
+		lines = append(lines, ev("fail", "dead", "TestF", ""), ev("fail", "dead", "", ""))
+		got := crashOutput(join(pass, lines), 5)
+		if !strings.Contains(got, "panic: boom") || strings.Contains(got, "setup line") {
+			t.Errorf("want the panic and what follows:\n%s", got)
+		}
+		if n := strings.Count(got, "\n"); n != 5 {
+			t.Errorf("%d lines after the header, want 5:\n%s", n, got)
+		}
+	})
+	t.Run("a panic a passing test recovered from is not the crash", func(t *testing.T) {
+		got := crashOutput(join([]string{
+			ev("output", "fine", "TestP", "panic: expected by the test\n"),
+			ev("pass", "fine", "TestP", ""),
+			ev("pass", "fine", "", ""),
+			ev("output", "dead", "TestF", "os.Exit from here\n"),
+			ev("fail", "dead", "", ""),
+		}), 20)
+		if !strings.Contains(got, "package dead") || strings.Contains(got, "expected by the test") {
+			t.Errorf("wrong package:\n%s", got)
+		}
+	})
+	t.Run("no events falls back to the text", func(t *testing.T) {
+		if got := crashOutput("signal: killed\n", 20); got != "signal: killed" {
+			t.Errorf("got %q", got)
+		}
+	})
+}
+
+func TestCrashedResultShowsThePanic(t *testing.T) {
+	const crashing = `package mini
+
+import "testing"
+
+func TestDeny(t *testing.T) {
+	var p *int
+	if Allow(false) == nil {
+		_ = *p
+	}
+}
+func TestAllow(t *testing.T) {
+	if Allow(true) != nil {
+		t.Fatal("admin must be allowed")
+	}
+}
+`
+	const other = `package other
+
+import "testing"
+
+func TestLast(t *testing.T) {}
+`
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": crashing, "z/other_test.go": other})
+	rep, err := Run(context.Background(), Options{Target: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rep.Results[0]
+	if r.Outcome != Crashed || !strings.Contains(r.Output, "package mini") || !strings.Contains(r.Output, "panic: ") ||
+		strings.Contains(r.Output, "TestLast") {
+		t.Fatalf("want the panic of package mini alone, got %s:\n%s", r.Outcome, r.Output)
+	}
+}

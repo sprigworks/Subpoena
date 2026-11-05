@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A crash shows the package that died.** It printed the last lines of the
+  whole run, usually the `--- PASS` lines of an unrelated package. It now
+  prints that package's panic, or its last lines after a `log.Fatal`.
 - **Python cross reads webtest's status check.** `TestApp.get(url, status=403)`
   raises webtest's `AppError`, not an `AssertionError`, so a test's expected
   status came back `crashed`. It is an assertion now when test code made the

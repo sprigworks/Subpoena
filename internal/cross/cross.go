@@ -557,7 +557,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			default:
 				ev, msg, crashed := firstFailure(raw)
 				if crashed {
-					res.Outcome, res.Output = Crashed, tail(out, 20) //subpoena:enforcement
+					res.Outcome, res.Output = Crashed, crashOutput(raw, 20) //subpoena:enforcement
 				} else {
 					res.Outcome, res.Failing = Killed, failingTests(out)
 					res.Evidence, res.FirstFailure = ev, msg
@@ -794,6 +794,58 @@ var (
 	ginkgoPanicRE  = regexp.MustCompile(`^\s*• \[PANICKED\] \[`)
 	testifyTraceRE = regexp.MustCompile(`^\s+Error Trace:\s+\S+_test\.go:\d+$`)
 )
+
+// framingRE matches the lines go test adds around a test's own output.
+var framingRE = regexp.MustCompile(`^(=== (RUN|PAUSE|CONT|NAME)|\s*--- (PASS|SKIP)|PASS$|ok\s|\?\s)`)
+
+// crashOutput says what to show for a crashed run: the output of the package
+// that died, not the last lines of the run, which go test -json interleaves
+// across packages. From a crash line if there is one (a panic's own lines are
+// the useful ones), or else the package's last n lines, as after log.Fatal,
+// which leaves no crash line. A panic in a test that passed is no crash.
+func crashOutput(raw string, n int) string {
+	type key [2]string
+	lines := map[string][]string{}
+	crashAt := map[key]int{}
+	var crashes []key
+	passed := map[key]bool{}
+	failedPkg := ""
+	for _, l := range strings.Split(raw, "\n") {
+		var e struct{ Action, Package, Test, Output string }
+		if !strings.HasPrefix(l, "{") || json.Unmarshal([]byte(l), &e) != nil {
+			continue
+		}
+		k := key{e.Package, e.Test}
+		switch e.Action {
+		case "pass":
+			passed[k] = true
+		case "fail":
+			if e.Test == "" && failedPkg == "" {
+				failedPkg = e.Package
+			}
+		case "output":
+			text := strings.TrimRight(ansiRE.ReplaceAllString(e.Output, ""), "\n")
+			if framingRE.MatchString(text) {
+				continue
+			}
+			if _, seen := crashAt[k]; !seen && crashRE.MatchString(text) {
+				crashAt[k] = len(lines[e.Package])
+				crashes = append(crashes, k)
+			}
+			lines[e.Package] = append(lines[e.Package], text)
+		}
+	}
+	for _, k := range crashes {
+		if !passed[k] {
+			out := lines[k[0]][crashAt[k]:]
+			return "package " + k[0] + ":\n" + strings.Join(out[:min(n, len(out))], "\n")
+		}
+	}
+	if failedPkg == "" {
+		return tail(testText(raw), n)
+	}
+	return "package " + failedPkg + ":\n" + tail(strings.Join(lines[failedPkg], "\n"), n)
+}
 
 // unfinished lists, from go test -json output, the packages and tests that
 // started and never passed, failed or skipped.
