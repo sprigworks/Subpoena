@@ -23,6 +23,11 @@
   stays `invalid` and says to mark the guard. That includes `return p.Check(u)`
   and `return check(u), nil`: zero can be the refusal there, so an allowed-path
   test would "kill" a mutant with the refusal unexamined.
+- **Python cross stops counting None as enforcement gone.** A marked return
+  that ends a function came back as `pass`, so `return user in ADMINS` became
+  None and `assert allowed("ann")` "killed" it with no test of a denied user.
+  Such a return is now `invalid` unless the function gives None on another
+  path, and says to mark the guard.
 - **A crash shows the package that died.** It printed the last lines of the
   whole run, usually the `--- PASS` lines of an unrelated package. It now
   prints that package's panic, or its last lines after a `log.Fatal`.

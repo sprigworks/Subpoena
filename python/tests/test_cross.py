@@ -659,6 +659,97 @@ def test_another_exception_named_apperror_is_a_crash(tmp_path):
     assert r.outcome == CRASHED
 
 
+# Removing a return that ends the function leaves None in its place, a value
+# nobody reviewed. Where the function never gives None, None is not "enforcement
+# gone": the return can carry the allow decision, and a test of the allowed path
+# would "kill" the mutant with no test ever asking about a denied user.
+ALLOWED_PATH_TEST = """
+    from gate import allowed
+    def test_admin():
+        assert allowed("ann")
+"""
+
+
+@pytest.mark.parametrize("gate", [
+    '''
+        ADMINS = {"ann"}
+
+        # subpoena:enforcement_point
+        def allowed(user):
+            return user in ADMINS  # subpoena:enforcement
+    ''',
+    '''
+        ADMINS = {"ann"}
+
+        # subpoena:enforcement_point
+        def allowed(user):
+            if user == "root":
+                return True
+            else:
+                return user in ADMINS  # subpoena:enforcement
+    ''',
+    '''
+        ADMINS = {"ann"}
+
+        # subpoena:enforcement_point
+        def allowed(user):
+            try:
+                return user in ADMINS  # subpoena:enforcement
+            except TypeError:
+                return False
+    ''',
+], ids=["last statement", "else branch", "try body"])
+def test_a_return_that_carries_the_decision_is_invalid(tmp_path, gate):
+    rep, r = outcome(tmp_path, {"gate.py": gate, "test_gate.py": ALLOWED_PATH_TEST})
+    assert r.outcome == INVALID and rep.failed()
+    assert "enforcement_guard" in r.output
+
+
+def test_a_group_with_such_a_return_is_invalid(tmp_path):
+    rep = cross.run(project(tmp_path, {"gate.py": '''
+        ADMINS = {"ann"}
+
+        # subpoena:enforcement_point
+        def allowed(user):
+            if user == "":
+                return False  # subpoena:enforcement group=a
+            return user in ADMINS  # subpoena:enforcement group=a
+    ''', "test_gate.py": ALLOWED_PATH_TEST}))
+    assert rep.results[-1].group == "a" and rep.results[-1].outcome == INVALID
+
+
+@pytest.mark.parametrize("gate", [
+    '''
+        # subpoena:enforcement_point
+        def denied(user):
+            if user == "ann":
+                return None
+            return "denied"  # subpoena:enforcement
+    ''',
+    '''
+        # subpoena:enforcement_point
+        def denied(user):
+            if user == "ann":
+                return
+            else:
+                return "denied"  # subpoena:enforcement
+    ''',
+    '''
+        # subpoena:enforcement_point
+        def denied(user):
+            if user != "ann":
+                return "denied"  # subpoena:enforcement
+    ''',
+], ids=["None elsewhere", "bare return elsewhere", "the if falls off the end anyway"])
+def test_a_return_where_none_means_allowed_can_be_removed(tmp_path, gate):
+    _, r = outcome(tmp_path, {"gate.py": gate, "test_gate.py": """
+        from gate import denied
+        def test_denied():
+            assert denied("bob") == "denied"
+    """})
+    assert r.outcome == KILLED
+
+
 # A condition with no parentheses of its own can still span lines inside a
 # call's brackets. Its line breaks must stay in brackets once it is forced.
 MULTILINE_GUARDS = {

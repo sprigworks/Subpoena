@@ -195,7 +195,9 @@ hold the cases; the Python runner is `python/tests/test_network.py`.
   `python/tests/test_lint.py`. Registry-drift remains a Go-only subcommand.
 - **G1.** A port's cross-examination removes each statement marked as enforcement and
   requires the suite to fail. A mutant that does not compile or import counts
-  as invalid, not killed. As in Go: a guard marker forces an `if` condition;
+  as invalid, not killed. So does a marked return with no honest stand-in: one
+  that ends the function, in a function that gives None on no other path, where
+  None could force enforcement on. As in Go: a guard marker forces an `if` condition;
   a red suite is a kill only on an assertion failure in test code (an
   assertion in the code under test, a crash, an exception other than an
   assertion, or a dead test process is `crashed`; an assertion library's own

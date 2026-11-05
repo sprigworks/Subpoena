@@ -12,7 +12,9 @@ Markers, as comments:
                                           is forced to that value
 
 A mutant replaces the marked statement with `pass`, or the guarded
-condition with True or False. Verdicts:
+condition with True or False. A return that ends the function, in a function
+that never gives None otherwise, has no mutant: None would stand in for a value
+that can carry the allow decision, so it is invalid. Mark the guard. Verdicts:
 
 - killed: a test failed on an assertion raised from test code: an
   AssertionError, pytest.fail or a failed pytest.raises whose innermost frame
@@ -23,8 +25,8 @@ condition with True or False. Verdicts:
 - survived: the suite stayed green. The run fails.
 - crashed: the suite went red only by another exception, or the test process
   died. A crash is not evidence that the enforcement is tested; the run fails.
-- invalid: the mutant does not import (a SyntaxError, or any collection
-  error), or the suite never imported the mutated module from the copy (an
+- invalid: the mutant has no honest stand-in (above), does not import (a
+  SyntaxError, or any collection error), or the suite never imported the mutated module from the copy (an
   installed copy of the package shadowed it). It proves nothing; the run
   fails.
 - timeout: the suite ran past the timeout, or a test failed by
@@ -106,6 +108,7 @@ class Mutant:
     breaks: int = 0                 # line breaks inside the span, kept by apply
     digest: str = ""                # sha256 of the file at discovery
     group: str = ""
+    no_stand_in: bool = False       # see _no_stand_in
 
     def name(self) -> str:
         return f"{self.func} ({self.file}:{self.line})"
@@ -278,6 +281,7 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
                     if not isinstance(st, _SIMPLE):
                         continue  # an if or a loop starting here: not this marker's line
                     m = mutant(node.name, st.lineno, st, "")
+                    m.no_stand_in = _no_stand_in(node, st)
                 else:
                     if not isinstance(st, ast.If):
                         continue
@@ -299,6 +303,41 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
         if missing:
             raise CrossError(missing[0])
     return points, mutants
+
+
+def _gives_none(st: ast.Return) -> bool:
+    return st.value is None or (isinstance(st.value, ast.Constant) and st.value.value is None)
+
+
+def _ends(body: List[ast.stmt], st: ast.stmt) -> bool:
+    """Removing st from body runs off body's end with nothing left to decide.
+    An if with no else does not count: it could run off the end already."""
+    if not body:
+        return False
+    last = body[-1]
+    if last is st:
+        return True
+    blocks = []
+    if isinstance(last, ast.If) and last.orelse:
+        blocks = [last.body, last.orelse]
+    elif isinstance(last, (ast.With, ast.AsyncWith)):
+        blocks = [last.body]
+    elif isinstance(last, ast.Try):
+        blocks = [last.body, last.orelse] + [h.body for h in last.handlers]
+    elif hasattr(ast, "Match") and isinstance(last, ast.Match):
+        blocks = [c.body for c in last.cases]
+    return any(_ends(b, st) for b in blocks)
+
+
+def _no_stand_in(fn: ast.AST, st: ast.stmt) -> bool:
+    """Removing a return that ends fn leaves None in its place, as Go's stand-in
+    leaves zero values. None means "enforcement gone" only where fn gives None
+    on another path. Otherwise the return can carry the allow decision (return
+    user in ADMINS), and None forces enforcement on: only an allowed-path test
+    notices, and the refusal goes unexamined."""
+    if not isinstance(st, ast.Return) or _gives_none(st) or not _ends(fn.body, st):
+        return False
+    return not any(isinstance(r, ast.Return) and _gives_none(r) for r in _statements(fn))
 
 
 def _statements(fn: ast.AST):
@@ -646,6 +685,8 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                     raise CrossError("cross: select: selected subset fails without the mutant:\n" + _tail(out, 20))
 
         def case(members, selected=None):
+            if any(m.no_stand_in for m in members):
+                return Result(members[0], INVALID, output=_NO_STAND_IN, with_mutants=list(members[1:]))
             directory, copy = fresh()
             try:
                 if _before_mutate is not None:
@@ -742,13 +783,17 @@ def _tail(s: str, n: int) -> str:
 
 # --- command line -----------------------------------------------------------
 
+_NO_STAND_IN = ("the function ends with this return and gives None on no other path, so None cannot stand in "
+                "for it: it may carry the allow decision. Mark the if that reaches it with # subpoena:enforcement_guard "
+                "true or false, or move the decision into an if that can carry the marker")
+
 _EXPLAIN = {
     KILLED_BY_SELF_REPORT: "require-witness: first failure was not independent witness evidence",
     MASKED: "layer is masked by other surviving layers; requires a reviewed cross-masked.txt entry",
     SURVIVED: "suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced",
     CRASHED: "suite went red only by a crash (an exception other than an assertion, or the process died); "
              "a crash is not a kill:",
-    INVALID: "mutant did not import, or the suite never imported it from the copy (an installed copy of "
+    INVALID: "mutant has no stand-in, did not import, or the suite never imported it from the copy (an installed copy of "
              "the package shadows it); it proves nothing:",
     TIMED_OUT: "suite did not finish within the timeout (or pytest-timeout stopped a test); a hang is not a "
                "kill. Make the test fail fast instead:",
