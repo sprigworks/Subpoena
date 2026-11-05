@@ -8,8 +8,9 @@
 // marked //subpoena:enforcement_point.
 //
 // A removed return the function cannot end without is replaced by a return of
-// zero values, as Python's pass ends a function with None: return nil, ErrDenied
-// becomes a return of nil, nil. A return of zero values has no such stand-in.
+// zero values when that only turns an error to nil: return nil, ErrDenied
+// becomes a return of nil, nil. No other return has a stand-in, since zero can be
+// the refusal itself: return p.Check(u) would become return false.
 //
 // A guard is marked on its if line with //subpoena:enforcement_guard true (or
 // false): the mutant forces the condition to that bypass value. The value is
@@ -94,7 +95,7 @@ type Mutant struct {
 	point   int    // byte offset of the enclosing function declaration in File
 	src     []byte // file bytes the offsets were computed from; not a later reread
 	// zero is the return of zero values that can stand in for a removed return,
-	// "" if there is none; fnEnd is the offset of its function's closing brace,
+	// "" if there is none (see zeroReturn); fnEnd is the offset of its function's closing brace,
 	// which is where the compiler reports a missing return. useZero applies it.
 	zero    string
 	fnEnd   int
@@ -1232,8 +1233,10 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 // zeroReturn returns the statement that can stand in for ret where the
 // function cannot end without a return, and the offset of that function's
 // closing brace. *new(T) is T's zero value for any T, so no type needs
-// resolving. A return of zero values already has no stand-in: it would be the
-// same statement, and a mutant that changes nothing proves nothing.
+// resolving. Only a refusal carried by an error has a stand-in (see
+// errorRefusal). Zero is not "enforcement gone" for any other return: false can
+// be the refusal, and then the stand-in forces enforcement on, and the value is
+// cross's own choice, with no review behind it as a guard's bypass value has.
 //
 //subpoena:enforcement_point
 func zeroReturn(src []byte, fset *token.FileSet, fd *ast.FuncDecl, ret *ast.ReturnStmt) (string, int) {
@@ -1244,23 +1247,48 @@ func zeroReturn(src []byte, fset *token.FileSet, fd *ast.FuncDecl, ret *ast.Retu
 		}
 		return true
 	})
+	end := fset.Position(body.Rbrace).Offset
 	if typ.Results == nil {
-		return "", 0
-	}
-	if !slices.ContainsFunc(ret.Results, func(e ast.Expr) bool { return !isZeroValue(e) }) {
-		return "", 0 //subpoena:enforcement
+		return "", end
 	}
 	var zeros []string
+	var isError []bool
 	for _, field := range typ.Results.List {
 		text := string(src[fset.Position(field.Type.Pos()).Offset:fset.Position(field.Type.End()).Offset])
 		if strings.Contains(text, "\n") {
-			return "", 0 // one line only: the line numbers of a retried build depend on it
+			return "", end // one line only: the line numbers of a retried build depend on it
 		}
 		for range max(1, len(field.Names)) {
 			zeros = append(zeros, "*new("+text+")")
+			isError = append(isError, text == "error")
 		}
 	}
-	return "return " + strings.Join(zeros, ", "), fset.Position(body.Rbrace).Offset
+	if !errorRefusal(ret.Results, isError) {
+		return "", end //subpoena:enforcement
+	}
+	return "return " + strings.Join(zeros, ", "), end
+}
+
+// errorRefusal reports whether a return's only news is an error, so that its
+// zero values turn a possible refusal into nil and change nothing else. Every
+// other result must already be plainly zero: a value beside the error can carry
+// the decision. A bare return, and one call spread over the results, say
+// nothing about which result is which.
+func errorRefusal(results []ast.Expr, isError []bool) bool {
+	if len(results) != len(isError) {
+		return false
+	}
+	refusal := false
+	for i, e := range results {
+		if isZeroValue(e) {
+			continue
+		}
+		if !isError[i] {
+			return false
+		}
+		refusal = true
+	}
+	return refusal
 }
 
 // isZeroValue reports whether e is plainly a zero value. A named constant that

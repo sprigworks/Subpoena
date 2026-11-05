@@ -205,14 +205,19 @@ to fail. A function with the first marker but not the second makes
 cross-examination exit with an error naming it.
 
 A marked `return` can be the one a Go function cannot end without: the last
-statement, or a denial in a `switch` case. Deleting it would not compile, so
-cross replaces it with a return of zero values, and `return nil, ErrDenied`
+statement, or a denial in a `switch` case. Deleting it would not compile. If
+the refusal is carried by an error, and every other result is already plainly
+zero, cross replaces the return with zero values, so `return nil, ErrDenied`
 becomes `return nil, nil`. That is the mutant to catch: the caller is told
-nothing went wrong. If the marked return is already zero values, as `return
-false` is, the replacement would change nothing, so cross reports the mutant
-`invalid`. Mark the guard that leads to it instead, or give the decision an
-`if` to carry the marker. The same goes for a constant that happens to be
-zero, which cross cannot see: that mutant survives.
+nothing went wrong. Any other return gets no replacement and the mutant is
+`invalid`. That covers `return false`, which would change nothing, and also
+`return p.Check(u)` or `return check(u), nil`, because there zero can be the
+refusal itself: the mutant would force enforcement on, and only a test of the
+allowed path would notice. Mark the guard that leads to the return instead, or
+give the decision an `if` to carry the marker: a guard's bypass value is a
+reviewed claim, and cross has no such claim for a return. An error variable
+that happens to be nil, which cross cannot see, gets the replacement anyway,
+and that mutant survives.
 
 Two more shapes are common in real services. A guard such as
 `if ctx.Err() == nil { runner.Run(cmd) }` gets

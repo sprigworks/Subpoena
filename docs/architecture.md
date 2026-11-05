@@ -98,9 +98,9 @@ and runs the tests. A red suite kills the mutant. A green suite means the tests
 cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
 mutant that does not compile is "invalid", never "killed". A removed `return`
-the function cannot end without gets a return of zero values in its place, as
-Python's `pass` ends a function with `None`; one that already returns zero
-values has no such stand-in and stays invalid. A mutant whose tests
+the function cannot end without gets a return of zero values in its place only
+when that turns an error to nil and changes nothing else; any other such return
+stays invalid, since zero can be the refusal itself (`return p.Check(u)`). A mutant whose tests
 run past `-timeout` (5 minutes by default) is `enforcement-mutant-timeout`, also
 never "killed": a hang may be the host's, and no assertion caught it. A suite
 that goes red with no clean failure message is `enforcement-mutant-crashed`,

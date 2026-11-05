@@ -209,3 +209,66 @@ func TestF(t *testing.T) { f(false) }
 		})
 	}
 }
+
+// A stand-in may only turn a refusal carried by an error into no error. A
+// return that carries the allow decision has a false as its refusal, so its
+// zero value forces enforcement on, and a test of the allowed path alone would
+// "kill" that mutant with the refusal never examined. Each suite here tests
+// only that an admin is allowed: nothing asks about a denied user, so a kill
+// would be false.
+func TestAReturnThatCarriesTheDecisionGetsNoStandIn(t *testing.T) {
+	cases := []struct {
+		name, result, ret string
+	}{
+		{"a bool", "bool", "p.Check(u)"},
+		{"a bool beside a nil error", "(bool, error)", "p.Check(u), nil"},
+		{"a value beside an error", "(bool, error)", `p.Check(u), errors.New("denied")`},
+		{"a call spread over the results", "(bool, error)", "p.Both(u)"},
+		{"a value of another type", "string", "p.Role(u)"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := `package mini
+
+import "errors"
+
+var _ = errors.New
+
+type Policy struct{}
+
+func (Policy) Check(u string) bool          { return u == "admin" }
+func (Policy) Both(u string) (bool, error) { return u == "admin", nil }
+func (Policy) Role(u string) string        { return u }
+
+//subpoena:enforcement_point
+func f(p Policy, u string) ` + c.result + ` {
+	return ` + c.ret + ` //subpoena:enforcement
+}
+`
+			check := map[string]string{
+				"bool":          `if !f(Policy{}, "admin") {`,
+				"(bool, error)": `if ok, _ := f(Policy{}, "admin"); !ok {`,
+				"string":        `if f(Policy{}, "admin") != "admin" {`,
+			}[c.result]
+			test := `package mini
+
+import "testing"
+
+func TestAdminAllowed(t *testing.T) {
+	` + check + `
+		t.Fatal("admin was refused")
+	}
+}
+`
+			dir := module(t, map[string]string{"auth.go": src, "auth_test.go": test})
+			rep, err := Run(context.Background(), Options{Target: dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := rep.Results[0]
+			if r.Outcome != Invalid || len(r.ZeroReturns) != 0 || !strings.Contains(r.Hint, MarkerGuard) {
+				t.Fatalf("want invalid with guard advice, got %s %v hint=%q", r.Outcome, r.ZeroReturns, r.Hint)
+			}
+		})
+	}
+}
