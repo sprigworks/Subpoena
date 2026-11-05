@@ -472,3 +472,31 @@ def test_a_read_only_directory_neither_aborts_nor_stays(tmp_path, monkeypatch):
     """})
     assert r.outcome == KILLED
     assert os.listdir(scratch) == []
+
+
+# --- what a test can tell of the run it is in (review 3: p09, p07) ---
+
+def test_a_test_cannot_read_that_it_is_a_mutant_run(tmp_path):
+    r = outcome(tmp_path, {"app.py": BODY, "test_app.py": """
+        import os
+        from app import serve
+        def test_allowed():
+            assert serve("ann").status == 200
+        def test_env():
+            assert not os.environ.get("SUBPOENA_CROSS_MUTATED"), "red only under a mutant"
+    """})
+    assert r.outcome == SURVIVED
+
+
+def test_reruns_under_xdist_run_the_failed_tests_only(tmp_path):
+    count = tmp_path / "count"
+    r = outcome(tmp_path / "p", {"app.py": BODY, "test_app.py": f"""
+        from app import serve
+        def test_refused():
+            assert serve("mallory").status == 403
+        def test_unrelated():
+            with open({str(count)!r}, "a") as f:
+                f.write("x")
+    """}, "-n", "2")
+    assert r.outcome == KILLED
+    assert len(count.read_text()) == 2  # baseline and mutant, not the rerun

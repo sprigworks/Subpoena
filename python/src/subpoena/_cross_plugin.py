@@ -9,8 +9,10 @@ A failure's verdict:
 - invalid: a SyntaxError in the mutated file, raised when a test imported it.
 - assertion: an AssertionError, pytest.fail or failed pytest.raises whose
   innermost frame, past pytest's and subpoena's own helper frames, is in test
-  code: a file pytest collected a test from, or a conftest.py. A file's name
-  decides nothing: python_files can match production code. One raised wholly inside subpoena's helpers,
+  code: a file pytest collected a test from, or a conftest.py. Past conftest.py
+  a file's name decides nothing: python_files can match production code. A
+  production module named conftest.py that pytest walks past is loaded as a
+  conftest, so it counts as test code. One raised wholly inside subpoena's helpers,
   run by pytest (a watch_spawns finalizer), is an assertion too. So is
   webtest's check of a status the test stated, read the same way: webtest
   raises its own AppError for it, not an AssertionError. A 5xx is not one: see
@@ -24,8 +26,8 @@ one is a crash.
 
 Every record carries $SUBPOENA_CROSS_NONCE, and cross rejects a report line
 without it. That raises the bar only: test code runs in this process and can
-still forge a record. Both variables are removed from the environment when
-the plugin loads, so the tests do not see them by accident.
+still forge a record. All of cross's variables are removed from the environment
+when the plugin loads, so the tests do not see them by accident.
 
 Under pytest-xdist the tests run in worker processes, which start after that
 and so never see the variables. The controller hands them over in xdist's
@@ -45,7 +47,7 @@ from subpoena._evidence import WitnessFailure
 
 _REPORT = os.environ.pop("SUBPOENA_CROSS_REPORT", "")
 _NONCE = os.environ.pop("SUBPOENA_CROSS_NONCE", "")
-_MUTATED = os.environ.get("SUBPOENA_CROSS_MUTATED", "")
+_MUTATED = os.environ.pop("SUBPOENA_CROSS_MUTATED", "")
 _MUTATED_FILES = json.loads(os.environ.pop("SUBPOENA_CROSS_MUTATED_FILES", "[]")) or ([_MUTATED] if _MUTATED else [])
 _SELECTED = os.environ.pop("SUBPOENA_CROSS_SELECTED", "")
 _SELECTED = set(json.loads(_SELECTED)) if _SELECTED else None
@@ -73,15 +75,17 @@ def _write(rec):
 
 
 def pytest_configure(config):
-    global _REPORT, _NONCE, _MUTATED_FILES
+    global _REPORT, _NONCE, _MUTATED_FILES, _SELECTED
     settings = getattr(config, "workerinput", {}).get(_WORKER_INPUT)
     if settings:
         _REPORT, _NONCE, _MUTATED_FILES = settings["report"], settings["nonce"], settings["mutated"]
+        _SELECTED = None if settings["selected"] is None else set(settings["selected"])
 
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_configure_node(node):
-    node.workerinput[_WORKER_INPUT] = {"report": _REPORT, "nonce": _NONCE, "mutated": _MUTATED_FILES}
+    node.workerinput[_WORKER_INPUT] = {"report": _REPORT, "nonce": _NONCE, "mutated": _MUTATED_FILES,
+                                       "selected": None if _SELECTED is None else sorted(_SELECTED)}
 
 
 @pytest.hookimpl(optionalhook=True)
