@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Output outside a test is never a failure message.** A `file.go:N:` line
+  printed while `TestMain` or `init` ran, then an exit, was a kill with no test
+  failed, and a `witness:` tag on that line passed `-require-witness`. It is a
+  crash now.
 - **A red baseline says why, in Go and Python.** `baseline suite is not green`
   could end with nothing after it: a timeout left no output, and the last 40
   lines could be all `ok` and `[no test files]`. It now gives the reason first

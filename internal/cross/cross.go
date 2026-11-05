@@ -756,6 +756,11 @@ func failures(raw string) []failure {
 	gomega := map[key]int{}  // test -> index in fs of the Ginkgo message being read
 	for _, e := range evs {
 		k := key{e.Package, e.Test}
+		// A package's own key fails too, but its output came from no test: a
+		// line there is what TestMain, init or the code they ran printed.
+		if e.Test == "" {
+			continue //subpoena:enforcement
+		}
 		if e.Action != "output" || !failed[k] {
 			continue
 		}
