@@ -129,17 +129,25 @@ func newRunner(ctx context.Context, root string) (*runner, error) {
 		r.remove()
 		return nil, err
 	}
-	// The wrapper runs here, whatever the project builds for or with.
-	build := append(os.Environ(), "GOFLAGS=", "GOWORK=off", "CGO_ENABLED=0", "GOOS="+env.GOHOSTOS, "GOARCH="+env.GOHOSTARCH)
-	if out, err := goCmdEnv(ctx, 2*time.Minute, dir, build, "build", "-buildvcs=false", "-o", bin, src); err != nil {
+	if err := buildWrapper(ctx, dir, src, bin, env.GOHOSTOS, env.GOHOSTARCH); err != nil {
 		r.remove()
-		return nil, fmt.Errorf("cross: build the exit-code wrapper: %w\n%s", err, tail(out, 20)) //subpoena:enforcement
+		return nil, err //subpoena:enforcement
 	}
 	if r.exec, err = quoteField(bin); err != nil {
 		r.remove()
 		return nil, err
 	}
 	return r, nil
+}
+
+// buildWrapper builds src to bin. The wrapper runs here, whatever the project
+// builds for or with.
+func buildWrapper(ctx context.Context, dir, src, bin, goos, goarch string) error {
+	build := append(os.Environ(), "GOFLAGS=", "GOWORK=off", "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
+	if out, err := goCmdEnv(ctx, 2*time.Minute, dir, build, "build", "-buildvcs=false", "-o", bin, src); err != nil {
+		return fmt.Errorf("cross: build the exit-code wrapper: %w\n%s", err, tail(out, 20))
+	}
+	return nil
 }
 
 func (r *runner) remove() { removeTree(r.dir) }
