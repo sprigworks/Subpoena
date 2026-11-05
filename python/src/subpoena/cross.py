@@ -390,6 +390,9 @@ def apply(data: bytes, m: Mutant) -> bytes:
 
 _PLUGIN = "subpoena._cross_plugin"
 
+# How long a pipe may stay open once pytest has gone, in seconds.
+_PIPE_GRACE = 5.0
+
 
 def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report: str,
                nonce: str = "", *, selected=None, coverage=None, cancel=None,
@@ -429,18 +432,33 @@ def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report:
                 out, _ = p.communicate(timeout=min(remaining, 0.2))
                 return p.returncode, out
             except subprocess.TimeoutExpired:
-                continue
+                # pytest is gone and a child it left holds the pipe. Its exit
+                # code and report stand, as with Go's WaitDelay.
+                if p.poll() is not None:
+                    return p.returncode, _drain(p)
     except subprocess.TimeoutExpired:
-        # The whole session: pytest and anything the tests started.
+        # The whole session: pytest and anything the tests started. A child
+        # that left the session is out of reach and can hold the pipe.
         _kill_group(p)
-        out, _ = p.communicate()
-        return None, out
+        return None, _drain(p)
     except BaseException:
         # Ctrl-C (or any other way out): the suite is in its own session, so
         # it did not get the SIGINT; never leave it running.
         _kill_group(p)
         p.wait()
         raise
+
+
+def _drain(p: subprocess.Popen) -> str:
+    """What p printed, waiting at most _PIPE_GRACE for the pipe to close, and
+    then closing it: a detached child can hold it for as long as it lives."""
+    try:
+        return p.communicate(timeout=_PIPE_GRACE)[0]
+    except subprocess.TimeoutExpired as e:
+        p.stdout.close()
+        p.wait()
+        out = e.output or b""
+        return out.decode("utf-8", "replace") if isinstance(out, bytes) else out
 
 
 def _kill_group(p: subprocess.Popen) -> None:

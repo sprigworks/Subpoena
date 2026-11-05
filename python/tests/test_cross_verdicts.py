@@ -420,3 +420,35 @@ def test_select_does_not_replace_unconfirmed_with_a_kill(tmp_path):
             assert serve("ann").status == 200
     """}, select=True)
     assert r.outcome == UNCONFIRMED
+
+
+# --- a detached child holding the pipe (review 3: p06) ---
+
+DETACHED = """
+    import subprocess
+    from app import serve
+    def test_refused():
+        subprocess.Popen(["setsid", "sleep", "25"])
+        assert serve("mallory").status == 403
+"""
+
+
+def test_a_detached_child_on_the_pipe_does_not_outlast_the_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(cross, "_PIPE_GRACE", 1.0, raising=False)
+    start = time.monotonic()
+    r = outcome(tmp_path, {"app.py": BODY, "test_app.py": DETACHED}, "-s", timeout=5)
+    assert r.outcome == KILLED and time.monotonic() - start < 20
+
+
+def test_a_timeout_stops_waiting_for_a_detached_child(tmp_path, monkeypatch):
+    monkeypatch.setattr(cross, "_PIPE_GRACE", 1.0, raising=False)
+    root = project(tmp_path, {"test_app.py": """
+        import subprocess, time
+        def test_hangs():
+            subprocess.Popen(["setsid", "sleep", "25"])
+            print("before the hang", flush=True)
+            time.sleep(60)
+    """})
+    start = time.monotonic()
+    code, out = cross._run_suite(root, ["-s"], 3, "", str(tmp_path / "report"))
+    assert code is None and "before the hang" in out and time.monotonic() - start < 15
