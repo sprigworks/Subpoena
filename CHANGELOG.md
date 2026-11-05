@@ -11,15 +11,29 @@
   wrong guard can stop the allowed path too, and then an allowed-path test kills
   the mutant with the refusal unexamined. This is known and cross does not
   close it; `docs/architecture.md` says how to read a kill for it.
-- **The code under test cannot supply witness evidence.** Python read `witness:`
-  anywhere in the message, which holds pytest's diff of the app's own values; it
-  now reads the tag only at the start of the test's own message. Go read it from
-  any line in the shape of a `t.Log`, which the app can print. Under cross the
-  harness now signs its witness failures with a key made for the run, and an
-  unsigned tag is `other`, so `--require-witness` fails it. Output outside cross
-  is unchanged and so is the harness API. A Go test that wrote `witness:` by hand
-  now calls the new `harness.WitnessErrorf`; a module pinned to an older harness
-  gets `other` until it updates.
+- **Printed text no longer counts as witness evidence; deliberate forgery still
+  can.** Python read `witness:` anywhere in the message, which holds pytest's diff
+  of the app's own values, and then at the start of a message, which can be the
+  app's own body or `__repr__`. It now reads the failure's type: `subpoena.harness`
+  raises `WitnessFailure`, a test that asks a witness itself calls the new
+  `harness.witness_fail`, and any other text is `other`, so a Python test that
+  wrote the tag by hand changes verdict under `--require-witness`. Go read the tag
+  from any line in the shape of a `t.Log`, which the app can print. Under cross
+  the harness now signs its witness failures with a key made for the run, and an
+  unsigned tag is `other`. A Go test that wrote `witness:` by hand now calls the
+  new `harness.WitnessErrorf`; a module pinned to an older harness gets `other`
+  until it updates. Only a `*testing.T`, `B` or `F` gets the mark, so production
+  code cannot sign through the harness with a `testing.TB` of its own, and a
+  wrapper such as `GinkgoTB` reads as `other`. This stops what a system prints in
+  the ordinary way, and no more. The key stays readable: `/proc/<pid>/environ`
+  keeps it after the harness unsets it, so in-process code, a child, or any process
+  of the same user can compute a mark, and Python code can raise the type. Output
+  outside cross is unchanged.
+- **A witness that could not see is no witness evidence.** An Inconclusive and a
+  capture health failure were tagged and signed like a sighting, and the code
+  under test can cause one: leak file descriptors until the scan fails, and
+  `--require-witness` passed with nothing ever spawned. They still fail the test,
+  now under the new `inconclusive:` tag, which reads as `other`, in Go and Python.
 - **Order no longer decides a Python crash from a kill.** Cross ran pytest with
   `-x`, so a crash behind the first failure was never seen, and under
   pytest-randomly the same mutant was `killed` or `crashed` by chance. Every test
@@ -29,22 +43,33 @@
 - **Python test code is what pytest collected.** A file counted as test code by
   its name, so an `assert` in a production `limit_test.py`, or anywhere under
   `python_files = *.py`, was a kill. It is a crash now, as any assert in the code
-  under test is, unless pytest collected a test from that file.
+  under test is, unless pytest collected a test from that file. So an assertion
+  helper in a `test_*.py` holding no tests is a crash too, and a `conftest.py` is
+  still test code by its name, even in a production directory.
 - **A kill needs its tests to pass without the mutant.** A suite that went red
   for any reason was a kill: a file a test left in the shared copy, a marker
   outside it, a flake, with the enforcement never called. Each Go case now gets
   a fresh copy, as Python's did, and in both languages a kill's failed tests run
-  three more times without the mutant, each on a fresh copy. One that fails is the new
-  `enforcement-mutant-unconfirmed`, which fails the run. A rare flake can still
-  pass the reruns, so it stays a weak spot, stated in `docs/architecture.md`.
+  three more times without the mutant, each on a fresh copy and started the same
+  way as the mutant run. One that fails is the new
+  `enforcement-mutant-unconfirmed`, which fails the run, with or without `-select`.
+  A rare flake, or state that clears itself before the reruns, can still pass
+  them, so it stays a weak spot, stated in `docs/architecture.md`.
 - **Cross reads a test binary's exit code.** A panic beside another writer's
   open line (`....panic: runtime error`) matched no crash line, so a real panic
   came back a kill about half the time. `go test -json` gives no exit code, so
-  cross records it through `go test -exec`, and any exit but 1 is a death. That
-  also settles a `panic:` line a passing test printed, say from a recover
-  middleware: the binary lived, so the line voids no kill, in either test order.
-  It did before, but only when the printing test ran first. A `panic:` line in a
-  test that did not pass still voids the package's kills.
+  cross records it through `go test -exec`, and any exit but 1 is a death. The
+  wrapper is a small Go program cross builds at the start of a run, so it needs no
+  `sh`, filters no environment variable, and a project's own `-exec` stays in place
+  under it. Every go test of a run uses it, baseline and reruns included. Cross
+  stops if it cannot build it. An exit 1 is a failed test only if the binary
+  finished testing, shown by a profile package testing writes when `m.Run` ends,
+  so a printed `--- FAIL:` line and an `os.Exit(1)` is a crash. A project's runner
+  that runs the binary on another machine leaves no profile, so its kills are
+  crashes. The exit code also settles a `panic:` line a passing test printed, say
+  from a recover middleware: the binary lived, so the line voids no kill, in
+  either test order. It did before, but only when the printing test ran first. A
+  `panic:` line in a test that did not pass still voids the package's kills.
 - **Output outside a test is never a failure message.** A `file.go:N:` line
   printed while `TestMain` or `init` ran, then an exit, was a kill with no test
   failed, and a `witness:` tag on that line passed `-require-witness`. It is a

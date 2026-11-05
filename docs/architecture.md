@@ -101,9 +101,12 @@ cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 mutant that does not compile is "invalid", never "killed". Every run starts from
 a fresh copy, so no test sees what another case left there. After a kill, its
 failed tests run again without the mutant, three times, each on a fresh copy.
-If one fails, or does not finish, the verdict is
+The baseline, the mutant run and the reruns all start their test binaries the
+same way, so a test red only under the way it was started is red on the baseline
+too. If one fails, or does not finish, the verdict is
 `enforcement-mutant-unconfirmed` and the run fails: something other than the
-mutant turned it red, such as state outside the copy. The same goes for a test
+mutant turned it red, such as state outside the copy that persists. State that
+clears itself before the reruns passes them. The same goes for a test
 that fails alone because it needs the tests before it. A flake needs more than
 one rerun to show: a test that fails half the time passes one rerun half the
 time. Three reruns leave such a test a one-in-eight way past, and a test that
@@ -128,7 +131,16 @@ plain text, which the code under test can print, so a testify or Ginkgo failure
 ahead of a panic is a crash. Cross reads the death from the binary's exit code,
 which it records through `go test -exec`, since `go test -json` does not give
 it: anything but 1 is a death, wherever the panic's text fell, even beside
-another writer's open line. A `panic:` line also voids a package's kills when it
+another writer's open line. The wrapper is a small Go program cross builds for
+the run. It adds nothing to the environment, a project's own `-exec` or
+`go_$GOOS_$GOARCH_exec` runs under it, and with no wrapper cross stops rather than
+read the output alone. An exit 1 counts only if the binary finished testing: the
+wrapper asks for a heap profile, which package testing writes when `m.Run` ends,
+and an `os.Exit(1)` in the middle of a test leaves none. Output cannot show this,
+since `go test -json` trusts a `--- FAIL:` line behind the `^V` byte whoever wrote
+it. Code that goes looking can still write the profile path it finds in
+`os.Args`, and a runner that runs the binary elsewhere leaves no profile, so its
+kills are crashes. A `panic:` line also voids a package's kills when it
 sits in a test that did not pass, so a panic something recovered, with the
 binary exiting 1, stays a crash. In a test that passed it is a log line, and
 order does not matter: the binary lived. Ginkgo reports a recovered panic as `[PANICKED]`,
@@ -144,21 +156,30 @@ a tag alone is not `witness`: the code under test can print a line in the shape
 of a `t.Log`, so under cross the harness signs its witness failures with a key
 made for the run, and an unsigned `witness:` is `other`. A test that asks a
 witness itself reports through `harness.WitnessErrorf`, which signs. The output
-outside cross does not change. In-process code that goes looking for the key can
-still forge a mark, as it can forge anything there; the mark stops what a system
-prints in the ordinary way. In Python the tag counts only at the start of the
-test's own assertion message, never in pytest's diff of the values the code
-returned. `--require-witness` opts into a stricter
+outside cross does not change. Only a `*testing.T`, `B` or `F` gets the mark, so
+production code cannot sign through the public harness with a `testing.TB` of its
+own, and a wrapper such as `GinkgoTB` reads as `other`. The key is not a secret
+from the code under test. `/proc/<pid>/environ` keeps it after the harness unsets
+it, so in-process code, a child process, or any process of the same user can read
+it and compute a mark. The mark stops what a system prints in the ordinary way,
+not code set on forging one. In Python the failure's type decides: the harness
+raises `WitnessFailure`, a test that asks a witness itself calls
+`harness.witness_fail`, and no text counts, wherever it stands. A call from the
+code under test is a crash, read from the frames; in-process code can still build
+what it likes. An Inconclusive or a failed capture says the witness could not
+see, which the code under test can cause, so in both languages it fails the test
+under `inconclusive:` and reads as `other`. `--require-witness` opts into a stricter
 gate: a clean failure whose first evidence is `testimony` or `other` is
 `enforcement-mutant-killed-by-self-report` and fails the run. A witness failure
 later in that test or its cleanup cannot redeem it. Selection retries such a
-result on the full suite, and group and pair runs use the same rule, so a
+result on the full suite (an `unconfirmed` it keeps: a test seen failing without
+the mutant is not retried into a kill), and group and pair runs use the same rule, so a
 self-report kill cannot mask another layer. The default remains unchanged.
 The gateway and adopter CI paths select this gate. The Level 0 Python
 quickstart uses ordinary cross mode: its direct dictionary check is `other`,
 not a process/network witness. `make cross-self` also retains ordinary mode
 while the policy for pure-logic guard oracles is decided separately. A Python
-tag, and a Go test's call to `harness.WitnessErrorf`, remain reviewed claims:
+test's call to `harness.witness_fail`, and a Go test's to `harness.WitnessErrorf`, remain reviewed claims:
 never use either on a return-value or span assertion to satisfy the gate. `-evidence-dir` keeps every mutant
 run's full `go test -json` output, killed ones included. `-j N` runs N single
 mutants at once, each in its own copy of the module (group runs stay
