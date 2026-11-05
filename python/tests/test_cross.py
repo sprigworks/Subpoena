@@ -985,12 +985,12 @@ def test_xdist_with_selection_says_why_it_stops(tmp_path):
         """}), pytest_args=XDIST, select=True)
 
 
-def test_interrupted_run_without_workers_is_a_crash():
-    # Exit 2 passes only as xdist's -x. Elsewhere pytest was interrupted.
+def test_interrupted_run_is_a_crash():
+    # Cross stops no run early, so exit 2 means pytest was interrupted, xdist or not.
     records = [{"kind": "failure", "test": "t", "verdict": "assertion", "message": "m"},
                {"kind": "finished", "exitstatus": 2, "missing": []}]
     assert cross.classify(2, records, "")[0] == CRASHED
-    assert cross.classify(2, records + [{"kind": "worker_finished", "missing": []}], "")[0] == KILLED
+    assert cross.classify(2, records + [{"kind": "worker_finished", "missing": []}], "")[0] == CRASHED
 
 
 def test_a_file_one_process_loaded_is_loaded():
