@@ -601,7 +601,9 @@ def test_webtest_status_check_is_an_assertion(tmp_path):
     assert r.first_failure.startswith("Bad response: 200 OK (not 403)")
 
 
-def test_webtest_default_status_check_is_an_assertion(tmp_path):
+def test_webtest_default_status_check_is_no_assertion(tmp_path):
+    # With no status= the test stated no expectation: webtest's own default
+    # raised, so nothing the test asked for failed.
     _, r = outcome(tmp_path, {"wsgisite.py": WSGI.replace(
         '"200 OK"', '"404 Not Found"').replace('"403 Forbidden"', '"200 OK"'), "test_wsgisite.py": """
         from webtest import TestApp
@@ -609,7 +611,65 @@ def test_webtest_default_status_check_is_an_assertion(tmp_path):
         def test_secret():
             TestApp(app).get("/secret")
     """})
-    assert r.outcome == KILLED
+    assert r.outcome == CRASHED
+
+
+# The mutant makes a handler raise, and a catch-all answers 500, as web
+# frameworks do. Nothing here is a refusal the test saw: the app fell over.
+CATCH_ALL = '''
+TOKENS = {"ann": "tok"}
+
+
+# subpoena:enforcement_point
+def token_for(user):
+    token = None
+    if user:
+        token = TOKENS.get(user, "anon")  # subpoena:enforcement
+    return token
+
+
+def app(environ, start_response):
+    try:
+        body = token_for("ann").upper().encode()
+        start_response("200 OK", [("Content-Type", "text/plain")])
+        return [body]
+    except Exception:
+        start_response("500 Internal Server Error", [("Content-Type", "text/plain")])
+        return [b"x"]
+'''
+
+
+@pytest.mark.parametrize("call", ['get("/")', 'get("/", status=200)', 'get("/", status=[200, 204])'],
+                         ids=["no status", "explicit status", "status list"])
+def test_webtest_500_from_an_app_that_fell_over_is_a_crash(tmp_path, call):
+    _, r = outcome(tmp_path, {"wsgisite.py": CATCH_ALL, "test_wsgisite.py": f"""
+        from webtest import TestApp
+        from wsgisite import app
+        def test_home():
+            TestApp(app).{call}
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_webtest_a_propagated_exception_stays_a_crash(tmp_path):
+    _, r = outcome(tmp_path, {"wsgisite.py": CATCH_ALL.replace("except Exception:", "except KeyError:"),
+                              "test_wsgisite.py": """
+        from webtest import TestApp
+        from wsgisite import app
+        def test_home():
+            TestApp(app).get("/")
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_webtest_a_stated_5xx_the_app_did_not_give_is_an_assertion(tmp_path):
+    _, r = outcome(tmp_path, {"wsgisite.py": WSGI.replace("403 Forbidden", "503 Busy"), "test_wsgisite.py": """
+        from webtest import TestApp
+        from wsgisite import app
+        def test_secret():
+            TestApp(app).get("/secret", status=503)
+    """})
+    assert r.outcome == KILLED and r.first_failure.startswith("Bad response: 200 OK (not 503)")
 
 
 def test_webtest_logged_app_error_stays_a_crash(tmp_path):

@@ -12,8 +12,9 @@ A failure's verdict:
   code: a module pytest collects as tests (python_files), a conftest.py, or
   the failing test's own file. One raised wholly inside subpoena's helpers,
   run by pytest (a watch_spawns finalizer), is an assertion too. So is
-  webtest's check of a test's expected status, read the same way: webtest
-  raises its own AppError for it, not an AssertionError.
+  webtest's check of a status the test stated, read the same way: webtest
+  raises its own AppError for it, not an AssertionError. A 5xx is not one: see
+  _status_check.
 - crash: anything else, including an assert in the code under test.
 
 Every record carries $SUBPOENA_CROSS_NONCE, and cross rejects a report line
@@ -109,11 +110,21 @@ def _same_file(a, b):
 
 
 def _status_check(excinfo):
-    """webtest's TestApp found a status the test did not expect. AppError also
-    reports errors the app logged, which is not an expectation of the test."""
+    """webtest's TestApp found a status other than the one the test stated, and
+    the app did not answer 5xx. Read from _check_status's own arguments, since
+    the message holds the app's status line. With no status= the test stated
+    nothing: webtest's default check raised. A 5xx is the app falling over, as a
+    catch-all answers any exception, and not a refusal the test saw."""
     kind = excinfo.type
-    return (kind.__name__ == "AppError" and kind.__module__.split(".")[0] == "webtest"
-            and str(excinfo.value).startswith("Bad response:"))
+    if kind.__name__ != "AppError" or kind.__module__.split(".")[0] != "webtest":
+        return False
+    tb = excinfo.tb
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb.tb_frame.f_code.co_name != "_check_status":
+        return False  # AppError also reports errors the app logged
+    stated, res = tb.tb_frame.f_locals.get("status"), tb.tb_frame.f_locals.get("res")
+    return stated is not None and res is not None and res.status_int < 500
 
 
 def _verdict(item, excinfo):
