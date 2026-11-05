@@ -583,7 +583,7 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
         _before_mutate: Optional[Callable[[str], None]] = None, *, jobs: int = 1,
         select: bool = False, evidence_dir: Optional[str] = None,
         require_witness: bool = False) -> Report:
-    """Cross-examine immutable copies. Selection confirms every non-kill on the full suite.
+    """Cross-examine immutable copies. Selection confirms every non-kill but an unconfirmed on the full suite.
     Parallel workers share no mutable files. Group runs always use the whole suite.
     """
     if not isinstance(jobs, int) or jobs < 1 or not math.isfinite(timeout) or timeout <= 0:
@@ -754,7 +754,10 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
             i, m = item
             tests = selected_tests.get(i)
             result = case([m], tests)
-            if tests and result.outcome != KILLED:
+            # An unconfirmed is a test seen failing without the mutant, and no
+            # later run takes that back: a retry would give a flake a second way
+            # to a kill.
+            if tests and result.outcome not in {KILLED, UNCONFIRMED}:
                 result = case([m])
             return result
 

@@ -2,7 +2,10 @@
 """Verdicts that must not overstate proof, each built from a repro of the second
 trial-fixes review, through real pytest runs."""
 
+import os
+import tempfile
 import textwrap
+import time
 
 import pytest
 
@@ -397,3 +400,23 @@ def test_a_sighting_ahead_of_bad_health_stays_witness_evidence(tmp_path):
             watch_spawns(request.addfinalizer, Saw(), "t", SpawnRule(never=["rm"]))
     """}, require_witness=True)
     assert r.outcome == KILLED and r.evidence == "witness"
+
+
+# --- -select keeps an unconfirmed (review 3: p05) ---
+
+def test_select_does_not_replace_unconfirmed_with_a_kill(tmp_path):
+    # Runs: baseline, coverage, subset, mutant (red), rerun (red), then a
+    # whole-suite retry would be red too, with a green rerun after it.
+    count = tmp_path / "count"
+    r = outcome(tmp_path / "p", {"app.py": BODY, "test_app.py": f"""
+        import os
+        from app import serve
+        def test_allowed():
+            p = {str(count)!r}
+            n = (len(open(p).read()) if os.path.exists(p) else 0) + 1
+            open(p, "w").write("x" * n)
+            assert n not in (4, 5, 6), f"flake on run {{n}}"
+            serve("mallory")
+            assert serve("ann").status == 200
+    """}, select=True)
+    assert r.outcome == UNCONFIRMED
