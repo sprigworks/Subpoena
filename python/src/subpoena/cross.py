@@ -481,8 +481,9 @@ def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, L
     fails = [r for r in records if r.get("kind") == "failure"]
     if any(r.get("verdict") == "timeout" for r in fails):
         return TIMED_OUT, [r["test"] for r in fails], "", ""
-    if any(r.get("kind") == "collect_error" for r in records) or code in (2, 4, 5) and not finished:
-        return INVALID, [], "", ""
+    started = any(r.get("kind") == "collected" for r in records)
+    if any(r.get("kind") == "collect_error" for r in records) or code in (2, 4, 5) and not finished and not started:
+        return INVALID, [], "", ""  # pytest never reached a test; past that, those codes are a death
     if any(r.get("verdict") == "invalid" for r in fails):
         return INVALID, [r["test"] for r in fails], "", ""
     workers = [r for r in records if r.get("kind") == "worker_finished"]

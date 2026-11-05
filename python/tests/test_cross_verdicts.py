@@ -231,3 +231,25 @@ def test_first_evidence_is_the_first_test_collected_not_the_first_to_finish():
     assert set(failing) == {"t::a", "t::b"}
 
 
+# --- exit codes that are not pytest's own (p8-exit2, p8-exit4) ---
+
+@pytest.mark.parametrize("code", [2, 3, 4, 5])
+def test_a_test_process_that_dies_is_a_crash_whatever_its_code(tmp_path, code):
+    r = outcome(tmp_path, {"auth.py": GATE, "test_auth.py": f"""
+        import os
+        from auth import gate
+        def test_denied():
+            if "denied" not in gate("mallory"):
+                os._exit({code})
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_a_mutant_that_stops_collection_stays_invalid(tmp_path):
+    r = outcome(tmp_path, {"auth.py": GATE, "test_auth.py": """
+        from auth import gate
+        assert "denied" in gate("mallory")
+        def test_nothing():
+            pass
+    """})
+    assert r.outcome == INVALID
