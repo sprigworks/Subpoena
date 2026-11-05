@@ -36,7 +36,7 @@ type runner struct {
 // testing writes only when m.Run ends, so a binary that exits 1 in the middle
 // of a test (os.Exit in the code under test) leaves none, whatever it printed:
 // the profile is the one sign of a finished run that printed text cannot give.
-const wrapperSource = `package main
+var wrapperSource = `package main
 
 import (
 	"errors"

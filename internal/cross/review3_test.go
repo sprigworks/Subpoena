@@ -269,3 +269,20 @@ func TestExitEventsAreNotPrintedText(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// With no wrapper no exit code can be read, so there is no run: the old wrapper
+// turned itself off in silence (repro g13).
+func TestNoWrapperIsNoRun(t *testing.T) {
+	src := wrapperSource
+	defer func() { wrapperSource = src }()
+	wrapperSource = "package main\n\nfunc main() { this does not compile }\n"
+	dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import "testing"
+
+func TestDenied(t *testing.T) { if Check("mallory") == nil { t.Fatal("not refused") } }
+`})
+	if _, err := Run(context.Background(), Options{Target: dir}); err == nil || !strings.Contains(err.Error(), "exit-code wrapper") {
+		t.Fatalf("got %v, want the wrapper's build error", err)
+	}
+}
