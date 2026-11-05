@@ -521,7 +521,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 		fmt.Fprintf(o.Log, "  (%d layers together)\n", len(ms))
 	}
 
-	out, err := goIn(ctx, o.Timeout, sb, "build", pkgs)
+	out, err := goIn(ctx, o.Timeout, sb, "build", "-buildvcs=false", pkgs)
 	if err != nil {
 		// Removing a statement may leave a function with no return at its end,
 		// or an import unused (the removed line was its only use). Stand in a
@@ -555,7 +555,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			}
 		}
 		if retry {
-			out, err = goIn(ctx, o.Timeout, sb, "build", pkgs)
+			out, err = goIn(ctx, o.Timeout, sb, "build", "-buildvcs=false", pkgs)
 		}
 	}
 	var testOut string

@@ -37,6 +37,10 @@
   call and stated the status. With no `status=` the test expected nothing, and
   a 5xx is the app falling over, so both stay a crash, as does an `AppError`
   for errors the app logged.
+- **A stray `.git` above the temp directory no longer invalidates mutants.** A
+  copy holds no repository, so `go build` of a main package climbed to any empty
+  `.git` above it, failed on VCS stamping, and reported "did not compile". Cross
+  now builds its copies with `-buildvcs=false`.
 - **Cross reads Ginkgo failures.** A Ginkgo v2 `[FAILED]` spec under the suite's
   `Running Suite:` banner is a kill; it was `crashed`, because Ginkgo prints no
   `file.go:N:` line. Any panic in the package still makes it a crash, ahead of

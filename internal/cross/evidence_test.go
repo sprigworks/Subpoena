@@ -577,3 +577,49 @@ func TestLast(t *testing.T) {}
 		t.Fatalf("want the panic of package mini alone, got %s:\n%s", r.Outcome, r.Output)
 	}
 }
+
+// A sandbox copy holds no repository, so go build climbs out of it to look for
+// one. An empty .git above the temp directory, as a sandboxing tool leaves for
+// a mount point, then fails the build of a main package on VCS stamping, and
+// every mutant came back invalid: "did not compile", with nothing wrong with it.
+func TestAStrayGitAboveTheCopyIsNotABuildFailure(t *testing.T) {
+	const src = `package main
+
+import "errors"
+
+var ErrDenied = errors.New("denied")
+
+func main() {}
+
+//subpoena:enforcement_point
+func Allow(ok bool) error {
+	if !ok {
+		return ErrDenied //subpoena:enforcement
+	}
+	return nil
+}
+`
+	const test = `package main
+
+import "testing"
+
+func TestDeny(t *testing.T) {
+	if Allow(false) == nil {
+		t.Fatal("must be denied")
+	}
+}
+`
+	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": test})
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	rep, err := Run(context.Background(), Options{Target: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Outcome != Killed {
+		t.Fatalf("want a kill, got %s:\n%s", r.Outcome, r.Output)
+	}
+}
