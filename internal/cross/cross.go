@@ -10,7 +10,8 @@
 // A removed return the function cannot end without is replaced by a return of
 // zero values when that only turns an error to nil: return nil, ErrDenied
 // becomes a return of nil, nil. No other return has a stand-in, since zero can be
-// the refusal itself: return p.Check(u) would become return false.
+// the refusal itself (return p.Check(u) would become return false), and a call
+// can be the work the allowed path needs (return s.Authorize(admins)).
 //
 // A guard is marked on its if line with //subpoena:enforcement_guard true (or
 // false): the mutant forces the condition to that bypass value. The value is
@@ -1298,7 +1299,10 @@ func tailReturn(list []ast.Stmt, ret *ast.ReturnStmt) bool {
 // errorRefusal reports whether a return's only news is an error, so that its
 // zero values turn a possible refusal into nil and change nothing else. Every
 // other result must already be plainly zero: a value beside the error can carry
-// the decision. A bare return, and one call spread over the results, say
+// the decision. A call in the error can be the work itself (return
+// s.Authorize(admins) opens the session), so the stand-in would drop what the
+// allowed path needs. Cross cannot see what a call does, so that holds for
+// fmt.Errorf too. A bare return, and one call spread over the results, say
 // nothing about which result is which.
 func errorRefusal(results []ast.Expr, isError []bool) bool {
 	if len(results) != len(isError) {
@@ -1309,12 +1313,27 @@ func errorRefusal(results []ast.Expr, isError []bool) bool {
 		if isZeroValue(e) {
 			continue
 		}
-		if !isError[i] {
+		if !isError[i] || doesWork(e) {
 			return false
 		}
 		refusal = true
 	}
 	return refusal
+}
+
+// doesWork reports whether evaluating e can do anything: a call, or a receive.
+func doesWork(e ast.Expr) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.CallExpr:
+			found = true
+		case *ast.UnaryExpr:
+			found = found || x.Op == token.ARROW
+		}
+		return !found
+	})
+	return found
 }
 
 // isZeroValue reports whether e is plainly a zero value. A named constant that

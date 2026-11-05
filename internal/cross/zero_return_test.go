@@ -52,6 +52,8 @@ func denied(admin bool) error {
 
 import "errors"
 
+var ErrDenied = errors.New("denied")
+
 func denied(admin bool) error {
 	_, err := check(admin)
 	return err
@@ -63,7 +65,7 @@ func check(admin bool) (string, error) {
 	case admin:
 		return "ok", nil
 	default:
-		return "", errors.New("denied") //subpoena:enforcement
+		return "", ErrDenied //subpoena:enforcement
 	}
 }
 `, "return *new(string), *new(error)"},
@@ -71,17 +73,21 @@ func check(admin bool) (string, error) {
 
 import "errors"
 
+var ErrDenied = errors.New("denied")
+
 //subpoena:enforcement_point
 func denied(admin bool) (err error) {
 	if admin {
 		return nil
 	}
-	return errors.New("denied") //subpoena:enforcement
+	return ErrDenied //subpoena:enforcement
 }
 `, "return *new(error)"},
 		{"the closure's results, not the function's", `package mini
 
 import "errors"
+
+var ErrDenied = errors.New("denied")
 
 func denied(admin bool) error {
 	_, err := outer(admin)
@@ -94,24 +100,27 @@ func outer(admin bool) (int, error) {
 		if admin {
 			return nil
 		}
-		return errors.New("denied") //subpoena:enforcement
+		return ErrDenied //subpoena:enforcement
 	}
 	return 1, f()
 }
 `, "return *new(error)"},
 		{"spread over lines, with the only use of an import", `package mini
 
-import "fmt"
+import "strconv"
+
+type bitsErr struct{ bits int }
+
+func (bitsErr) Error() string { return "denied" }
 
 //subpoena:enforcement_point
 func denied(admin bool) error {
 	if admin {
 		return nil
 	}
-	return fmt.Errorf( //subpoena:enforcement
-		"denied %v",
-		admin,
-	)
+	return &bitsErr{ //subpoena:enforcement
+		bits: strconv.IntSize,
+	}
 }
 `, "return *new(error)"},
 	}
@@ -186,13 +195,7 @@ import "errors"
 
 var ErrDenied = errors.New("denied")
 var Ran []string
-
-func audit(admin bool) error {
-	if !admin {
-		return errors.New("audit refused")
-	}
-	return nil
-}
+var Audit error
 
 //subpoena:enforcement_point
 func denied(admin bool) error {
@@ -200,7 +203,7 @@ func denied(admin bool) error {
 		return ErrDenied //subpoena:enforcement group=g
 	}
 	Ran = append(Ran, "effect")
-	return audit(admin) //subpoena:enforcement group=g
+	return Audit //subpoena:enforcement group=g
 }
 `
 	const test = `package mini
@@ -307,6 +310,76 @@ func TestF(t *testing.T) { f(false) }
 	}
 }
 
+// A call in the error expression can be the work itself: a stand-in would drop
+// it, and with it what it does for the allowed path. Only an admin is tested
+// here, so a kill would rest on the session that never opened, with the refusal
+// unexamined (repro h3-errcall). An error's constructor is a call too, so it
+// stays invalid with the rest: cross cannot see what a call does.
+func TestACallInTheErrorExpressionGetsNoStandIn(t *testing.T) {
+	const test = `package mini
+
+import "testing"
+
+func TestAdminGetsASession(t *testing.T) {
+	s := &Session{User: "ann"}
+	if err := Login(s, map[string]bool{"ann": true}); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Open {
+		t.Fatal("admin has no session")
+	}
+}
+`
+	for _, ret := range []string{
+		"s.Authorize(admins)",
+		"wrap(s.Authorize(admins))",
+		"func() error { return s.Authorize(admins) }()",
+		"<-s.Answer(admins)",
+	} {
+		t.Run(ret, func(t *testing.T) {
+			src := `package mini
+
+import "errors"
+
+var ErrDenied = errors.New("denied")
+
+type Session struct {
+	User string
+	Open bool
+}
+
+func wrap(err error) error { return err }
+
+func (s *Session) Authorize(admins map[string]bool) error {
+	if !admins[s.User] {
+		return ErrDenied
+	}
+	s.Open = true
+	return nil
+}
+
+func (s *Session) Answer(admins map[string]bool) chan error {
+	c := make(chan error, 1)
+	c <- s.Authorize(admins)
+	return c
+}
+
+//subpoena:enforcement_point
+func Login(s *Session, admins map[string]bool) error {
+	return ` + ret + ` //subpoena:enforcement
+}
+`
+			rep, err := Run(context.Background(), Options{Target: module(t, map[string]string{"auth.go": src, "auth_test.go": test})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r := rep.Results[0]; r.Outcome != Invalid || !strings.Contains(r.Hint, MarkerGuard) {
+				t.Fatalf("want invalid with guard advice, got %s %v hint=%q evidence=%q", r.Outcome, r.ZeroReturns, r.Hint, r.FirstFailure)
+			}
+		})
+	}
+}
+
 // A stand-in may only turn a refusal carried by an error into no error. A
 // return that carries the allow decision has a false as its refusal, so its
 // zero value forces enforcement on, and a test of the allowed path alone would
@@ -399,8 +472,10 @@ func f(admin bool) interface {
 	if admin {
 		panic("not reached by the test")
 	}
-	return errors.New("denied") //subpoena:enforcement
+	return ErrDenied //subpoena:enforcement
 }
+
+var ErrDenied = errors.New("denied")
 `},
 	}
 	const test = `package mini

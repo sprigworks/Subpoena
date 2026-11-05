@@ -100,7 +100,10 @@ cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 mutant that does not compile is "invalid", never "killed". A removed `return`
 the function cannot end without gets a return of zero values in its place only
 when that turns an error to nil and changes nothing else; any other such return
-stays invalid, since zero can be the refusal itself (`return p.Check(u)`). A mutant whose tests
+stays invalid, since zero can be the refusal itself (`return p.Check(u)`). That
+includes a return with a call in its error, `fmt.Errorf` too: the call can be
+the work itself (`return s.Authorize(admins)`), and cross cannot see what a
+call does. A mutant whose tests
 run past `-timeout` (5 minutes by default) is `enforcement-mutant-timeout`, also
 never "killed": a hang may be the host's, and no assertion caught it. A suite
 that goes red with no clean failure message is `enforcement-mutant-crashed`,

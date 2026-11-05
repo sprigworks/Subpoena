@@ -22,7 +22,10 @@
   `return nil, ErrDenied` becomes `return nil, nil`. Any other such return
   stays `invalid` and says to mark the guard. That includes `return p.Check(u)`
   and `return check(u), nil`: zero can be the refusal there, so an allowed-path
-  test would "kill" a mutant with the refusal unexamined.
+  test would "kill" a mutant with the refusal unexamined. It also includes any
+  call in the error, `fmt.Errorf` and `errors.New` too: `return
+  s.Authorize(admins)` is the work the allowed path needs, and a stand-in would
+  drop it.
 - **Python cross stops counting None as enforcement gone.** A marked return
   that ends a function came back as `pass`, so `return user in ADMINS` became
   None and `assert allowed("ann")` "killed" it with no test of a denied user.
