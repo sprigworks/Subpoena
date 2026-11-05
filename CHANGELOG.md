@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Python cross forces a guard that spans lines.** `if check(\n    x,\n):`
+  became `if False\n\n:`, a SyntaxError, so the mutant came back `invalid`.
+  The forced condition keeps its line breaks in brackets now.
 - **Cross can remove a Go function's last `return`.** Deleting it did not
   compile, so the mutant came back `invalid` with advice to fix a placement
   that had no fix. Cross now puts a return of zero values in its place:

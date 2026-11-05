@@ -657,3 +657,63 @@ def test_another_exception_named_apperror_is_a_crash(tmp_path):
                 raise AppError("Bad response: 200 OK (not 403)")
     """})
     assert r.outcome == CRASHED
+
+
+# A condition with no parentheses of its own can still span lines inside a
+# call's brackets. Its line breaks must stay in brackets once it is forced.
+MULTILINE_GUARDS = {
+    "call": '''
+        def denied(admin, role):
+            return not admin
+
+        # subpoena:enforcement_point
+        def allow(admin):
+            if denied(  # subpoena:enforcement_guard false
+                admin,
+                "role",
+            ):
+                return "denied"
+            return None
+    ''',
+    "parenthesised": '''
+        # subpoena:enforcement_point
+        def allow(admin):
+            if (not admin  # subpoena:enforcement_guard false
+                    and admin is not None):
+                return "denied"
+            return None
+    ''',
+    "elif": '''
+        def denied(admin, role):
+            return not admin
+
+        # subpoena:enforcement_point
+        def allow(admin):
+            if admin is None:
+                return "none"
+            elif denied(  # subpoena:enforcement_guard false
+                admin,
+                "role",
+            ):
+                return "denied"
+            return None
+    ''',
+}
+
+
+@pytest.mark.parametrize("shape", sorted(MULTILINE_GUARDS))
+def test_multi_line_guard_is_forced(tmp_path, shape):
+    _, r = outcome(tmp_path, {"auth.py": MULTILINE_GUARDS[shape], "test_auth.py": """
+        from auth import allow
+        def test_denied():
+            assert allow(False) == "denied"
+    """})
+    assert r.outcome == KILLED, r.output
+
+
+def test_forcing_a_multi_line_guard_keeps_every_line_where_it_was():
+    data = b"if f(\n    a,\n    b,\n):\n    pass\n"
+    m = cross.Mutant("x.py", "f", 1, "f(\n    a,\n    b,\n)", "False", (3, data.index(b":")), 3)
+    mutated = cross.apply(data, m)
+    compile(mutated, "x.py", "exec")
+    assert mutated.count(b"\n") == data.count(b"\n")

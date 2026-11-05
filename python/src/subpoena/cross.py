@@ -330,6 +330,9 @@ def apply(data: bytes, m: Mutant) -> bytes:
     a, b = m.span
     repl = (m.bypass or "pass").encode()
     # Keep every later line where it was, so tracebacks and markers line up.
+    # A condition's line breaks need brackets: outside them they end the if.
+    if m.bypass and m.breaks:
+        return data[:a] + b"(" + repl + b"\n" * m.breaks + b")" + data[b:]
     return data[:a] + repl + b"\n" * m.breaks + data[b:]
 
 
