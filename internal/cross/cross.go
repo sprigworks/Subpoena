@@ -599,6 +599,42 @@ func testText(raw string) string {
 // failMsgRE matches a test's failure message, "    file_test.go:12: msg".
 var failMsgRE = regexp.MustCompile(`^\s+[^\s:]+\.go:\d+: (.*)$`)
 
+// maxFailureText bounds the text read from under a blank head line.
+const maxFailureText = 300
+
+// emptyFailure stands in for a failure that printed no text at all.
+const emptyFailure = "(the failure printed no text; -evidence-dir keeps the test's output)"
+
+// failure is one failure message of a failed test.
+type failure struct {
+	head string // text on the file:line, the only place a tag is read
+	text string // what to print: head, or for a blank head the lines under it
+	more bool   // lines still extend text
+}
+
+// addLine reads one line of a failed test's output after a blank head: the
+// text of a multi-line t.Errorf, or testify's Error field. testify puts the
+// whole report under the head, as "\tLabel:\tvalue" lines with a value's
+// further lines under an empty label. A line with less indent is not part of
+// the message: it is output from the code under test.
+func (f *failure) addLine(line string) {
+	if !strings.HasPrefix(line, "        ") {
+		return
+	}
+	body := strings.TrimSpace(line)
+	if label, value, ok := strings.Cut(body, "\t"); ok && strings.HasSuffix(strings.TrimSpace(label), ":") {
+		f.more = strings.TrimSpace(label) == "Error:"
+		if f.more {
+			f.text = strings.TrimSpace(value)
+		}
+		return
+	}
+	if f.more {
+		f.text = strings.TrimSpace(f.text + " " + body)
+		f.more = len(f.text) < maxFailureText
+	}
+}
+
 // firstFailure reads go test -json output for the first failure message of
 // a test that failed (a skipped or passing test's log lines don't count).
 // crashed is true when no failed test gave one cleanly: the binary died by a
@@ -609,36 +645,40 @@ var failMsgRE = regexp.MustCompile(`^\s+[^\s:]+\.go:\d+: (.*)$`)
 // the same way, so a failed test's log line counts as its first failure:
 // tagged, it can set ev; untagged, it hides a witness failure after it.
 func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
-	msgs := failureMessages(raw)
-	if len(msgs) == 0 {
+	fs := failures(raw)
+	if len(fs) == 0 {
 		return "", "", true
 	}
+	msg = fs[0].text
+	if msg == "" {
+		msg = emptyFailure
+	}
 	switch {
-	case strings.HasPrefix(msgs[0], "witness:"):
-		return EvidenceWitness, msgs[0], false
-	case strings.HasPrefix(msgs[0], "testimony:"):
-		return EvidenceTestimony, msgs[0], false
+	case strings.HasPrefix(fs[0].head, "witness:"):
+		return EvidenceWitness, msg, false
+	case strings.HasPrefix(fs[0].head, "testimony:"):
+		return EvidenceTestimony, msg, false
 	default:
-		return EvidenceOther, msgs[0], false
+		return EvidenceOther, msg, false
 	}
 }
 
 // witnessFailure returns the first witness-tagged message of a failed test,
 // or "" if there is none.
 func witnessFailure(raw string) string {
-	for _, m := range failureMessages(raw) {
-		if strings.HasPrefix(m, "witness:") {
-			return m
+	for _, f := range failures(raw) {
+		if strings.HasPrefix(f.head, "witness:") {
+			return f.head
 		}
 	}
 	return ""
 }
 
-// failureMessages lists, in order, the messages of failed tests in packages
+// failures lists, in order, the failure messages of failed tests in packages
 // whose binary did not crash.
 //
 //subpoena:enforcement_point
-func failureMessages(raw string) []string {
+func failures(raw string) []failure {
 	type event struct {
 		Action, Package, Test, Output string
 	}
@@ -669,16 +709,25 @@ func failureMessages(raw string) []string {
 			dead[k[0]] = true //subpoena:enforcement
 		}
 	}
-	var msgs []string
+	var fs []failure
+	open := map[key]int{} // test -> index in fs of the blank head still being read
 	for _, e := range evs {
-		if e.Action != "output" || dead[e.Package] || !failed[key{e.Package, e.Test}] {
+		k := key{e.Package, e.Test}
+		if e.Action != "output" || dead[e.Package] || !failed[k] {
 			continue
 		}
-		if m := failMsgRE.FindStringSubmatch(strings.TrimRight(e.Output, "\n")); m != nil {
-			msgs = append(msgs, m[1])
+		line := strings.TrimRight(e.Output, "\n")
+		if m := failMsgRE.FindStringSubmatch(line); m != nil {
+			delete(open, k)
+			if m[1] == "" {
+				open[k] = len(fs)
+			}
+			fs = append(fs, failure{head: m[1], text: m[1], more: true})
+		} else if i, ok := open[k]; ok {
+			fs[i].addLine(line)
 		}
 	}
-	return msgs
+	return fs
 }
 
 // crashRE matches the first line of a panic or a runtime fatal error.

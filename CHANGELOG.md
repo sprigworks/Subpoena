@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Cross prints the failure text of testify and multi-line failures.** Both
+  leave the `file.go:N:` line blank, so `first evidence (other):` printed
+  nothing. Cross now reads the text under it. A tag still counts only on the
+  `file.go:N:` line, so this cannot upgrade a kill.
 - **`witness.NewSinkholeAt`.** A sinkhole can listen on a chosen address, so a
   test can witness an IPv6 path (`::1`) or use a second loopback address when
   127.0.0.1 is one the code may reach. Go only; Python keeps the 127.0.0.1

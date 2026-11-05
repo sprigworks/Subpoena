@@ -4,6 +4,7 @@ package cross
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,5 +209,90 @@ func TestRunSinglesRefusesACancelledRun(t *testing.T) {
 	res, err := runSingles(ctx, Options{}, []sandbox{{}, {}}, "./...", []Mutant{{}, {}, {}})
 	if err == nil {
 		t.Fatalf("want an error for unrun mutants, got %d results", len(res))
+	}
+}
+
+// jsonLines turns (test, output) pairs into go test -json output lines.
+func jsonLines(pairs ...[2]string) string {
+	var b strings.Builder
+	for _, p := range pairs {
+		line, err := json.Marshal(struct{ Action, Package, Test, Output string }{"output", "p", p[0], p[1] + "\n"})
+		if err != nil {
+			panic(err)
+		}
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// A testify failure and a multi-line t.Errorf both leave the head line blank;
+// the text is under it. Shapes are from real suites (echo, oauth2-proxy,
+// traefik, webdav), including a log line from the code under test in between.
+func TestFirstFailureReadsTheTextUnderABlankHead(t *testing.T) {
+	failed := `{"Action":"fail","Package":"p","Test":"TestA"}` + "\n"
+	cases := []struct {
+		name string
+		out  [][2]string
+		want string
+	}{
+		{"testify", [][2]string{
+			{"TestA", "    a_test.go:161: "},
+			{"TestA", "        \tError Trace:\t/tmp/x/a_test.go:161"},
+			{"TestA", "        \tError:      \tNot equal: "},
+			{"TestA", "        \t            \texpected: 200"},
+			{"TestA", "        \t            \tactual  : 418"},
+			{"TestA", "        \tTest:       \tTestA"},
+			{"TestA", "        \tMessages:   \tnot this"},
+		}, "Not equal: expected: 200 actual  : 418"},
+		{"log line from the code in between", [][2]string{
+			{"TestA", "    a_test.go:9: "},
+			{"TestA", `{"level":"debug","message":"proxy_set_header"}`},
+			{"TestA", "        \tError Trace:\t/tmp/x/a_test.go:9"},
+			{"TestA", "        \tError:      \tAn error is expected but got nil."},
+		}, "An error is expected but got nil."},
+		{"multi-line t.Errorf", [][2]string{
+			{"TestA", "    a_test.go:439: "},
+			{"TestA", "        Expected"},
+			{"TestA", "            <bool>: true"},
+			{"TestA", "        to be false"},
+		}, "Expected <bool>: true to be false"},
+		{"blank head and nothing under it", [][2]string{
+			{"TestA", "    a_test.go:2: "},
+		}, emptyFailure},
+	}
+	for _, c := range cases {
+		_, msg, crashed := firstFailure(jsonLines(c.out...) + failed)
+		if crashed || msg != c.want {
+			t.Errorf("%s: got %q crashed=%v, want %q", c.name, msg, crashed, c.want)
+		}
+	}
+}
+
+// The text under a blank head is for the reader. A tag is read from the head
+// line alone, so reading further cannot upgrade a kill.
+func TestTextUnderABlankHeadIsNeverATag(t *testing.T) {
+	raw := jsonLines(
+		[2]string{"TestA", "    a_test.go:161: "},
+		[2]string{"TestA", "        \tError Trace:\t/tmp/x/a_test.go:161"},
+		[2]string{"TestA", "        \tError:      \twitness: saw a dial"},
+	) + `{"Action":"fail","Package":"p","Test":"TestA"}`
+	if ev, _, _ := firstFailure(raw); ev != EvidenceOther {
+		t.Fatalf("evidence = %q, want other", ev)
+	}
+	if got := witnessFailure(raw); got != "" {
+		t.Fatalf("witnessFailure = %q, want none", got)
+	}
+}
+
+func TestLongFailureTextIsCut(t *testing.T) {
+	var pairs [][2]string
+	pairs = append(pairs, [2]string{"TestA", "    a_test.go:2: "})
+	for range 100 {
+		pairs = append(pairs, [2]string{"TestA", "        " + strings.Repeat("x", 20)})
+	}
+	_, msg, _ := firstFailure(jsonLines(pairs...) + `{"Action":"fail","Package":"p","Test":"TestA"}`)
+	if len(msg) > maxFailureText+21 {
+		t.Fatalf("text is %d bytes", len(msg))
 	}
 }
