@@ -246,9 +246,11 @@ func (r *Report) Failed() bool {
 type Options struct {
 	// RequireWitness accepts kills only when their first failure is witness evidence.
 	RequireWitness bool
-	Target         string        // directory to cross-examine, inside a Go module
-	Timeout        time.Duration // per go command, and so per mutant run; 5 minutes if zero
-	Log            io.Writer     // progress; io.Discard if nil
+	Target         string // directory to cross-examine, inside a Go module
+	// Timeout bounds each go command; 5 minutes if zero. A kill is a build and
+	// 1+killReruns test commands, so a mutant can take that many times as long.
+	Timeout time.Duration
+	Log     io.Writer // progress; io.Discard if nil
 	// EvidenceDir, if set, keeps the full go test -json output of every
 	// mutant run there, killed ones included, one file per run.
 	EvidenceDir string
@@ -265,6 +267,8 @@ type Options struct {
 	selected map[string][]string // Mutant.Name() -> tests, when Select
 	runs     *atomic.Int64       // numbers the evidence files
 	key      string              // signs this run's witness failures (internal/crossmark)
+	run      *runner             // starts every test binary of the run
+	modPath  string              // the module's path, as go reads it
 	// afterDiscover, if set, runs after the snapshot is taken and before
 	// baseline. Tests use it to edit the live tree. Production leaves it nil.
 	afterDiscover func(liveRoot string)
@@ -304,7 +308,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(tmp)
+	defer removeTree(tmp)
 	if err := copyTree(root, tmp); err != nil {
 		return nil, fmt.Errorf("cross: copy tree: %w", err)
 	}
@@ -332,6 +336,13 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	if err := absoluteReplaces(ctx, root, tmp); err != nil {
 		return nil, err
 	}
+	if o.modPath, err = modulePath(ctx, root); err != nil {
+		return nil, err
+	}
+	if o.run, err = newRunner(ctx, root); err != nil {
+		return nil, err
+	}
+	defer o.run.remove()
 	// A GOWORK file inside the module (e.g. go.work.sandbox) was copied along
 	// with the tree; point each copy's builds at its own copied file so its
 	// `use .` resolves to the mutated tree, not the original.
@@ -357,7 +368,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer os.RemoveAll(dir)
+		defer removeTree(dir)
 		sb := inCopy(dir)
 		sb.template = tmp
 		workers = append(workers, sb)
@@ -378,7 +389,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		return nil, err
 	}
 	var baselineErr error
-	if raw, err := goIn(ctx, o.Timeout, primary, "test", "-json", "-count=1", pkgs); err != nil {
+	if raw, err := o.run.test(ctx, o, primary, "-json", "-count=1", pkgs); err != nil {
 		baselineErr = fmt.Errorf("cross: baseline suite is not green, cannot judge mutants: %s", baselineReason(raw, err))
 	}
 	if baselineErr != nil {
@@ -598,18 +609,12 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 	var testOut string
 	var testErr error
 	if err == nil {
-		args := []string{"test", "-json", "-count=1", "-failfast"}
+		args := []string{"-json", "-count=1", "-failfast"}
 		if f := runFilter(o.selected, ms); f != "" {
 			args = append(args, "-run", f)
 			fmt.Fprintf(o.Log, "  selected tests: %s\n", f)
 		}
-		exits, err := newExitLog()
-		if err != nil {
-			return res, err
-		}
-		defer exits.remove()
-		testOut, testErr = goIn(ctx, o.Timeout, sb, append(append(args, exits.args()...), pkgs)...)
-		testOut += exits.events(testOut, sb.dir)
+		testOut, testErr = o.run.test(ctx, o, sb, append(args, pkgs)...)
 	}
 	if ctx.Err() != nil {
 		return res, fmt.Errorf("cross: run stopped: %w", ctx.Err()) //subpoena:enforcement
@@ -661,6 +666,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			res.Outcome, res.Output = Survived, tail(out, 20)
 		}
 	}
+	res.Output = crossmark.Strip(res.Output)
 	if res.Outcome == TimedOut && orphansOnTimeout {
 		return res, fmt.Errorf("cross: %s timed out, and on this platform its test binary may still be running and could fail later mutants; rerun with a larger -timeout or on a unix host", ms[0].Name())
 	}
@@ -680,18 +686,18 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, raw string, res *Re
 	for i := range names {
 		names[i] = regexp.QuoteMeta(names[i])
 	}
-	args := append([]string{"test", "-count=1", "-run", "^(" + strings.Join(names, "|") + ")$"}, pkgs...)
+	args := append([]string{"-json", "-count=1", "-run", "^(" + strings.Join(names, "|") + ")$"}, pkgs...)
 	for n := range killReruns {
 		if err := sb.fresh(); err != nil {
 			return err
 		}
 		fmt.Fprintf(o.Log, "  rerun %d of %d without the mutant: %s\n", n+1, killReruns, strings.Join(names, " "))
-		out, err := goIn(ctx, o.Timeout, sb, args...)
+		out, err := o.run.test(ctx, o, sb, args...)
 		if ctx.Err() != nil {
 			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
 		}
 		if err != nil {
-			res.Output = tail(out, 20)
+			res.Output = tail(testText(out), 20)
 			res.Outcome = Unconfirmed //subpoena:enforcement
 			return nil
 		}
@@ -843,14 +849,28 @@ func failures(raw string) []failure {
 	type key [2]string
 	var evs []event
 	failed, passed, crash, dead := map[key]bool{}, map[key]bool{}, map[key]bool{}, map[string]bool{}
+	open := map[key]int{} // test -> index in evs of its line still being read
 	for _, line := range strings.Split(raw, "\n") {
 		var e event
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
 			continue
 		}
 		e.Output = ansiRE.ReplaceAllString(e.Output, "")
-		evs = append(evs, e)
 		k := key{e.Package, e.Test}
+		// go test -json cuts a long line into several events, and a mark sits at
+		// the end of its line: a line is read whole. Crash lines below are still
+		// read per event, so text an open line ran into cannot hide one.
+		if n, ok := open[k]; ok && e.Action == "output" {
+			evs[n].Output += e.Output
+			if strings.HasSuffix(e.Output, "\n") {
+				delete(open, k)
+			}
+		} else {
+			evs = append(evs, e)
+			if e.Action == "output" && !strings.HasSuffix(e.Output, "\n") {
+				open[k] = len(evs) - 1
+			}
+		}
 		switch e.Action {
 		case "fail":
 			failed[k] = true
@@ -953,91 +973,19 @@ var (
 // exitAction is the action of an event cross adds to go test -json output,
 // carrying a failed package's exit code. go test prints no "exit status" line
 // for a test binary that printed anything, and its events hold no exit code, so
-// cross runs each binary under -exec with a wrapper that records it. The events
+// cross runs each binary under -exec with a wrapper that records it (runner). The events
 // are top-level lines: what a test prints is carried inside an Output, so the
 // code under test cannot write one.
 const exitAction = "subpoena-exit"
 
-// exitUnknown is the code of a failed package whose binary left no record.
+// exitUnknown is the code of a failed package whose binary left no record. The
+// wrapper's other word for a code, 1-before-testing-ended, is an exit 1 from a
+// binary that never finished testing: anything but "1" is a death.
 const exitUnknown = "unknown"
 
 func exitEvent(pkg, code string) string {
 	b, _ := json.Marshal(struct{ Action, Package, Output string }{exitAction, pkg, code})
 	return string(b)
-}
-
-// exitLog records the exit code of each test binary of one go test run.
-type exitLog struct {
-	dir string // "" where there is no sh to run the wrapper: the text alone decides
-}
-
-func newExitLog() (*exitLog, error) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		return &exitLog{}, nil
-	}
-	dir, err := os.MkdirTemp("", "subpoena-cross-exit-")
-	if err != nil {
-		return nil, err
-	}
-	script := "#!/bin/sh\n\"$@\"\ncode=$?\necho \"$code $(pwd -P)\" >> '" + filepath.Join(dir, "codes") + "'\nexit $code\n"
-	return &exitLog{dir: dir}, os.WriteFile(filepath.Join(dir, "wrap"), []byte(script), 0o755)
-}
-
-func (l *exitLog) remove() {
-	if l.dir != "" {
-		os.RemoveAll(l.dir)
-	}
-}
-
-// args are the go test flags that run each test binary under the wrapper.
-func (l *exitLog) args() []string {
-	if l.dir == "" {
-		return nil
-	}
-	return []string{"-exec", "sh '" + filepath.Join(l.dir, "wrap") + "'"}
-}
-
-// events gives an exit event for each package that failed in raw, a run in the
-// module copy at root. go test runs a binary in its package's directory, which
-// names the package. A failed package with no record is exitUnknown, and counts
-// as dead.
-func (l *exitLog) events(raw, root string) string {
-	if l.dir == "" {
-		return ""
-	}
-	codes := map[string]string{}
-	base, err := filepath.EvalSymlinks(root)
-	if b, rerr := os.ReadFile(filepath.Join(l.dir, "codes")); err == nil && rerr == nil {
-		for _, line := range strings.Split(string(b), "\n") {
-			if code, dir, ok := strings.Cut(line, " "); ok {
-				if rel, err := filepath.Rel(base, dir); err == nil {
-					codes[filepath.ToSlash(rel)] = code
-				}
-			}
-		}
-	}
-	modPath := ""
-	if gomod, err := os.ReadFile(filepath.Join(root, "go.mod")); err == nil {
-		if m := moduleRE.FindSubmatch(gomod); m != nil {
-			modPath = string(m[1])
-		}
-	}
-	var b strings.Builder
-	for _, line := range strings.Split(raw, "\n") {
-		var e struct{ Action, Package, Test string }
-		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || e.Action != "fail" || e.Test != "" {
-			continue
-		}
-		code, ok := codes[strings.TrimPrefix(strings.TrimPrefix(e.Package, modPath), "/")]
-		if e.Package == modPath {
-			code, ok = codes["."]
-		}
-		if !ok {
-			code = exitUnknown
-		}
-		b.WriteString(exitEvent(e.Package, code) + "\n")
-	}
-	return b.String()
 }
 
 // baselineReason says why a baseline run failed. Timeouts come first and
@@ -1801,7 +1749,7 @@ type sandbox struct {
 // fresh replaces the copy with the discovery copy, so a run sees nothing an
 // earlier run left. The path stays: the go build cache keys on it.
 func (sb sandbox) fresh() error {
-	if err := os.RemoveAll(sb.dir); err != nil {
+	if err := removeTree(sb.dir); err != nil {
 		return fmt.Errorf("cross: reset copy: %w", err)
 	}
 	if err := copyTree(sb.template, sb.dir); err != nil {
