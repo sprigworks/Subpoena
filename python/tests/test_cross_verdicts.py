@@ -192,3 +192,42 @@ def test_an_assert_in_another_collected_test_file_is_test_code(tmp_path):
     assert r.outcome == KILLED
 
 
+# --- order decides nothing (o1-random, o2-xdist-ev) ---
+
+ASSERTS = """
+    def test_{a}():
+        assert gate("mallory") == {{"denied": True}}
+"""
+CRASHES = """
+    def test_{b}():
+        gate("mallory")["denied"]
+"""
+
+
+@pytest.mark.parametrize("args", [(), ("-x",), ("--maxfail=1",)])
+@pytest.mark.parametrize("a,b", [("a", "b"), ("b", "a")])
+def test_a_crash_beside_an_assertion_is_a_crash_in_either_order(tmp_path, a, b, args):
+    body = "    from auth import gate\n" + ASSERTS.format(a=a) + CRASHES.format(b=b)
+    r = outcome(tmp_path, {"auth.py": GATE, "test_auth.py": body}, *args)
+    assert r.outcome == CRASHED
+
+
+def test_the_inner_pytest_runs_without_pytest_randomly(tmp_path):
+    r = outcome(tmp_path, {"auth.py": GATE, "test_a.py": """
+        def test_blocked(request):
+            assert request.config.pluginmanager.is_blocked("randomly")
+    """})
+    assert r.outcome == SURVIVED
+
+
+def test_first_evidence_is_the_first_test_collected_not_the_first_to_finish():
+    def failure(test, message):
+        return {"kind": "failure", "test": test, "when": "call", "verdict": "assertion", "message": message}
+    records = [{"kind": "collected", "tests": ["t::a", "t::b"]},
+               failure("t::b", "no error"), failure("t::a", "witness: spawned"),
+               {"kind": "finished", "missing": []}]
+    outcome_, failing, evidence, first = cross.classify(1, records, "")
+    assert (outcome_, evidence, first) == (KILLED, "witness", "witness: spawned")
+    assert set(failing) == {"t::a", "t::b"}
+
+

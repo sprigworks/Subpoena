@@ -407,7 +407,11 @@ def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report:
     env["SUBPOENA_CROSS_ROOT"] = copy
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = copy + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    cmd = [sys.executable, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "-p", _PLUGIN] + args
+    # Every test runs, whatever the arguments say: pytest stopped at the first
+    # failure would never see a crash behind it, so order would decide. And a
+    # plugin that shuffles would decide it again, or trip the baseline.
+    cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "no:randomly",
+           "-p", _PLUGIN] + args + ["--maxfail=0"]
     p = subprocess.Popen(cmd, cwd=copy, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          text=True, start_new_session=True)
     try:
@@ -486,14 +490,17 @@ def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, L
         return INVALID, [], "", ""  # no process of the run imported it
     if code == 0 and finished:
         return SURVIVED, [], "", ""
-    # xdist ends a run stopped by -x as interrupted, exit 2, not as failed.
-    if (code != 1 and not (code == 2 and workers)) or not finished:
+    if code != 1 or not finished:
         return CRASHED, [], "", ""  # the process died, or pytest stopped abnormally
     assertion = [r for r in fails if r.get("verdict") == "assertion"]
     crashed = [r for r in fails if r.get("verdict") != "assertion"]
     if crashed or not assertion:
         return CRASHED, [r["test"] for r in fails], "", ""
-    msg = assertion[0].get("message", "").strip()
+    # The first test collected, not the first to finish: under xdist the
+    # order of the records is timing. Records of one test keep their order.
+    collected = next((r.get("tests") or [] for r in records if r.get("kind") == "collected"), [])
+    rank = {test: i for i, test in enumerate(collected)}
+    msg = min(assertion, key=lambda r: rank.get(r["test"], len(rank))).get("message", "").strip()
     first = msg.splitlines()[0].strip() if msg else ""
     # A tag counts only at the start of the message, which is the test's own
     # text. Past it comes pytest's diff, which holds the values the code under

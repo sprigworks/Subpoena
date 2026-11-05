@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Order no longer decides a Python crash from a kill.** Cross ran pytest with
+  `-x`, so a crash behind the first failure was never seen, and under
+  pytest-randomly the same mutant was `killed` or `crashed` by chance. Every test
+  now runs, whatever the arguments say, so Go's rule holds: a crash beside an
+  assertion is a crash. First evidence comes from the first test collected, not
+  the first to finish under xdist. The inner pytest runs with `-p no:randomly`.
 - **Python test code is what pytest collected.** A file counted as test code by
   its name, so an `assert` in a production `limit_test.py`, or anywhere under
   `python_files = *.py`, was a kill. It is a crash now, as any assert in the code
