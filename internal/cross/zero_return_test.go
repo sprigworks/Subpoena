@@ -369,3 +369,56 @@ func TestAdminAllowed(t *testing.T) {
 		})
 	}
 }
+
+// The advice serves every return with no stand-in, so it must not say why this
+// one has none: a bare return and a result type over two lines have no zero
+// values to return.
+func TestNoStandInAdviceFitsAnyReturn(t *testing.T) {
+	cases := []struct{ name, src string }{
+		{"bare return", `package mini
+
+import "errors"
+
+//subpoena:enforcement_point
+func f(admin bool) (err error) {
+	if admin {
+		panic("not reached by the test")
+	}
+	err = errors.New("denied")
+	return //subpoena:enforcement
+}
+`},
+		{"result type over two lines", `package mini
+
+import "errors"
+
+//subpoena:enforcement_point
+func f(admin bool) interface {
+	Error() string
+} {
+	if admin {
+		panic("not reached by the test")
+	}
+	return errors.New("denied") //subpoena:enforcement
+}
+`},
+	}
+	const test = `package mini
+
+import "testing"
+
+func TestF(t *testing.T) { f(false) }
+`
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rep, err := Run(context.Background(), Options{Target: module(t, map[string]string{"auth.go": c.src, "auth_test.go": test})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := rep.Results[0]
+			if r.Outcome != Invalid || !strings.Contains(r.Hint, MarkerGuard) || strings.Contains(r.Hint, "zero values") {
+				t.Fatalf("got %s hint=%q", r.Outcome, r.Hint)
+			}
+		})
+	}
+}

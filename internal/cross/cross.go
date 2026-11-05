@@ -1440,7 +1440,7 @@ func absoluteReplaces(ctx context.Context, root, tmp string) error {
 var missingReturnRE = regexp.MustCompile(`(?m)^(?:\./)?(\S+\.go):(\d+):\d+: missing return$`)
 
 // finalReturnHint is the advice for a return with no stand-in.
-const finalReturnHint = "the function cannot end without this return, and it already returns zero values, so no mutant can stand in for it; " +
+const finalReturnHint = "the function cannot end without this return, and cross replaces one only where that plainly turns an error to nil, so no mutant can stand in for it; " +
 	"mark the if that reaches it with //" + MarkerGuard + ", or move the decision into an if that can carry the marker"
 
 // zeroMissingReturns turns on the zero-value return of each mutant whose
