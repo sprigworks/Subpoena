@@ -750,7 +750,8 @@ func failures(raw string) []failure {
 	var fs []failure
 	blank := map[key]int{}   // test -> index in fs of the blank head being read
 	suite := map[key]bool{}  // test -> Ginkgo's "Running Suite:" banner seen
-	ginkgo := map[key]bool{} // test -> inside a Ginkgo spec's failure report
+	ginkgo := map[key]bool{} // test -> a Ginkgo spec's failure report has opened
+	report := map[key]int{}  // test -> index in fs of that report's failure
 	gomega := map[key]int{}  // test -> index in fs of the Ginkgo message being read
 	for _, e := range evs {
 		k := key{e.Package, e.Test}
@@ -762,11 +763,19 @@ func failures(raw string) []failure {
 			suite[k] = true
 		} else if suite[k] && ginkgoReportRE.MatchString(line) {
 			ginkgo[k] = true
+			delete(report, k)
 		} else if m := ginkgoFailedRE.FindStringSubmatch(line); m != nil && ginkgo[k] && !strings.HasPrefix(m[1], "in [") {
-			delete(ginkgo, k)
 			delete(blank, k)
-			gomega[k] = len(fs)
-			fs = append(fs, failure{pkg: e.Package, head: m[1], text: m[1]})
+			if n, ok := report[k]; ok {
+				// The timeline above the message prints the spec's own log
+				// lines as they came, so one line of a report can hold what
+				// another does. The last is the message, and no tag stands.
+				fs[n].head, fs[n].text = "", m[1]
+			} else {
+				report[k] = len(fs)
+				fs = append(fs, failure{pkg: e.Package, head: m[1], text: m[1]})
+			}
+			gomega[k] = report[k]
 		} else if n, ok := gomega[k]; ok {
 			if ginkgoAtRE.MatchString(line) || len(fs[n].text) >= maxFailureText {
 				delete(gomega, k)

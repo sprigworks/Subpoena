@@ -39,9 +39,10 @@
   for errors the app logged.
 - **Cross reads Ginkgo failures.** A Ginkgo v2 `[FAILED]` spec under the suite's
   `Running Suite:` banner is a kill; it was `crashed`, because Ginkgo prints no
-  `file.go:N:` line. Any panic in the package
-  still makes it a crash, ahead of or behind the failure, Ginkgo's `[PANICKED]`
-  included: the output cannot show that an assertion library printed a report.
+  `file.go:N:` line. Any panic in the package still makes it a crash, ahead of
+  or behind the failure, Ginkgo's `[PANICKED]` included: the output cannot show
+  that an assertion library printed a report. A `witness:` tag counts only when
+  a report holds one message, since its timeline prints the spec's log lines.
 - **Cross prints the failure text of testify and multi-line failures.** Both
   leave the `file.go:N:` line blank, so `first evidence (other):` printed
   nothing. Cross now reads the text under it. A tag still counts only on the
