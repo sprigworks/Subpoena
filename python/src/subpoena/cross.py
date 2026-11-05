@@ -684,7 +684,7 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
             try:
                 return suite(copy, selected, coverage, label=label)
             finally:
-                shutil.rmtree(directory)
+                _remove_tree(directory)
 
         log(f"baseline: pytest {' '.join(args)}")
         code, out, records, _ = baseline()
@@ -766,7 +766,7 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                               with_mutants=list(members[1:]), selected=list(selected or []),
                               evidence_file=evidence_file)
             finally:
-                shutil.rmtree(directory)
+                _remove_tree(directory)
 
         def single(item):
             i, m = item
@@ -826,6 +826,20 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                 singles[i].masked_by = masked_by
         _accept_masked(rep, os.path.join(template, "cross-masked.txt"))
         return rep
+
+
+def _remove_tree(path: str) -> None:
+    """Remove a case's directory. A test can leave a read-only directory there,
+    as a Go module cache is, which rmtree cannot empty. No verdict hangs on this."""
+    for parent, dirs, _ in os.walk(path):
+        for name in dirs:
+            child = os.path.join(parent, name)
+            if not os.path.islink(child):
+                try:
+                    os.chmod(child, 0o700)
+                except OSError:
+                    pass
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _tail(s: str, n: int) -> str:

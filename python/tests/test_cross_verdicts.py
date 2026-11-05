@@ -452,3 +452,23 @@ def test_a_timeout_stops_waiting_for_a_detached_child(tmp_path, monkeypatch):
     start = time.monotonic()
     code, out = cross._run_suite(root, ["-s"], 3, "", str(tmp_path / "report"))
     assert code is None and "before the hang" in out and time.monotonic() - start < 15
+
+
+# --- a read-only directory left by a test (review 3: M7) ---
+
+def test_a_read_only_directory_neither_aborts_nor_stays(tmp_path, monkeypatch):
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    r = outcome(tmp_path / "p", {"app.py": BODY, "test_app.py": """
+        import os
+        from app import serve
+        def test_refused():
+            os.makedirs("cache/mod", exist_ok=True)
+            open("cache/mod/f", "w").close()
+            os.chmod("cache/mod", 0o555)
+            os.chmod("cache", 0o555)
+            assert serve("mallory").status == 403
+    """})
+    assert r.outcome == KILLED
+    assert os.listdir(scratch) == []
