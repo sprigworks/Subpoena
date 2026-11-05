@@ -11,7 +11,9 @@ A failure's verdict:
   innermost frame, past pytest's and subpoena's own helper frames, is in test
   code: a module pytest collects as tests (python_files), a conftest.py, or
   the failing test's own file. One raised wholly inside subpoena's helpers,
-  run by pytest (a watch_spawns finalizer), is an assertion too.
+  run by pytest (a watch_spawns finalizer), is an assertion too. So is
+  webtest's check of a test's expected status, read the same way: webtest
+  raises its own AppError for it, not an AssertionError.
 - crash: anything else, including an assert in the code under test.
 
 Every record carries $SUBPOENA_CROSS_NONCE, and cross rejects a report line
@@ -76,6 +78,14 @@ def _same_file(a, b):
     return bool(a) and bool(b) and os.path.realpath(a) == os.path.realpath(b)
 
 
+def _status_check(excinfo):
+    """webtest's TestApp found a status the test did not expect. AppError also
+    reports errors the app logged, which is not an expectation of the test."""
+    kind = excinfo.type
+    return (kind.__name__ == "AppError" and kind.__module__.split(".")[0] == "webtest"
+            and str(excinfo.value).startswith("Bad response:"))
+
+
 def _verdict(item, excinfo):
     frames = _frames(excinfo)
     if any(pkg == "pytest_timeout" for pkg, _ in frames):
@@ -83,10 +93,11 @@ def _verdict(item, excinfo):
     if excinfo.errisinstance(SyntaxError) and any(
             _same_file(getattr(excinfo.value, "filename", ""), path) for path in _MUTATED_FILES):
         return "invalid"
-    if not (excinfo.errisinstance(AssertionError) or excinfo.errisinstance(pytest.fail.Exception)):
+    status_check = _status_check(excinfo)
+    if not (status_check or excinfo.errisinstance(AssertionError) or excinfo.errisinstance(pytest.fail.Exception)):
         return "crash"
     for pkg, filename in reversed(frames):
-        if pkg in _HELPERS:
+        if pkg in _HELPERS or (status_check and pkg == "webtest"):
             continue
         return "assertion" if _is_test_file(item, filename) else "crash"
     # Raised and run wholly by pytest and subpoena: a subpoena teardown check.

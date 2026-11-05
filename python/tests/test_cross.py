@@ -577,3 +577,83 @@ def test_tooling_directories_are_not_source(tmp_path):
     (tmp_path / "build" / "m.py").write_text("x = 1\n")
     found = sorted(os.path.relpath(p, tmp_path) for p in cross._python_files(str(tmp_path)))
     assert found == ["app.py", os.path.join("build", "m.py")]
+
+
+WSGI = '''
+# subpoena:enforcement_point
+def app(environ, start_response):
+    status = "200 OK"
+    if environ["PATH_INFO"] == "/secret":
+        status = "403 Forbidden"  # subpoena:enforcement
+    start_response(status, [("Content-Type", "text/plain")])
+    return [b"ok"]
+'''
+
+
+def test_webtest_status_check_is_an_assertion(tmp_path):
+    _, r = outcome(tmp_path, {"wsgisite.py": WSGI, "test_wsgisite.py": """
+        from webtest import TestApp
+        from wsgisite import app
+        def test_secret():
+            TestApp(app).get("/secret", status=403)
+    """})
+    assert r.outcome == KILLED and r.evidence == "other"
+    assert r.first_failure.startswith("Bad response: 200 OK (not 403)")
+
+
+def test_webtest_default_status_check_is_an_assertion(tmp_path):
+    _, r = outcome(tmp_path, {"wsgisite.py": WSGI.replace(
+        '"200 OK"', '"404 Not Found"').replace('"403 Forbidden"', '"200 OK"'), "test_wsgisite.py": """
+        from webtest import TestApp
+        from wsgisite import app
+        def test_secret():
+            TestApp(app).get("/secret")
+    """})
+    assert r.outcome == KILLED
+
+
+def test_webtest_logged_app_error_stays_a_crash(tmp_path):
+    # The status is what the test expected: only the app's own log line fails it.
+    _, r = outcome(tmp_path, {"wsgisite.py": '''
+        # subpoena:enforcement_point
+        def app(environ, start_response):
+            quiet = False
+            if environ["PATH_INFO"] == "/secret":
+                quiet = True  # subpoena:enforcement
+            if not quiet:
+                environ["wsgi.errors"].write("broken")
+            start_response("200 OK", [("Content-Type", "text/plain")])
+            return [b"ok"]
+    ''', "test_wsgisite.py": """
+        from webtest import TestApp
+        from wsgisite import app
+        def test_secret():
+            TestApp(app).get("/secret", status=200)
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_webtest_status_check_inside_the_code_under_test_is_a_crash(tmp_path):
+    _, r = outcome(tmp_path, {"wsgisite.py": WSGI + '''
+
+def probe():
+    from webtest import TestApp
+    TestApp(app).get("/secret", status=403)
+''', "test_wsgisite.py": """
+        from wsgisite import probe
+        def test_secret():
+            probe()
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_another_exception_named_apperror_is_a_crash(tmp_path):
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        from auth import DENIED, allow
+        class AppError(Exception):
+            pass
+        def test_denied():
+            if allow(False) != DENIED:
+                raise AppError("Bad response: 200 OK (not 403)")
+    """})
+    assert r.outcome == CRASHED

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Python cross reads webtest's status check.** `TestApp.get(url, status=403)`
+  raises webtest's `AppError`, not an `AssertionError`, so a test's expected
+  status came back `crashed`. It is an assertion now when test code made the
+  call. An `AppError` for errors the app logged stays a crash.
 - **Cross reads Ginkgo and testify failures.** A Ginkgo v2 `[FAILED]` spec is
   a kill; it was `crashed`, because Ginkgo prints no `file.go:N:` line. A
   testify or Ginkgo assertion that fails ahead of a panic in the same test is

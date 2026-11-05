@@ -18,8 +18,8 @@ condition with True or False. Verdicts:
   AssertionError, pytest.fail or a failed pytest.raises whose innermost frame
   (past pytest's and subpoena's own helpers) is in a test module (pytest's
   python_files, conftest.py, or the failing test's own file), or a subpoena
-  teardown check such as watch_spawns. An assert in the code under test is a
-  crash, as a panic is in Go.
+  teardown check such as watch_spawns, or webtest's check of the status a test
+  expected. An assert in the code under test is a crash, as a panic is in Go.
 - survived: the suite stayed green. The run fails.
 - crashed: the suite went red only by another exception, or the test process
   died. A crash is not evidence that the enforcement is tested; the run fails.

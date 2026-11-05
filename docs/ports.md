@@ -198,7 +198,9 @@ hold the cases; the Python runner is `python/tests/test_network.py`.
   as invalid, not killed. As in Go: a guard marker forces an `if` condition;
   a red suite is a kill only on an assertion failure in test code (an
   assertion in the code under test, a crash, an exception other than an
-  assertion, or a dead test process is `crashed`); a hang, or a test-framework
+  assertion, or a dead test process is `crashed`; an assertion library's own
+  failure type counts as an assertion, as webtest's status check does in
+  Python); a hang, or a test-framework
   timeout, is `timeout`; a marker that takes no effect, and an enforcement point with no
   statement marker, are errors; the baseline must be green. Python's
   `subpoena-cross` also refuses a mutant the suite never imported from the
