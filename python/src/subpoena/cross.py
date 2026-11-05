@@ -493,12 +493,14 @@ def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, L
     crashed = [r for r in fails if r.get("verdict") != "assertion"]
     if crashed or not assertion:
         return CRASHED, [r["test"] for r in fails], "", ""
-    msg = assertion[0].get("message", "")
-    first = msg.strip().splitlines()[0] if msg.strip() else ""
+    msg = assertion[0].get("message", "").strip()
+    first = msg.splitlines()[0].strip() if msg else ""
+    # A tag counts only at the start of the message, which is the test's own
+    # text. Past it comes pytest's diff, which holds the values the code under
+    # test returned, and with no stated message the text starts "assert ".
     for prefix, ev in (("witness:", "witness"), ("testimony:", "testimony")):
-        if prefix in msg:
-            line = next((l for l in msg.splitlines() if prefix in l), first)
-            return KILLED, [r["test"] for r in fails], ev, line.strip()
+        if first.startswith(prefix):
+            return KILLED, [r["test"] for r in fails], ev, first
     return KILLED, [r["test"] for r in fails], "other", first
 
 

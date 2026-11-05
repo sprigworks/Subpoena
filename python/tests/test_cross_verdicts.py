@@ -99,3 +99,37 @@ def test_a_real_kill_stands_through_the_reruns(tmp_path, monkeypatch):
     assert r.outcome == KILLED
 
 
+# --- the code under test supplies no witness evidence (p6-tag, p6b) ---
+
+CHATTY = '''
+# subpoena:enforcement_point
+def gate(user):
+    if user == "mallory":
+        return "denied"  # subpoena:enforcement
+    return "note for witness: none spawned"
+'''
+
+
+@pytest.mark.parametrize("test", [
+    'assert gate("mallory") == "denied"',
+    'assert gate("mallory") == "denied", "no tag here"',
+    'assert gate("mallory") == "denied", "no tag, though the text says witness: here"',
+])
+def test_a_tag_in_the_values_of_a_diff_is_no_evidence(tmp_path, test):
+    r = outcome(tmp_path, {"auth.py": CHATTY, "test_a.py": f"""
+from auth import gate
+def test_denied():
+    {test}
+"""}, require_witness=True)
+    assert r.outcome == cross.KILLED_BY_SELF_REPORT and r.evidence == "other", (r.outcome, r.first_failure)
+
+
+def test_the_tests_own_message_still_carries_the_tag(tmp_path):
+    r = outcome(tmp_path, {"auth.py": CHATTY, "test_a.py": """
+        from auth import gate
+        def test_denied():
+            assert gate("mallory") == "denied", "witness: it ran"
+    """}, require_witness=True)
+    assert r.outcome == KILLED and r.evidence == "witness" and r.first_failure == "witness: it ran"
+
+
