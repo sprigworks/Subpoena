@@ -296,3 +296,137 @@ func TestLongFailureTextIsCut(t *testing.T) {
 		t.Fatalf("text is %d bytes", len(msg))
 	}
 }
+
+// The event order and the failure formats here are from real runs of testify
+// and Ginkgo v2 under go test -json: a subtest's assertion belongs to the
+// subtest, and its panic to the parent; Ginkgo colours its report, recovers a
+// spec's panic and carries on.
+func TestAssertionFrameworkFailures(t *testing.T) {
+	const (
+		ansiRed, ansiOff = "\x1b[38;5;9m", "\x1b[0m"
+		panicLine        = "panic: runtime error: invalid memory address or nil pointer dereference [recovered, repanicked]"
+	)
+	testify := func(test, msg string) [][2]string {
+		return [][2]string{
+			{test, "    a_test.go:74: "},
+			{test, "        \tError Trace:\t/tmp/x/a_test.go:74"},
+			{test, "        \tError:      \t" + msg},
+		}
+	}
+	ginkgo := func(tag, msg string) [][2]string {
+		return [][2]string{
+			{"TestSuite", ansiRed + "• [" + tag + "] [0.001 seconds]" + ansiOff},
+			{"TestSuite", "x " + ansiRed + "[It] does a thing" + ansiOff},
+			{"TestSuite", "  " + ansiRed + "[" + tag + "] " + msg},
+			{"TestSuite", "  In [It] at: /tmp/x/a_test.go:12 @ 11/05/26 07:00:00"},
+		}
+	}
+	join := func(parts ...[][2]string) [][2]string {
+		var all [][2]string
+		for _, p := range parts {
+			all = append(all, p...)
+		}
+		return all
+	}
+	fail := func(tests ...string) string {
+		var b strings.Builder
+		for _, test := range tests {
+			b.WriteString(`{"Action":"fail","Package":"p","Test":"` + test + `"}` + "\n")
+		}
+		return b.String()
+	}
+	cases := []struct {
+		name    string
+		out     [][2]string
+		tests   []string
+		ev      Evidence
+		msg     string
+		crashed bool
+	}{
+		{"ginkgo assertion", ginkgo("FAILED", "Expected redirect not to be valid"), []string{"TestSuite"},
+			EvidenceOther, "Expected redirect not to be valid", false},
+		{"ginkgo: the timeline entry is not the message, and the message runs to In [It]", [][2]string{
+			{"TestSuite", ansiRed + "• [FAILED] [0.002 seconds]" + ansiOff},
+			{"TestSuite", "  Timeline >>"},
+			{"TestSuite", "  " + ansiRed + "[FAILED] in [It] - /tmp/x/a_test.go:193 @ 11/04/26 19:45:35.1" + ansiOff},
+			{"TestSuite", "  << Timeline"},
+			{"TestSuite", "  " + ansiRed + "[FAILED] Expected"},
+			{"TestSuite", "      <int>: 200"},
+			{"TestSuite", "  to equal"},
+			{"TestSuite", "      <int>: 403" + ansiOff},
+			{"TestSuite", "  In [It] at: /tmp/x/a_test.go:193 @ 11/04/26 19:45:35.1"},
+			{"TestSuite", "  nothing after the location"},
+		}, []string{"TestSuite"}, EvidenceOther, "Expected <int>: 200 to equal <int>: 403", false},
+		{"ginkgo assertion with a tag", ginkgo("FAILED", "witness: saw a dial"), []string{"TestSuite"},
+			EvidenceWitness, "witness: saw a dial", false},
+		{"ginkgo: assertion, then another spec panics", join(ginkgo("FAILED", "Expected 1"), ginkgo("PANICKED", "Test Panicked")),
+			[]string{"TestSuite"}, EvidenceOther, "Expected 1", false},
+		{"ginkgo: a panic first is a crash", join(ginkgo("PANICKED", "Test Panicked"), ginkgo("FAILED", "Expected 1")),
+			[]string{"TestSuite"}, "", "", true},
+		{"ginkgo panic alone", ginkgo("PANICKED", "Test Panicked"), []string{"TestSuite"}, "", "", true},
+		{"[FAILED] with no ginkgo report around it is output", [][2]string{{"TestA", "  [FAILED] login for bob"}},
+			[]string{"TestA"}, "", "", true},
+		{"ginkgo timeout is not an assertion", ginkgo("TIMEDOUT", "A spec timeout occurred"), []string{"TestSuite"}, "", "", true},
+
+		{"testify, then a panic", join(testify("TestA", "Not equal:"), [][2]string{{"TestA", "--- FAIL: TestA (0.00s)"}, {"TestA", panicLine}}),
+			[]string{"TestA"}, EvidenceOther, "Not equal:", false},
+		{"testify in a subtest, then the parent reports the panic", join(testify("TestA/sub", "Not equal:"), [][2]string{{"TestA", panicLine}}),
+			[]string{"TestA/sub", "TestA"}, EvidenceOther, "Not equal:", false},
+		{"a tagged log line before the assertion cannot set the evidence", join(
+			[][2]string{{"TestA", "    a_test.go:3: witness: hello"}}, testify("TestA", "Not equal:"), [][2]string{{"TestA", panicLine}}),
+			[]string{"TestA"}, EvidenceOther, "Not equal:", false},
+		{"panic before the assertion", join([][2]string{{"TestA", panicLine}}, testify("TestA", "Not equal:")), []string{"TestA"}, "", "", true},
+		{"testify in one test, panic in another", join(testify("TestA", "Not equal:"), [][2]string{{"TestB", panicLine}}),
+			[]string{"TestA", "TestB"}, "", "", true},
+		{"testify, then a panic outside any test", join(testify("TestA", "Not equal:"), [][2]string{{"", panicLine}}),
+			[]string{"TestA"}, "", "", true},
+		{"an assertion outside test code does not count", [][2]string{
+			{"TestA", "    server.go:74: "},
+			{"TestA", "        \tError Trace:\t/tmp/x/server.go:74"},
+			{"TestA", "        \tError:      \tNot equal:"},
+			{"TestA", panicLine}}, []string{"TestA"}, "", "", true},
+		{"a plain t.Error before a panic is still a log line", [][2]string{
+			{"TestA", "    a_test.go:3: want 403"},
+			{"TestA", panicLine}}, []string{"TestA"}, "", "", true},
+	}
+	for _, c := range cases {
+		ev, msg, crashed := firstFailure(jsonLines(c.out...) + fail(c.tests...))
+		if ev != c.ev || msg != c.msg || crashed != c.crashed {
+			t.Errorf("%s: got %q %q crashed=%v", c.name, ev, msg, crashed)
+		}
+	}
+}
+
+// The whole path through go test: a testify-shaped assertion, then a nil
+// dereference, as a real suite does it. testify is not a dependency of the
+// tiny module, so the test prints what testify prints.
+func TestAssertionThenPanicIsAKill(t *testing.T) {
+	const assertThenPanic = `package mini
+
+import "testing"
+
+func TestDeny(t *testing.T) {
+	var got *error
+	if err := Allow(false); err == nil {
+		t.Errorf("\n\tError Trace:\tauth_test.go:8\n\tError:      \tAn error is expected but got nil.")
+	} else {
+		got = &err
+	}
+	_ = *got
+}
+func TestAllow(t *testing.T) {
+	if Allow(true) != nil {
+		t.Fatal("admin must be allowed")
+	}
+}
+`
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": assertThenPanic})
+	rep, err := Run(context.Background(), Options{Target: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rep.Results[0]
+	if r.Outcome != Killed || r.FirstFailure != "An error is expected but got nil." {
+		t.Fatalf("want a kill on the assertion, got %+v", r)
+	}
+}

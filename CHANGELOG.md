@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Cross reads Ginkgo and testify failures.** A Ginkgo v2 `[FAILED]` spec is
+  a kill; it was `crashed`, because Ginkgo prints no `file.go:N:` line. A
+  testify or Ginkgo assertion that fails ahead of a panic in the same test is
+  also a kill now: only an assertion library prints those reports, so they
+  are not log lines. A plain `t.Error` before a panic stays `crashed`, and
+  Ginkgo's `[PANICKED]` is a crash.
 - **Cross prints the failure text of testify and multi-line failures.** Both
   leave the `file.go:N:` line blank, so `first evidence (other):` printed
   nothing. Cross now reads the text under it. A tag still counts only on the

@@ -319,7 +319,8 @@ past `-timeout` is `enforcement-mutant-timeout`, which fails the run too: make
 the test that should catch the mutant fail fast instead of hanging. A suite
 that goes red only by a crash (a panic, a runtime fatal error, `os.Exit`, or a
 failure with no message) is `enforcement-mutant-crashed` and fails the run: assert on the denial before anything can dereference what the mutant
-broke. Each kill prints its first evidence (`witness`, `testimony` or
+broke. A testify or Ginkgo v2 failure ahead of the panic in the same test still
+kills; a plain `t.Error` there does not, because `t.Log` prints the same way. Each kill prints its first evidence (`witness`, `testimony` or
 `other`). Where an enforcement point has a witness test, aim for `witness`; an
 `other` kill means an exit code or error check ended the test before the
 witness was read (`harness.WatchSpawns` reads it at cleanup anyway). Go test
