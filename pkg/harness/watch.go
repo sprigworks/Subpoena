@@ -2,11 +2,13 @@ package harness
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sprigworks/subpoena/internal/crossmark"
 	"github.com/sprigworks/subpoena/pkg/witness"
 )
 
@@ -19,6 +21,33 @@ const (
 	// TagTestimony marks a failure in the system's own telemetry.
 	TagTestimony = "testimony"
 )
+
+// crossKey is the key subpoena-cross hands a test binary to sign witness
+// failures with. It leaves the environment here, so that child processes of the
+// code under test do not get it. Outside cross it is empty and nothing is signed.
+var crossKey = func() string {
+	key := os.Getenv(crossmark.Env)
+	os.Unsetenv(crossmark.Env)
+	return key
+}()
+
+// witnessText signs msg for cross, and leaves it alone outside it.
+func witnessText(msg string) string {
+	if crossKey == "" {
+		return msg
+	}
+	return crossmark.Sign(crossKey, msg)
+}
+
+// WitnessErrorf fails tb with a message tagged "witness:". A test that asks a
+// witness itself reports what it saw through this, not by writing the tag:
+// cross counts a tag as witness evidence only if the harness wrote it, since the
+// code under test can print any text. Under cross the message's first line ends
+// with a mark that says so; elsewhere the message is just the text.
+func WitnessErrorf(tb testing.TB, format string, args ...any) {
+	tb.Helper()
+	tb.Errorf("%s", witnessText(TagWitness+": "+fmt.Sprintf(format, args...)))
+}
 
 // SpawnRule says which commands a WatchSpawns check accepts. Entries match
 // the witness's command line (ProcessEvent.Command), and the two lists match
@@ -78,18 +107,18 @@ func checkSpawns(tb testing.TB, w witness.Witness, traceID string, rule SpawnRul
 	for _, p := range w.Spawned(traceID) {
 		switch {
 		case p.NameOnly() && slices.Contains(programs(rule.Never), taskName(p.Command)):
-			tb.Errorf("%s: refused program seen by name only for %s, arguments unknown: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
+			WitnessErrorf(tb, "refused program seen by name only for %s, arguments unknown: pid %d %q (%s)", traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
 		case p.NameOnly() && rule.Allowed != nil && !(rule.ExcuseNameOnly && slices.Contains(programs(rule.Allowed), taskName(p.Command))):
-			tb.Errorf("%s: process seen by name only for %s, not identified: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
+			WitnessErrorf(tb, "process seen by name only for %s, not identified: pid %d %q (%s)", traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
 		case p.NameOnly() && rule.Allowed != nil:
 			tb.Logf("%s: excused name-only sighting for %s: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution)
 		case matchesAny(p.Command, rule.Never):
-			tb.Errorf("%s: refused command ran for %s: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
+			WitnessErrorf(tb, "refused command ran for %s: pid %d %q (%s)", traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
 		case rule.Allowed != nil && !slices.Contains(rule.Allowed, p.Command):
-			tb.Errorf("%s: command not allowed for %s: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
+			WitnessErrorf(tb, "command not allowed for %s: pid %d %q (%s)", traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
 		case failedBefore:
 			tb.Logf("%s: after an earlier failure, saw pid %d %q (%s)", TagWitness, p.PID, p.Command, p.Attribution)
@@ -97,11 +126,11 @@ func checkSpawns(tb testing.TB, w witness.Witness, traceID string, rule SpawnRul
 	}
 	h, isReporter := w.(witness.HealthReporter)
 	if !isReporter {
-		tb.Errorf("%s: %s: witness does not report capture health; absence of refused commands is not proven", TagWitness, traceID) //subpoena:enforcement
+		WitnessErrorf(tb, "%s: witness does not report capture health; absence of refused commands is not proven", traceID) //subpoena:enforcement
 		return false
 	}
 	if err := h.Health(); err != nil {
-		tb.Errorf("%s: %s: capture unhealthy, absence of refused commands is not proven: %v", TagWitness, traceID, err) //subpoena:enforcement
+		WitnessErrorf(tb, "%s: capture unhealthy, absence of refused commands is not proven: %v", traceID, err) //subpoena:enforcement
 		return false
 	}
 	return ok
@@ -188,9 +217,9 @@ func CheckNoDial(tb testing.TB, w witness.NetworkWitness, traceID string, match 
 }
 
 func noSpawnMessage(traceID string, v Verdict, err error) string {
-	return fmt.Sprintf("%s: no spawn for %s: %s: %v", TagWitness, traceID, v, err)
+	return witnessText(fmt.Sprintf("%s: no spawn for %s: %s: %v", TagWitness, traceID, v, err))
 }
 
 func noDialMessage(traceID string, v Verdict, err error) string {
-	return fmt.Sprintf("%s: no dial for %s: %s: %v", TagWitness, traceID, v, err)
+	return witnessText(fmt.Sprintf("%s: no dial for %s: %s: %v", TagWitness, traceID, v, err))
 }

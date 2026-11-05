@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The code under test cannot supply witness evidence.** Python read `witness:`
+  anywhere in the message, which holds pytest's diff of the app's own values; it
+  now reads the tag only at the start of the test's own message. Go read it from
+  any line in the shape of a `t.Log`, which the app can print. Under cross the
+  harness now signs its witness failures with a key made for the run, and an
+  unsigned tag is `other`, so `--require-witness` fails it. Output outside cross
+  is unchanged and so is the harness API. A Go test that wrote `witness:` by hand
+  now calls the new `harness.WitnessErrorf`; a module pinned to an older harness
+  gets `other` until it updates.
 - **Order no longer decides a Python crash from a kill.** Cross ran pytest with
   `-x`, so a crash behind the first failure was never seen, and under
   pytest-randomly the same mutant was `killed` or `crashed` by chance. Every test

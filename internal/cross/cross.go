@@ -25,6 +25,7 @@ package cross
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -45,6 +46,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sprigworks/subpoena/internal/crossmark"
 )
 
 // Markers.
@@ -170,8 +173,11 @@ type Result struct {
 
 // Evidence is what turned a mutant's suite red first, read from the first
 // failure message. The harness tags its messages (pkg/harness TagWitness,
-// TagTestimony); a test can tag its own the same way. An untagged message is
-// Other: an exit code, an audit row, a target record, or output.
+// TagTestimony). A witness tag counts only with the harness's mark on it
+// (internal/crossmark): a test reports a witness of its own through
+// harness.WitnessErrorf, and the same text printed by anything else is Other. An
+// untagged message is Other too: an exit code, an audit row, a target record, or
+// output.
 type Evidence string
 
 const (
@@ -252,6 +258,7 @@ type Options struct {
 	Select   bool
 	selected map[string][]string // Mutant.Name() -> tests, when Select
 	runs     *atomic.Int64       // numbers the evidence files
+	key      string              // signs this run's witness failures (internal/crossmark)
 	// afterDiscover, if set, runs after the snapshot is taken and before
 	// baseline. Tests use it to edit the live tree. Production leaves it nil.
 	afterDiscover func(liveRoot string)
@@ -271,6 +278,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		o.Timeout = 5 * time.Minute
 	}
 	o.runs = new(atomic.Int64)
+	o.key = rand.Text()
 	if o.Jobs < 1 {
 		o.Jobs = 1
 	}
@@ -324,7 +332,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	// A GOWORK file outside the module can never `use` the temp copy, so it is
 	// disabled for the copy's builds.
 	inCopy := func(dir string) sandbox {
-		sb := sandbox{dir: dir}
+		sb := sandbox{dir: dir, key: o.key}
 		if work := os.Getenv("GOWORK"); work != "" && work != "off" {
 			sb.work = "off"
 			if rel, err := filepath.Rel(root, work); err == nil && !strings.HasPrefix(rel, "..") {
@@ -617,14 +625,14 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			case buildFailed(out):
 				res.Outcome, res.Output = Invalid, tail(out, 20)
 			default:
-				ev, msg, crashed := firstFailure(raw)
+				ev, msg, crashed := firstFailure(raw, o.key)
 				if crashed {
 					res.Outcome, res.Output = Crashed, crashOutput(raw, 20) //subpoena:enforcement
 				} else {
 					res.Outcome, res.Failing = Killed, failingTests(out)
 					res.Evidence, res.FirstFailure = ev, msg
 					if ev != EvidenceWitness {
-						res.LaterWitness = witnessFailure(raw)
+						res.LaterWitness = witnessFailure(raw, o.key)
 					}
 					if o.RequireWitness && ev != EvidenceWitness {
 						res.Outcome = KilledBySelfReport //subpoena:enforcement
@@ -760,17 +768,17 @@ func (f *failure) addLine(line string) {
 // library's report: go test -json carries both as plain text, which the code
 // under test can print. t.Log and t.Error print the same way, so a failed test's log line counts as its first
 // failure: tagged, it can set ev; untagged, it hides a witness failure after it.
-func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
+func firstFailure(raw, key string) (ev Evidence, msg string, crashed bool) {
 	fs := failures(raw)
 	if len(fs) == 0 {
 		return "", "", true
 	}
-	msg = fs[0].text
+	msg = crossmark.Strip(fs[0].text)
 	if msg == "" {
 		msg = emptyFailure
 	}
 	switch {
-	case strings.HasPrefix(fs[0].head, "witness:"):
+	case harnessWitness(fs[0].head, key):
 		return EvidenceWitness, msg, false
 	case strings.HasPrefix(fs[0].head, "testimony:"):
 		return EvidenceTestimony, msg, false
@@ -779,12 +787,24 @@ func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
 	}
 }
 
-// witnessFailure returns the first witness-tagged message of a failed test,
-// or "" if there is none.
-func witnessFailure(raw string) string {
+// harnessWitness reports whether head is a witness failure the harness wrote: a
+// tag and the mark of this run's key. A line the code under test printed has the
+// shape of a t.Log and can hold the tag, so the tag alone is no evidence.
+//
+//subpoena:enforcement_point
+func harnessWitness(head, key string) bool {
+	if !crossmark.Verify(key, head) {
+		return false //subpoena:enforcement
+	}
+	return strings.HasPrefix(head, "witness:")
+}
+
+// witnessFailure returns the first witness failure of a failed test, or "" if
+// there is none.
+func witnessFailure(raw, key string) string {
 	for _, f := range failures(raw) {
-		if strings.HasPrefix(f.head, "witness:") {
-			return f.head
+		if harnessWitness(f.head, key) {
+			return crossmark.Strip(f.head)
 		}
 	}
 	return ""
@@ -1755,10 +1775,11 @@ func copyTree(src, dst string) error {
 }
 
 // sandbox is one copy of the module that mutants are run in, the GOWORK its go
-// commands use ("" to inherit the environment's), and the discovery copy it is
-// made from.
+// commands use ("" to inherit the environment's), the discovery copy it is made
+// from, and the run's key.
 type sandbox struct {
 	dir, work, template string
+	key                 string // handed to test binaries, to sign witness failures
 }
 
 // fresh replaces the copy with the discovery copy, so a run sees nothing an
@@ -1825,9 +1846,9 @@ feed:
 
 // goIn runs go in a sandbox copy.
 func goIn(ctx context.Context, timeout time.Duration, sb sandbox, args ...string) (string, error) {
-	var env []string
+	env := append(os.Environ(), crossmark.Env+"="+sb.key)
 	if sb.work != "" {
-		env = append(os.Environ(), "GOWORK="+sb.work)
+		env = append(env, "GOWORK="+sb.work)
 	}
 	return goCmdEnv(ctx, timeout, sb.dir, env, args...)
 }

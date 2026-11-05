@@ -199,7 +199,8 @@ release checks at `-j 1`, or confirm parallel kills there: contention can alter
 timing-sensitive tests. `--timeout` remains the per-run timeout in seconds.
 
 `--require-witness` accepts a mutant kill only when the first failing assertion
-is tagged `witness:`. A span or return-value failure first is reported as
+is tagged `witness:` at the start of the test's own message; a tag further in
+is not read, since pytest's diff there holds the values the code returned. A span or return-value failure first is reported as
 `enforcement-mutant-killed-by-self-report` and exits 1; a later witness failure
 cannot redeem it. Without the flag, existing kill classification is unchanged.
 The tags describe the assertion's oracle and remain a reviewed claim: do not

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sprigworks/subpoena/internal/crossmark"
 	"github.com/sprigworks/subpoena/pkg/witness"
 )
 
@@ -238,5 +239,32 @@ func TestRequireMessagesAreTagged(t *testing.T) {
 	tb.run(func(tb testing.TB) { RequireAbsent(tb, &Trace{}, `{ name = "x" }`) })
 	if len(tb.errs) != 1 || !strings.HasPrefix(tb.errs[0], "testimony: absent ") {
 		t.Fatalf("RequireAbsent: %q", tb.errs)
+	}
+}
+
+// Under cross every witness failure carries the mark that says the harness wrote
+// it, on the line cross reads, and elsewhere the message is the plain text.
+func TestWitnessFailuresAreSignedForCross(t *testing.T) {
+	check := func(tb testing.TB) {
+		WitnessErrorf(tb, "saw %s", "a dial")
+		CheckNoSpawn(tb, healthWitness{unknownWitness: unknownWitness{procs("sleep 1")}}, "trace")
+		checkSpawns(tb, unknownWitness{}, "trace", SpawnRule{})
+	}
+	tb := &cleanupTB{}
+	tb.run(check)
+	if len(tb.errs) != 3 || tb.errs[0] != "witness: saw a dial" {
+		t.Fatalf("outside cross: %q", tb.errs)
+	}
+	crossKey = "k"
+	defer func() { crossKey = "" }()
+	tb = &cleanupTB{}
+	tb.run(check)
+	if len(tb.errs) != 3 {
+		t.Fatalf("errors = %q", tb.errs)
+	}
+	for _, e := range tb.errs {
+		if !strings.HasPrefix(e, "witness: ") || !crossmark.Verify("k", strings.SplitN(e, "\n", 2)[0]) {
+			t.Errorf("not signed: %q", e)
+		}
 	}
 }

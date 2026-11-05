@@ -4,10 +4,13 @@ package cross
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sprigworks/subpoena/internal/crossmark"
 )
 
 // gateGo is the code under test of the verdict repros: Check refuses mallory.
@@ -177,7 +180,7 @@ func TestExitCodeDecidesAPackageDied(t *testing.T) {
 {"Action":"fail","Package":"p"}
 `
 	for code, crashed := range map[string]bool{"1": false, "2": true, "137": true, exitUnknown: true} {
-		if _, _, got := firstFailure(out + exitEvent("p", code) + "\n"); got != crashed {
+		if _, _, got := firstFailure(out+exitEvent("p", code)+"\n", testKey); got != crashed {
 			t.Errorf("exit %s: crashed = %v, want %v", code, got, crashed)
 		}
 	}
@@ -408,8 +411,104 @@ func TestFailedTestsNamesWhatToRerun(t *testing.T) {
 	}
 }
 
+// testKey signs the synthetic output of tests that read failures directly.
+const testKey = "test-key"
+
+// signedHelper signs as the harness does, for a fixture module, which cannot
+// import the harness: its env var and its mark, with stdlib only.
+const signedHelper = `package mini
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+)
+
+var key = os.Getenv("` + crossmark.Env + `")
+
+func signed(msg string) string {
+	h := hmac.New(sha256.New, []byte(key))
+	h.Write([]byte(msg))
+	return msg + " [subpoena-cross:" + hex.EncodeToString(h.Sum(nil))[:32] + "]"
+}
+`
+
 func init() {
 	// One rerun keeps this suite's many real kills cheap; a test that needs
 	// more sets it.
 	killReruns = 1
+}
+
+// A line the code under test prints has the shape of a t.Log, so a tag there
+// must not pass the strict gate. Only the harness can sign the tag (repro
+// e3-app-witness).
+func TestAWitnessTagFromTheCodeUnderTestIsNoEvidence(t *testing.T) {
+	const src = `package mini
+
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrDenied = errors.New("denied")
+
+//subpoena:enforcement_point
+func Check(u string) error {
+	fmt.Println("    audit.go:40: witness: request seen for", u)
+	if u == "mallory" {
+		return ErrDenied //subpoena:enforcement
+	}
+	return nil
+}
+`
+	const test = `package mini
+
+import "testing"
+
+func TestDenied(t *testing.T) {
+	if Check("mallory") == nil {
+		t.Fatal("error return was nil")
+	}
+}
+`
+	rep, err := Run(context.Background(), Options{Target: module(t, map[string]string{"gate.go": src, "gate_test.go": test}), RequireWitness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Outcome != KilledBySelfReport || r.Evidence != EvidenceOther {
+		t.Fatalf("want a self-report kill, got %s, evidence %s %q", r.Outcome, r.Evidence, r.FirstFailure)
+	}
+}
+
+// A hand-written tag with no mark is a claim, not the harness's word, whoever
+// wrote it; so is a mark made with another run's key. A real mark is a witness.
+func TestOnlyTheRunsMarkMakesAWitness(t *testing.T) {
+	line := func(text string) string {
+		b, err := json.Marshal(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return `{"Action":"output","Package":"p","Test":"TestA","Output":` + string(b) + `}` + "\n" + `{"Action":"fail","Package":"p","Test":"TestA"}`
+	}
+	for _, c := range []struct {
+		name, head string
+		want       Evidence
+	}{
+		{"signed", crossmark.Sign(testKey, "witness: saw a dial"), EvidenceWitness},
+		{"bare tag", "witness: saw a dial", EvidenceOther},
+		{"another key", crossmark.Sign("other", "witness: saw a dial"), EvidenceOther},
+		{"mark on an untagged line", crossmark.Sign(testKey, "saw a dial"), EvidenceOther},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			raw := line("    a_test.go:3: " + c.head + "\n")
+			ev, msg, _ := firstFailure(raw, testKey)
+			if ev != c.want || strings.Contains(msg, "subpoena-cross") {
+				t.Fatalf("evidence %q, message %q", ev, msg)
+			}
+			if got := witnessFailure(raw, testKey); (got != "") != (c.want == EvidenceWitness) || strings.Contains(got, "subpoena-cross") {
+				t.Fatalf("witnessFailure = %q", got)
+			}
+		})
+	}
 }

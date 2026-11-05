@@ -79,6 +79,9 @@ func main() {
 			if r.Outcome == cross.KilledBySelfReport {
 				fmt.Println("  require-witness: the first failure was not witness evidence; ask the witness before return values or telemetry")
 			}
+			if r.Evidence != cross.EvidenceWitness && strings.HasPrefix(r.FirstFailure, "witness:") {
+				fmt.Println("  this witness: tag is not the harness's: a tag counts only through the harness, or harness.WitnessErrorf in a test")
+			}
 			if r.LaterWitness != "" {
 				fmt.Printf("  a witness failure came later: %s\n", r.LaterWitness)
 				fmt.Println("  if the line above is a t.Log, not an assertion, move it after the witness check: go test prints both alike")

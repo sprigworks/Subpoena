@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sprigworks/subpoena/internal/crossmark"
 )
 
 // tagTest fails TestDeny with a message tagged as the harness tags witness
@@ -21,7 +23,7 @@ func TestASkip(t *testing.T) { t.Skip("no cgroup here") }
 
 func TestDeny(t *testing.T) {
 	if Allow(false) == nil {
-		t.Fatal("witness: a process ran after the denial")
+		t.Fatal(signed("witness: a process ran after the denial"))
 	}
 }
 func TestAllow(t *testing.T) {
@@ -34,7 +36,7 @@ func TestAllow(t *testing.T) {
 // The first failure's tag says which evidence killed the mutant; a skipped
 // test's log line is not a failure. The full -json output is kept.
 func TestKillRecordsItsFirstEvidence(t *testing.T) {
-	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": tagTest})
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": tagTest, "signed_test.go": signedHelper})
 	evDir := filepath.Join(t.TempDir(), "evidence")
 	rep, err := Run(context.Background(), Options{Target: dir, EvidenceDir: evDir})
 	if err != nil {
@@ -98,11 +100,11 @@ func TestFirstFailureReadsOnlyFailedTests(t *testing.T) {
 		`{"Action":"output","Package":"p","Test":"TestPass","Output":"    a_test.go:5: witness: just a log line\n"}`,
 		`{"Action":"pass","Package":"p","Test":"TestPass"}`,
 		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:9: testimony: denial span missing\n"}`,
-		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:10: witness: later\n"}`,
+		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:10: ` + crossmark.Sign(testKey, "witness: later") + `\n"}`,
 		`{"Action":"fail","Package":"p","Test":"TestDeny"}`,
 		`not json: a go command message`,
 	}, "\n")
-	ev, msg, crashed := firstFailure(raw)
+	ev, msg, crashed := firstFailure(raw, testKey)
 	if ev != EvidenceTestimony || msg != "testimony: denial span missing" || crashed {
 		t.Fatalf("got %q %q crashed=%v", ev, msg, crashed)
 	}
@@ -118,14 +120,14 @@ func TestWitnessFailureAfterALogLine(t *testing.T) {
 		`{"Action":"output","Package":"p","Test":"TestOK","Output":"    a_test.go:1: witness: passing test\n"}`,
 		`{"Action":"pass","Package":"p","Test":"TestOK"}`,
 		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:3: client error: EOF\n"}`,
-		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:4: witness: saw a dial\n"}`,
+		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:4: ` + crossmark.Sign(testKey, "witness: saw a dial") + `\n"}`,
 		`{"Action":"fail","Package":"p","Test":"TestDeny"}`,
 	}, "\n")
-	ev, msg, crashed := firstFailure(raw)
+	ev, msg, crashed := firstFailure(raw, testKey)
 	if ev != EvidenceOther || msg != "client error: EOF" || crashed {
 		t.Fatalf("got %q %q crashed=%v", ev, msg, crashed)
 	}
-	if got := witnessFailure(raw); got != "witness: saw a dial" {
+	if got := witnessFailure(raw, testKey); got != "witness: saw a dial" {
 		t.Fatalf("witnessFailure = %q", got)
 	}
 }
@@ -138,7 +140,7 @@ func TestDeny(t *testing.T) {
 	err := Allow(false)
 	t.Logf("got: %v", err)
 	if err == nil {
-		t.Fatal("witness: a process ran after the denial")
+		t.Fatal(signed("witness: a process ran after the denial"))
 	}
 }
 func TestAllow(t *testing.T) {
@@ -149,7 +151,7 @@ func TestAllow(t *testing.T) {
 `
 
 func TestRequireWitnessStaysStrictButNamesTheLaterWitness(t *testing.T) {
-	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": logThenWitnessTest})
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": logThenWitnessTest, "signed_test.go": signedHelper})
 	rep, err := Run(context.Background(), Options{Target: dir, RequireWitness: true})
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +198,7 @@ func TestFirstFailureCrashes(t *testing.T) {
 			`{"Action":"fail","Package":"q","Test":"TestB"}`), false, "testimony: no span"},
 	}
 	for _, c := range cases {
-		_, msg, crashed := firstFailure(c.raw)
+		_, msg, crashed := firstFailure(c.raw, testKey)
 		if crashed != c.crashed || msg != c.msg {
 			t.Errorf("%s: got %q crashed=%v", c.name, msg, crashed)
 		}
@@ -262,7 +264,7 @@ func TestFirstFailureReadsTheTextUnderABlankHead(t *testing.T) {
 		}, emptyFailure},
 	}
 	for _, c := range cases {
-		_, msg, crashed := firstFailure(jsonLines(c.out...) + failed)
+		_, msg, crashed := firstFailure(jsonLines(c.out...)+failed, testKey)
 		if crashed || msg != c.want {
 			t.Errorf("%s: got %q crashed=%v, want %q", c.name, msg, crashed, c.want)
 		}
@@ -277,10 +279,10 @@ func TestTextUnderABlankHeadIsNeverATag(t *testing.T) {
 		[2]string{"TestA", "        \tError Trace:\t/tmp/x/a_test.go:161"},
 		[2]string{"TestA", "        \tError:      \twitness: saw a dial"},
 	) + `{"Action":"fail","Package":"p","Test":"TestA"}`
-	if ev, _, _ := firstFailure(raw); ev != EvidenceOther {
+	if ev, _, _ := firstFailure(raw, testKey); ev != EvidenceOther {
 		t.Fatalf("evidence = %q, want other", ev)
 	}
-	if got := witnessFailure(raw); got != "" {
+	if got := witnessFailure(raw, testKey); got != "" {
 		t.Fatalf("witnessFailure = %q, want none", got)
 	}
 }
@@ -291,7 +293,7 @@ func TestLongFailureTextIsCut(t *testing.T) {
 	for range 100 {
 		pairs = append(pairs, [2]string{"TestA", "        " + strings.Repeat("x", 20)})
 	}
-	_, msg, _ := firstFailure(jsonLines(pairs...) + `{"Action":"fail","Package":"p","Test":"TestA"}`)
+	_, msg, _ := firstFailure(jsonLines(pairs...)+`{"Action":"fail","Package":"p","Test":"TestA"}`, testKey)
 	if len(msg) > maxFailureText+21 {
 		t.Fatalf("text is %d bytes", len(msg))
 	}
@@ -378,7 +380,7 @@ func TestAssertionFrameworkFailures(t *testing.T) {
 			{"TestSuite", "  [FAILED] Expected an error"},
 			{"TestSuite", "  In [It] at: /tmp/x/a_test.go:11 @ 11/05/26 09:02:39.911"},
 		}, []string{"TestSuite"}, EvidenceOther, "Expected an error", false},
-		{"ginkgo assertion with a tag", ginkgo("FAILED", "witness: saw a dial"), []string{"TestSuite"},
+		{"ginkgo assertion with a tag", ginkgo("FAILED", crossmark.Sign(testKey, "witness: saw a dial")), []string{"TestSuite"},
 			EvidenceWitness, "witness: saw a dial", false},
 		{"ginkgo: assertion, then another spec panics", join(ginkgo("FAILED", "Expected 1"), ginkgo("PANICKED", "Test Panicked")),
 			[]string{"TestSuite"}, "", "", true},
@@ -423,7 +425,7 @@ func TestAssertionFrameworkFailures(t *testing.T) {
 			{"TestA", panicLine}}, []string{"TestA"}, "", "", true},
 	}
 	for _, c := range cases {
-		ev, msg, crashed := firstFailure(jsonLines(c.out...) + fail(c.tests...))
+		ev, msg, crashed := firstFailure(jsonLines(c.out...)+fail(c.tests...), testKey)
 		if ev != c.ev || msg != c.msg || crashed != c.crashed {
 			t.Errorf("%s: got %q %q crashed=%v", c.name, ev, msg, crashed)
 		}

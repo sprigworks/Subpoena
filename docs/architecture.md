@@ -139,8 +139,16 @@ package stops at its first red test. Each kill reports its first evidence, the
 first failure message of a failed test: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
 (an error return, exit code, audit row or output). A kill whose first evidence
-is not `witness` rested on the system's own account or its side effects. Tests
-can tag their own messages the same way. `--require-witness` opts into a stricter
+is not `witness` rested on the system's own account or its side effects. In Go
+a tag alone is not `witness`: the code under test can print a line in the shape
+of a `t.Log`, so under cross the harness signs its witness failures with a key
+made for the run, and an unsigned `witness:` is `other`. A test that asks a
+witness itself reports through `harness.WitnessErrorf`, which signs. The output
+outside cross does not change. In-process code that goes looking for the key can
+still forge a mark, as it can forge anything there; the mark stops what a system
+prints in the ordinary way. In Python the tag counts only at the start of the
+test's own assertion message, never in pytest's diff of the values the code
+returned. `--require-witness` opts into a stricter
 gate: a clean failure whose first evidence is `testimony` or `other` is
 `enforcement-mutant-killed-by-self-report` and fails the run. A witness failure
 later in that test or its cleanup cannot redeem it. Selection retries such a
@@ -149,9 +157,9 @@ self-report kill cannot mask another layer. The default remains unchanged.
 The gateway and adopter CI paths select this gate. The Level 0 Python
 quickstart uses ordinary cross mode: its direct dictionary check is `other`,
 not a process/network witness. `make cross-self` also retains ordinary mode
-while the policy for pure-logic guard oracles is decided separately. Tags
-are reviewed claims, not authenticated proof of a message's origin; never add
-`witness:` to a return-value or span assertion to satisfy the gate. `-evidence-dir` keeps every mutant
+while the policy for pure-logic guard oracles is decided separately. A Python
+tag, and a Go test's call to `harness.WitnessErrorf`, remain reviewed claims:
+never use either on a return-value or span assertion to satisfy the gate. `-evidence-dir` keeps every mutant
 run's full `go test -json` output, killed ones included. `-j N` runs N single
 mutants at once, each in its own copy of the module (group runs stay
 sequential); on cross-self it cut 490 s to 135 s at `-j 8` with the same
