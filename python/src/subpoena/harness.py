@@ -293,6 +293,10 @@ def _report(kind: str, check, q: str, allow_inconclusive: bool) -> None:
 
 _NO_HEALTH = "witness does not report capture health"
 
+# Starts the message of a check that could not see: Inconclusive, or bad capture
+# health. It fails the test, and is never witness evidence.
+_INCONCLUSIVE = "inconclusive"
+
 
 def _capture_health(w: Any) -> Optional[str]:
     health = getattr(w, "health", None)
@@ -322,16 +326,30 @@ def witness_fail(message: str) -> None:
     code under test. Called from the code under test it is a crash. The Go
     harness's WitnessErrorf is its twin."""
     __tracebackhide__ = True
-    raise WitnessFailure(message if message.startswith("witness:") else f"witness: {message}")
+    _raise(message if message.startswith(("witness:", _INCONCLUSIVE + ":")) else f"witness: {message}")
+
+
+def _tag(v: Verdict) -> str:
+    return _INCONCLUSIVE if v is Verdict.INCONCLUSIVE else "witness"
+
+
+def _raise(message: Optional[str]) -> None:
+    """Fail the test with a check's message, if it has one. Its first line says
+    what failed first, and a witness that could not see is a failure the test
+    must have, but no evidence: the code under test can cause it."""
+    __tracebackhide__ = True
+    if message is None:
+        return
+    if message.startswith(_INCONCLUSIVE + ":"):
+        raise AssertionError(message)
+    raise WitnessFailure(message)
 
 
 def require_no_spawn(w: Any, trace_id: str) -> None:
     """Fail the test (AssertionError) unless a healthy witness saw no process
     for trace_id. Inconclusive fails too."""
     __tracebackhide__ = True
-    v, err = no_spawn(w, trace_id)
-    if v is not Verdict.PASS:
-        raise WitnessFailure(f"witness: no spawn for {trace_id}: {v}: {err}")
+    _raise(check_no_spawn(w, trace_id))
 
 
 @dataclass
@@ -415,7 +433,7 @@ def check_spawns(w: Any, trace_id: str, rule: SpawnRule) -> List[str]:
             errs.append(f"witness: command not allowed for {trace_id}: pid {p.pid} {p.command!r} ({p.attribution})")
     err = _capture_health(w)
     if err is not None:
-        errs.append(f"witness: {trace_id}: capture unhealthy, absence of refused commands is not proven: {err}")
+        errs.append(f"{_INCONCLUSIVE}: {trace_id}: capture unhealthy, absence of refused commands is not proven: {err}")
     return errs
 
 
@@ -427,7 +445,7 @@ def watch_spawns(addfinalizer, w: Any, trace_id: str, rule: SpawnRule) -> None:
         __tracebackhide__ = True
         errs = check_spawns(w, trace_id, rule)
         if errs:
-            raise WitnessFailure("\n".join(errs))
+            _raise("\n".join(errs))
     addfinalizer(finalize)
 
 
@@ -436,7 +454,7 @@ def check_no_spawn(w: Any, trace_id: str) -> Optional[str]:
     if the check passed, so one failing run can show every kind of evidence."""
     v, err = no_spawn(w, trace_id)
     if v is not Verdict.PASS:
-        return f"witness: no spawn for {trace_id}: {v}: {err}"
+        return f"{_tag(v)}: no spawn for {trace_id}: {v}: {err}"
     return None
 
 
@@ -466,9 +484,7 @@ def require_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) ->
     """Fail the test (AssertionError) unless a healthy witness saw no matching
     connection attempt for trace_id. Inconclusive fails too."""
     __tracebackhide__ = True
-    err = check_no_dial(w, trace_id, match)
-    if err is not None:
-        raise WitnessFailure(err)
+    _raise(check_no_dial(w, trace_id, match))
 
 
 def check_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) -> Optional[str]:
@@ -476,7 +492,7 @@ def check_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) -> O
     if the check passed."""
     v, err = no_dial(w, trace_id, match)
     if v is not Verdict.PASS:
-        return f"witness: no dial for {trace_id}: {v}: {err}"
+        return f"{_tag(v)}: no dial for {trace_id}: {v}: {err}"
     return None
 
 

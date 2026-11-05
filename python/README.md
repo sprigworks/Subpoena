@@ -203,7 +203,9 @@ timing-sensitive tests. `--timeout` remains the per-run timeout in seconds.
 that asks a witness itself raises it through `harness.witness_fail(message)`.
 Text decides nothing, so `assert ok, "witness: ..."` is `other`: an assert
 message can be a value the code returned (`assert r.status == 403, r.body`), and
-under `assertEqual` it is an object's repr. A span or return-value failure first is reported as
+under `assertEqual` it is an object's repr. A check that could not see
+(Inconclusive, bad capture health) fails the test with an `inconclusive:` message
+and is `other`: the code under test can blind a witness. A span or return-value failure first is reported as
 `enforcement-mutant-killed-by-self-report` and exits 1; a later witness failure
 cannot redeem it. Without the flag, existing kill classification is unchanged.
 A test's call to `witness_fail` remains a reviewed claim: do not

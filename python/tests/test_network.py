@@ -113,8 +113,9 @@ def test_no_dial_needs_healthy_capture(w, match, want):
     if got is Verdict.PASS:
         require_no_dial(w, "trace", match)
     else:
-        assert msg.startswith("witness: no dial for trace: ")
-        with pytest.raises(AssertionError, match="^witness: no dial for trace: "):
+        tag = "inconclusive" if got is Verdict.INCONCLUSIVE else "witness"
+        assert msg.startswith(f"{tag}: no dial for trace: ")
+        with pytest.raises(AssertionError, match=f"^{tag}: no dial for trace: "):
             require_no_dial(w, "trace", match)
 
 
