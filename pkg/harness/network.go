@@ -36,7 +36,7 @@ func RequireNoDial(tb testing.TB, w witness.NetworkWitness, traceID string, matc
 	tb.Helper()
 	v, err := NoDial(w, traceID, match)
 	if v != Pass {
-		tb.Fatalf("%s", noDialMessage(traceID, v, err))
+		tb.Fatalf("%s", noDialMessage(tb, traceID, v, err))
 	}
 }
 

@@ -5,10 +5,11 @@
 // with a key cross makes for the run. The key reaches the harness in the
 // environment, and the harness takes it out of there as it loads.
 //
-// This raises the bar only. The code under test shares the test's process and
-// can read the key if it goes looking, as it can forge anything else there. It
-// stops a line printed in the ordinary way, which is what a system's own
-// account of itself is.
+// This raises the bar only. The key is reachable: /proc/<pid>/environ keeps it
+// after the harness unsets it, so the code under test, and any process it starts
+// or any other process of the same user, can read it and forge a mark. It stops
+// a line printed in the ordinary way, which is what a system's own account of
+// itself is. It does not stop code set on forging one.
 package crossmark
 
 import (

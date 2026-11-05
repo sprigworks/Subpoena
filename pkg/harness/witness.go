@@ -44,6 +44,6 @@ func RequireNoSpawn(tb testing.TB, w witness.Witness, traceID string) {
 	tb.Helper()
 	v, err := NoSpawn(w, traceID)
 	if v != Pass {
-		tb.Fatalf("%s", noSpawnMessage(traceID, v, err))
+		tb.Fatalf("%s", noSpawnMessage(tb, traceID, v, err))
 	}
 }
