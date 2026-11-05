@@ -116,6 +116,11 @@ type Result struct {
 	// FirstFailure that failure's message.
 	Evidence     Evidence
 	FirstFailure string
+	// LaterWitness is a witness failure that came after a FirstFailure of
+	// another kind. It never upgrades the kill: an exit code that ended a test
+	// first is the failure this field sits beside, and so is a t.Log, which go
+	// test prints the same way. It only tells the reader where to look.
+	LaterWitness string
 	// EvidenceFile is where the full go test -json output was kept, if
 	// Options.EvidenceDir is set.
 	EvidenceFile string
@@ -555,6 +560,9 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 				} else {
 					res.Outcome, res.Failing = Killed, failingTests(out)
 					res.Evidence, res.FirstFailure = ev, msg
+					if ev != EvidenceWitness {
+						res.LaterWitness = witnessFailure(raw)
+					}
 					if o.RequireWitness && ev != EvidenceWitness {
 						res.Outcome = KilledBySelfReport //subpoena:enforcement
 					}
@@ -598,10 +606,39 @@ var failMsgRE = regexp.MustCompile(`^\s+[^\s:]+\.go:\d+: (.*)$`)
 // package whose binary crashed (a crash line from a failed or unfinished
 // test, or outside any test) gives no kills at all, since a test's log lines
 // before its panic look just like failure messages. t.Log and t.Error print
-// the same way, so a failed test's tagged log line can still set ev.
+// the same way, so a failed test's log line counts as its first failure:
+// tagged, it can set ev; untagged, it hides a witness failure after it.
+func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
+	msgs := failureMessages(raw)
+	if len(msgs) == 0 {
+		return "", "", true
+	}
+	switch {
+	case strings.HasPrefix(msgs[0], "witness:"):
+		return EvidenceWitness, msgs[0], false
+	case strings.HasPrefix(msgs[0], "testimony:"):
+		return EvidenceTestimony, msgs[0], false
+	default:
+		return EvidenceOther, msgs[0], false
+	}
+}
+
+// witnessFailure returns the first witness-tagged message of a failed test,
+// or "" if there is none.
+func witnessFailure(raw string) string {
+	for _, m := range failureMessages(raw) {
+		if strings.HasPrefix(m, "witness:") {
+			return m
+		}
+	}
+	return ""
+}
+
+// failureMessages lists, in order, the messages of failed tests in packages
+// whose binary did not crash.
 //
 //subpoena:enforcement_point
-func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
+func failureMessages(raw string) []string {
 	type event struct {
 		Action, Package, Test, Output string
 	}
@@ -632,24 +669,16 @@ func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
 			dead[k[0]] = true //subpoena:enforcement
 		}
 	}
+	var msgs []string
 	for _, e := range evs {
 		if e.Action != "output" || dead[e.Package] || !failed[key{e.Package, e.Test}] {
 			continue
 		}
-		m := failMsgRE.FindStringSubmatch(strings.TrimRight(e.Output, "\n"))
-		if m == nil {
-			continue
-		}
-		switch {
-		case strings.HasPrefix(m[1], "witness:"):
-			return EvidenceWitness, m[1], false
-		case strings.HasPrefix(m[1], "testimony:"):
-			return EvidenceTestimony, m[1], false
-		default:
-			return EvidenceOther, m[1], false
+		if m := failMsgRE.FindStringSubmatch(strings.TrimRight(e.Output, "\n")); m != nil {
+			msgs = append(msgs, m[1])
 		}
 	}
-	return "", "", true
+	return msgs
 }
 
 // crashRE matches the first line of a panic or a runtime fatal error.

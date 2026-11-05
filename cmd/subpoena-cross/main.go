@@ -76,6 +76,10 @@ func main() {
 			if r.Outcome == cross.KilledBySelfReport {
 				fmt.Println("  require-witness: the first failure was not witness evidence; ask the witness before return values or telemetry")
 			}
+			if r.LaterWitness != "" {
+				fmt.Printf("  a witness failure came later: %s\n", r.LaterWitness)
+				fmt.Println("  if the line above is a t.Log, not an assertion, move it after the witness check: go test prints both alike")
+			}
 		case cross.Survived:
 			fmt.Println("  suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced")
 		case cross.Masked:

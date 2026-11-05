@@ -322,7 +322,10 @@ failure with no message) is `enforcement-mutant-crashed` and fails the run: asse
 broke. Each kill prints its first evidence (`witness`, `testimony` or
 `other`). Where an enforcement point has a witness test, aim for `witness`; an
 `other` kill means an exit code or error check ended the test before the
-witness was read (`harness.WatchSpawns` reads it at cleanup anyway). A layer
+witness was read (`harness.WatchSpawns` reads it at cleanup anyway). Go test
+prints `t.Log` and `t.Error` alike, so a log line ahead of the witness check
+counts as the first evidence; cross names the witness failure that came later,
+and the fix is to log after the check. A layer
 reported as `enforcement-layer-masked` is caught only with another layer of its
 group removed too. It fails the run. Prefer a test that catches it alone; if
 the layer cannot be isolated, list it in `cross-masked.txt` with the reason, for

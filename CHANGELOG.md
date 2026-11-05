@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **`witness.NewSinkholeAt`.** A sinkhole can listen on a chosen address, so a
+  test can witness an IPv6 path (`::1`) or use a second loopback address when
+  127.0.0.1 is one the code may reach. Go only; Python keeps the 127.0.0.1
+  listener.
+- **Cross names a witness failure behind a log line.** Go test prints `t.Log`
+  and `t.Error` alike, so a log line ahead of a witness assertion counted as
+  the first evidence and strict mode rejected the kill, with nothing to say
+  why. It is still rejected; cross now prints the witness failure that came
+  later and the fix.
 - **`make demo` and `examples/saidno`.** A gateway answers 403 and logs the
   denial, but it has already run the tool: ordinary tests stay green and
   the witness goes red. A witness that loses capture reports Inconclusive where a

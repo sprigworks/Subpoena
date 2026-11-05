@@ -110,6 +110,55 @@ func TestFirstFailureReadsOnlyFailedTests(t *testing.T) {
 	}
 }
 
+// A log line ahead of a witness failure stays the first failure, so the kill is
+// not upgraded; the witness message is kept beside it for the reader.
+func TestWitnessFailureAfterALogLine(t *testing.T) {
+	raw := strings.Join([]string{
+		`{"Action":"output","Package":"p","Test":"TestOK","Output":"    a_test.go:1: witness: passing test\n"}`,
+		`{"Action":"pass","Package":"p","Test":"TestOK"}`,
+		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:3: client error: EOF\n"}`,
+		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:4: witness: saw a dial\n"}`,
+		`{"Action":"fail","Package":"p","Test":"TestDeny"}`,
+	}, "\n")
+	ev, msg, crashed := firstFailure(raw)
+	if ev != EvidenceOther || msg != "client error: EOF" || crashed {
+		t.Fatalf("got %q %q crashed=%v", ev, msg, crashed)
+	}
+	if got := witnessFailure(raw); got != "witness: saw a dial" {
+		t.Fatalf("witnessFailure = %q", got)
+	}
+}
+
+const logThenWitnessTest = `package mini
+
+import "testing"
+
+func TestDeny(t *testing.T) {
+	err := Allow(false)
+	t.Logf("got: %v", err)
+	if err == nil {
+		t.Fatal("witness: a process ran after the denial")
+	}
+}
+func TestAllow(t *testing.T) {
+	if Allow(true) != nil {
+		t.Fatal("admin must be allowed")
+	}
+}
+`
+
+func TestRequireWitnessStaysStrictButNamesTheLaterWitness(t *testing.T) {
+	dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": logThenWitnessTest})
+	rep, err := Run(context.Background(), Options{Target: dir, RequireWitness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rep.Results[0]
+	if r.Outcome != KilledBySelfReport || !rep.Failed() || !strings.HasPrefix(r.LaterWitness, "witness: a process ran") {
+		t.Fatalf("want a rejected kill naming the witness, got %+v", r)
+	}
+}
+
 func TestFirstFailureCrashes(t *testing.T) {
 	j := func(lines ...string) string { return strings.Join(lines, "\n") }
 	cases := []struct {

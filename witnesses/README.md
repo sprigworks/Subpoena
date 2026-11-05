@@ -237,6 +237,8 @@ that arrives is recorded and closed. It needs no root, and the application
 cannot unsay a connection the listener accepted. `Stop` drains connections the
 kernel completed but the accept loop has not taken yet, so a client that hung
 up at once still counts; a drain or accept failure fails `Health`.
+`NewSinkhole` listens on 127.0.0.1; `NewSinkholeAt` takes the address, for an
+IPv6 path or a second loopback address.
 
 It certifies only "nothing reached this address". Arrivals carry no PID or
 cgroup, so `Dialed` returns every arrival for every trace (`ByDestination`):

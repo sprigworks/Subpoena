@@ -42,9 +42,16 @@ var (
 // drain is drainAccepts, replaceable in tests to inject a failed drain.
 var drain = drainAccepts
 
-// NewSinkhole listens on a free loopback port and starts recording.
+// NewSinkhole listens on a free port on 127.0.0.1 and starts recording.
 func NewSinkhole() (*Sinkhole, error) {
-	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	return NewSinkholeAt(netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 0))
+}
+
+// NewSinkholeAt listens on addr and starts recording; port 0 picks a free one.
+// Use it when the claim is about a particular address: ::1 for an IPv6 path,
+// or a second loopback address when 127.0.0.1 is one the code may reach.
+func NewSinkholeAt(addr netip.AddrPort) (*Sinkhole, error) {
+	ln, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(addr))
 	if err != nil {
 		return nil, fmt.Errorf("sinkhole: %w", err)
 	}

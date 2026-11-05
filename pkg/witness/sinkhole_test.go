@@ -6,6 +6,7 @@ package witness
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 )
@@ -122,5 +123,40 @@ func TestSinkholeFailedDrainCannotCertifyAbsence(t *testing.T) {
 	}
 	if err := s.Stop(); !errors.Is(err, broken) {
 		t.Fatalf("second Stop = %v, erased the failure", err)
+	}
+}
+
+// A sinkhole at a chosen address records arrivals there, over IPv6 too.
+func TestSinkholeAtChosenAddress(t *testing.T) {
+	for _, want := range []string{"127.0.0.2", "::1"} {
+		t.Run(want, func(t *testing.T) {
+			addr := netip.MustParseAddr(want)
+			s, err := NewSinkholeAt(netip.AddrPortFrom(addr, 0))
+			if err != nil {
+				t.Skipf("address unavailable here: %v", err)
+			}
+			if got := s.Addr().Addr(); got != addr || s.Addr().Port() == 0 {
+				t.Fatalf("listening on %v, want %v and a real port", s.Addr(), addr)
+			}
+			c, err := net.Dial("tcp", s.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Close()
+			if err := s.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.Dialed("any"); len(got) != 1 || got[0].Dest != s.Addr() {
+				t.Fatalf("want one arrival at %v, got %+v", s.Addr(), got)
+			}
+		})
+	}
+}
+
+// An address the host doesn't have is an error, not a sinkhole that sees nothing.
+func TestSinkholeAtUnavailableAddressFails(t *testing.T) {
+	if s, err := NewSinkholeAt(netip.MustParseAddrPort("192.0.2.1:0")); err == nil {
+		s.Stop()
+		t.Fatal("want an error binding an address this host does not have")
 	}
 }
