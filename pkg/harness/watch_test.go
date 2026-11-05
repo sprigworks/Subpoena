@@ -250,13 +250,15 @@ func TestWitnessFailuresAreSignedForCross(t *testing.T) {
 		CheckNoSpawn(tb, healthWitness{unknownWitness: unknownWitness{procs("sleep 1")}}, "trace")
 		checkSpawns(tb, unknownWitness{}, "trace", SpawnRule{})
 	}
+	key := crossKey // set when cross itself runs this test
+	defer func() { crossKey = key }()
+	crossKey = ""
 	tb := &cleanupTB{}
 	tb.run(check)
 	if len(tb.errs) != 3 || tb.errs[0] != "witness: saw a dial" {
 		t.Fatalf("outside cross: %q", tb.errs)
 	}
 	crossKey = "k"
-	defer func() { crossKey = "" }()
 	tb = &cleanupTB{}
 	tb.run(check)
 	if len(tb.errs) != 3 {
