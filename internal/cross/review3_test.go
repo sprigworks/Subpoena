@@ -261,3 +261,11 @@ func TestALongSignedLineKeepsItsMark(t *testing.T) {
 		t.Fatalf("ev=%q crashed=%v", ev, crashed)
 	}
 }
+
+// Cross's own exit event is no text of go test's (seen in repro g05's output).
+func TestExitEventsAreNotPrintedText(t *testing.T) {
+	raw := `{"Action":"output","Package":"p","Output":"FAIL\n"}` + "\n" + exitEvent("p", "1") + "\n"
+	if got := testText(raw); got != "FAIL\n" {
+		t.Fatalf("got %q", got)
+	}
+}

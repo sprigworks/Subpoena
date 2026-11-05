@@ -80,7 +80,7 @@ func main() {
 				fmt.Println("  require-witness: the first failure was not witness evidence; ask the witness before return values or telemetry")
 			}
 			if r.Evidence != cross.EvidenceWitness && strings.HasPrefix(r.FirstFailure, "witness:") {
-				fmt.Println("  this witness: tag is not the harness's: a tag counts only through the harness, or harness.WitnessErrorf in a test")
+				fmt.Println("  this witness: tag is not the harness's: a tag counts only through the harness, or harness.WitnessErrorf in a test, on a *testing.T, B or F")
 			}
 			if r.LaterWitness != "" {
 				fmt.Printf("  a witness failure came later: %s\n", r.LaterWitness)

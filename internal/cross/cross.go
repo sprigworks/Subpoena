@@ -729,9 +729,11 @@ func failedTests(raw string) (names, pkgs []string) {
 func testText(raw string) string {
 	var b strings.Builder
 	for _, line := range strings.Split(raw, "\n") {
-		var ev struct{ Output string }
+		var ev struct{ Action, Output string }
 		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &ev) == nil {
-			b.WriteString(ev.Output)
+			if ev.Action != exitAction {
+				b.WriteString(ev.Output)
+			}
 			continue
 		}
 		if line != "" {
