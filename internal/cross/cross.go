@@ -650,15 +650,10 @@ const emptyFailure = "(the failure printed no text; -evidence-dir keeps the test
 
 // failure is one failure message of a failed test.
 type failure struct {
-	pkg, test string
-	at        int    // index of the output event that gave it
-	head      string // text on the file:line, the only place a tag is read
-	text      string // what to print: head, or for a blank head the lines under it
-	more      bool   // lines still extend text
-	// assertion marks a failure only an assertion library prints: a testify
-	// report from a test file, or a Ginkgo spec's [FAILED]. A plain file:line
-	// is not one, since t.Log prints the same way.
-	assertion bool
+	pkg  string
+	head string // text on the file:line, the only place a tag is read
+	text string // what to print: head, or for a blank head the lines under it
+	more bool   // lines still extend text
 }
 
 // addLine reads one line of a failed test's output after a blank head: the
@@ -688,12 +683,10 @@ func (f *failure) addLine(line string) {
 // a test that failed (a skipped or passing test's log lines don't count).
 // crashed is true when no failed test gave one cleanly: the binary died by a
 // panic, a runtime fatal error or os.Exit, or failed without a message. A
-// package whose binary crashed (a crash line from a failed or unfinished
-// test, or outside any test) gives no kills at all, since a test's log lines
-// before its panic look just like failure messages. The one exception is an
-// assertion library's own failure (see failure.assertion) ahead of the crash in
-// the same test: that cannot be a log line, so it alone can still kill. t.Log and
-// t.Error print the same way, so a failed test's log line counts as its first
+// package with a crash line anywhere in its output gives no kills at all, since
+// a test's log lines before its panic look just like failure messages, and so
+// does an assertion library's report: go test -json carries both as plain text,
+// which the code under test can print. t.Log and t.Error print the same way, so a failed test's log line counts as its first
 // failure: tagged, it can set ev; untagged, it hides a witness failure after it.
 func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
 	fs := failures(raw)
@@ -726,8 +719,8 @@ func witnessFailure(raw string) string {
 }
 
 // failures lists, in order, the failure messages of failed tests. A package
-// whose binary crashed gives none, unless an assertion library's failure came
-// before the crash in the same test; then those failures alone.
+// with a crash line anywhere gives none, whatever came first: Ginkgo runs a
+// suite as one test, in random order, so order must not decide.
 //
 //subpoena:enforcement_point
 func failures(raw string) []failure {
@@ -736,7 +729,7 @@ func failures(raw string) []failure {
 	}
 	type key [2]string
 	var evs []event
-	failed, ended, crash := map[key]bool{}, map[key]bool{}, map[key]int{}
+	failed, dead := map[key]bool{}, map[string]bool{}
 	for _, line := range strings.Split(raw, "\n") {
 		var e event
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
@@ -747,12 +740,10 @@ func failures(raw string) []failure {
 		k := key{e.Package, e.Test}
 		switch e.Action {
 		case "fail":
-			failed[k], ended[k] = true, true
-		case "pass", "skip":
-			ended[k] = true
+			failed[k] = true
 		case "output":
-			if _, seen := crash[k]; !seen && (crashRE.MatchString(e.Output) || ginkgoPanicRE.MatchString(e.Output)) {
-				crash[k] = len(evs) - 1
+			if crashRE.MatchString(e.Output) || ginkgoPanicRE.MatchString(e.Output) {
+				dead[e.Package] = true //subpoena:enforcement
 			}
 		}
 	}
@@ -760,7 +751,7 @@ func failures(raw string) []failure {
 	blank := map[key]int{}   // test -> index in fs of the blank head being read
 	ginkgo := map[key]bool{} // test -> inside a Ginkgo spec's failure report
 	gomega := map[key]int{}  // test -> index in fs of the Ginkgo message being read
-	for i, e := range evs {
+	for _, e := range evs {
 		k := key{e.Package, e.Test}
 		if e.Action != "output" || !failed[k] {
 			continue
@@ -772,7 +763,7 @@ func failures(raw string) []failure {
 			delete(ginkgo, k)
 			delete(blank, k)
 			gomega[k] = len(fs)
-			fs = append(fs, failure{pkg: e.Package, test: e.Test, at: i, head: m[1], text: m[1], assertion: true})
+			fs = append(fs, failure{pkg: e.Package, head: m[1], text: m[1]})
 		} else if n, ok := gomega[k]; ok {
 			if ginkgoAtRE.MatchString(line) || len(fs[n].text) >= maxFailureText {
 				delete(gomega, k)
@@ -784,34 +775,14 @@ func failures(raw string) []failure {
 			if m[1] == "" {
 				blank[k] = len(fs)
 			}
-			fs = append(fs, failure{pkg: e.Package, test: e.Test, at: i, head: m[1], text: m[1], more: true})
+			fs = append(fs, failure{pkg: e.Package, head: m[1], text: m[1], more: true})
 		} else if n, ok := blank[k]; ok {
 			fs[n].addLine(line)
-			fs[n].assertion = fs[n].assertion || testifyTraceRE.MatchString(line)
-		}
-	}
-	// A subtest's assertion and the parent's report of its panic are one test.
-	top := func(test string) string { name, _, _ := strings.Cut(test, "/"); return name }
-	asserted := func(k key, before int) bool {
-		return slices.ContainsFunc(fs, func(f failure) bool {
-			return f.assertion && f.pkg == k[0] && top(f.test) == top(k[1]) && f.at < before
-		})
-	}
-	dead, crashed := map[string]bool{}, map[string]bool{}
-	for k, at := range crash {
-		if k[1] == "" || failed[k] || !ended[k] {
-			crashed[k[0]] = true
-			if k[1] == "" || !asserted(k, at) {
-				dead[k[0]] = true //subpoena:enforcement
-			}
 		}
 	}
 	var clean []failure
 	for _, f := range fs {
 		if dead[f.pkg] {
-			continue
-		}
-		if crashed[f.pkg] && !f.assertion {
 			continue //subpoena:enforcement
 		}
 		clean = append(clean, f)
@@ -822,19 +793,18 @@ func failures(raw string) []failure {
 // crashRE matches the first line of a panic or a runtime fatal error.
 var crashRE = regexp.MustCompile(`^(panic|fatal error): `)
 
-// The assertion libraries' failure reports. Ginkgo v2 runs a whole suite as
-// one test and colours its report, even under go test: "• [FAILED] [0.001
-// seconds]" opens a spec's report and "[FAILED] msg" gives the message below
-// it, down to "In [It] at:". A timeline above it can hold "[FAILED] in [It] -
-// file:line", which names no failure of its own. It recovers a spec's panic, which it reports as "• [PANICKED]". testify
-// opens its report under a blank head with the "Error Trace:" of the assertion.
+// Ginkgo v2's failure report. It runs a whole suite as one test and colours its
+// report, even under go test: "• [FAILED] [0.001 seconds]" opens a spec's report
+// and "[FAILED] msg" gives the message below it, down to "In [It] at:". A
+// timeline above it can hold "[FAILED] in [It] - file:line", which names no
+// failure of its own. It recovers a spec's panic, which it reports as
+// "• [PANICKED]".
 var (
 	ansiRE         = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	ginkgoReportRE = regexp.MustCompile(`^\s*• \[FAILED\] \[`)
 	ginkgoFailedRE = regexp.MustCompile(`^\s*\[FAILED\] (.*)$`)
 	ginkgoAtRE     = regexp.MustCompile(`^\s*In \[`)
 	ginkgoPanicRE  = regexp.MustCompile(`^\s*• \[PANICKED\] \[`)
-	testifyTraceRE = regexp.MustCompile(`^\s+Error Trace:\s+\S+_test\.go:\d+$`)
 )
 
 // baselineReason says why a baseline run failed. Timeouts come first and

@@ -37,12 +37,10 @@
   call and stated the status. With no `status=` the test expected nothing, and
   a 5xx is the app falling over, so both stay a crash, as does an `AppError`
   for errors the app logged.
-- **Cross reads Ginkgo and testify failures.** A Ginkgo v2 `[FAILED]` spec is
-  a kill; it was `crashed`, because Ginkgo prints no `file.go:N:` line. A
-  testify or Ginkgo assertion that fails ahead of a panic in the same test is
-  also a kill now: only an assertion library prints those reports, so they
-  are not log lines. A plain `t.Error` before a panic stays `crashed`, and
-  Ginkgo's `[PANICKED]` is a crash.
+- **Cross reads Ginkgo failures.** A Ginkgo v2 `[FAILED]` spec is a kill; it was
+  `crashed`, because Ginkgo prints no `file.go:N:` line. Any panic in the package
+  still makes it a crash, ahead of or behind the failure, Ginkgo's `[PANICKED]`
+  included: the output cannot show that an assertion library printed a report.
 - **Cross prints the failure text of testify and multi-line failures.** Both
   leave the `file.go:N:` line blank, so `first evidence (other):` printed
   nothing. Cross now reads the text under it. A tag still counts only on the

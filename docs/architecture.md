@@ -108,11 +108,11 @@ which fails the run too: a crash is not evidence that the enforcement is
 tested. A package whose test binary died (a panic, a runtime fatal error or
 `os.Exit`) gives no kills at all, since a test's log lines before its panic
 look like failure messages; a clean failure in another package still counts.
-The one exception is a failure only an assertion library prints: a testify
-report whose `Error Trace:` is in a `_test.go` file, or a Ginkgo v2 `[FAILED]`
-spec. Ahead of the crash and in the same test, it cannot be a log line, so it
-kills on its own, and the log lines around it still don't count. Ginkgo reports a recovered
-panic as `[PANICKED]`, which counts as a crash. Mutant runs use `go test -json -failfast`, so a
+That holds for an assertion library's report too: `go test -json` carries it as
+plain text, which the code under test can print, so a testify or Ginkgo failure
+ahead of a panic is a crash. Ginkgo reports a recovered panic as `[PANICKED]`,
+which counts as a crash wherever it falls in the suite, since Ginkgo runs a suite
+as one test in random order. Mutant runs use `go test -json -failfast`, so a
 package stops at its first red test. Each kill reports its first evidence, the
 first failure message of a failed test: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`

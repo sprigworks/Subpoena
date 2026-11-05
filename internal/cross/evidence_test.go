@@ -187,7 +187,7 @@ func TestFirstFailureCrashes(t *testing.T) {
 			`{"Action":"output","Package":"p","Test":"TestP","Output":"panic: recovered and expected\n"}`,
 			`{"Action":"pass","Package":"p","Test":"TestP"}`,
 			`{"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:9: witness: spawned\n"}`,
-			`{"Action":"fail","Package":"p","Test":"TestA"}`), false, "witness: spawned"},
+			`{"Action":"fail","Package":"p","Test":"TestA"}`), true, ""},
 		{"one package crashes, another kills", j(
 			`{"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:3: setup\n"}`,
 			`{"Action":"output","Package":"p","Test":"TestA","Output":"panic: boom\n"}`,
@@ -300,7 +300,8 @@ func TestLongFailureTextIsCut(t *testing.T) {
 // The event order and the failure formats here are from real runs of testify
 // and Ginkgo v2 under go test -json: a subtest's assertion belongs to the
 // subtest, and its panic to the parent; Ginkgo colours its report, recovers a
-// spec's panic and carries on.
+// spec's panic and carries on, in an order it randomises. A panic anywhere in a
+// package decides, so the order cannot flip the verdict.
 func TestAssertionFrameworkFailures(t *testing.T) {
 	const (
 		ansiRed, ansiOff = "\x1b[38;5;9m", "\x1b[0m"
@@ -360,7 +361,7 @@ func TestAssertionFrameworkFailures(t *testing.T) {
 		{"ginkgo assertion with a tag", ginkgo("FAILED", "witness: saw a dial"), []string{"TestSuite"},
 			EvidenceWitness, "witness: saw a dial", false},
 		{"ginkgo: assertion, then another spec panics", join(ginkgo("FAILED", "Expected 1"), ginkgo("PANICKED", "Test Panicked")),
-			[]string{"TestSuite"}, EvidenceOther, "Expected 1", false},
+			[]string{"TestSuite"}, "", "", true},
 		{"ginkgo: a panic first is a crash", join(ginkgo("PANICKED", "Test Panicked"), ginkgo("FAILED", "Expected 1")),
 			[]string{"TestSuite"}, "", "", true},
 		{"ginkgo panic alone", ginkgo("PANICKED", "Test Panicked"), []string{"TestSuite"}, "", "", true},
@@ -369,12 +370,17 @@ func TestAssertionFrameworkFailures(t *testing.T) {
 		{"ginkgo timeout is not an assertion", ginkgo("TIMEDOUT", "A spec timeout occurred"), []string{"TestSuite"}, "", "", true},
 
 		{"testify, then a panic", join(testify("TestA", "Not equal:"), [][2]string{{"TestA", "--- FAIL: TestA (0.00s)"}, {"TestA", panicLine}}),
-			[]string{"TestA"}, EvidenceOther, "Not equal:", false},
+			[]string{"TestA"}, "", "", true},
 		{"testify in a subtest, then the parent reports the panic", join(testify("TestA/sub", "Not equal:"), [][2]string{{"TestA", panicLine}}),
-			[]string{"TestA/sub", "TestA"}, EvidenceOther, "Not equal:", false},
-		{"a tagged log line before the assertion cannot set the evidence", join(
-			[][2]string{{"TestA", "    a_test.go:3: witness: hello"}}, testify("TestA", "Not equal:"), [][2]string{{"TestA", panicLine}}),
-			[]string{"TestA"}, EvidenceOther, "Not equal:", false},
+			[]string{"TestA/sub", "TestA"}, "", "", true},
+		{"text shaped like testify's, then a panic", join([][2]string{
+			{"TestA", "    a_test.go:3: "},
+			{"TestA", "        \tError Trace:\tfoo_test.go:12"}}, [][2]string{{"TestA", panicLine}}),
+			[]string{"TestA"}, "", "", true},
+		{"text shaped like Ginkgo's, then a panic", join([][2]string{
+			{"TestA", "• [FAILED] [0.001 seconds]"},
+			{"TestA", "[FAILED] relayed text"}}, [][2]string{{"TestA", panicLine}}),
+			[]string{"TestA"}, "", "", true},
 		{"panic before the assertion", join([][2]string{{"TestA", panicLine}}, testify("TestA", "Not equal:")), []string{"TestA"}, "", "", true},
 		{"testify in one test, panic in another", join(testify("TestA", "Not equal:"), [][2]string{{"TestB", panicLine}}),
 			[]string{"TestA", "TestB"}, "", "", true},
@@ -397,10 +403,11 @@ func TestAssertionFrameworkFailures(t *testing.T) {
 	}
 }
 
-// The whole path through go test: a testify-shaped assertion, then a nil
-// dereference, as a real suite does it. testify is not a dependency of the
-// tiny module, so the test prints what testify prints.
-func TestAssertionThenPanicIsAKill(t *testing.T) {
+// The whole path through go test: an assertion's text, then a nil dereference,
+// as a real suite does it. go test -json gives no way to tell a library's report
+// from what anything else printed, so the panic decides. testify is not a
+// dependency of the tiny module, so the test prints what testify prints.
+func TestAssertionThenPanicIsACrash(t *testing.T) {
 	const assertThenPanic = `package mini
 
 import "testing"
@@ -426,8 +433,8 @@ func TestAllow(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := rep.Results[0]
-	if r.Outcome != Killed || r.FirstFailure != "An error is expected but got nil." {
-		t.Fatalf("want a kill on the assertion, got %+v", r)
+	if r.Outcome != Crashed {
+		t.Fatalf("want a crash, got %+v", r)
 	}
 }
 
