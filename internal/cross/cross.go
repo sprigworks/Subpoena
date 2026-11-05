@@ -691,7 +691,8 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, raw string, res *Re
 			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
 		}
 		if err != nil {
-			res.Outcome, res.Output = Unconfirmed, tail(out, 20) //subpoena:enforcement
+			res.Output = tail(out, 20)
+			res.Outcome = Unconfirmed //subpoena:enforcement
 			return nil
 		}
 	}
