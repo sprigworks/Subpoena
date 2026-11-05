@@ -5,8 +5,8 @@
 - **A kill needs its tests to pass without the mutant.** A suite that went red
   for any reason was a kill: a file a test left in the shared copy, a marker
   outside it, a flake, with the enforcement never called. Each Go case now gets
-  a fresh copy, as Python's did, and a kill's failed tests run three more times
-  without the mutant, each on a fresh copy. One that fails is the new
+  a fresh copy, as Python's did, and in both languages a kill's failed tests run
+  three more times without the mutant, each on a fresh copy. One that fails is the new
   `enforcement-mutant-unconfirmed`, which fails the run. A rare flake can still
   pass the reruns, so it stays a weak spot, stated in `docs/architecture.md`.
 - **Cross reads a test binary's exit code.** A panic beside another writer's
