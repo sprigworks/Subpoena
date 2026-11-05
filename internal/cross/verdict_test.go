@@ -96,6 +96,19 @@ func TestPackageOutputIsNeverAFailureMessage(t *testing.T) {
 			}
 		})
 	}
+	// After m.Run the binary has finished testing, so its exit 1 reads as a
+	// test's: only the rule on package output keeps the line from a kill.
+	t.Run("after m.Run", func(t *testing.T) {
+		src := strings.Replace(bootGo, "MESSAGE", "empty key", 1)
+		test := strings.Replace(bootTest, "Boot(\"\")\n\tos.Exit(m.Run())", "code := m.Run()\n\tBoot(\"\")\n\tos.Exit(code)", 1)
+		rep, err := run(t, module(t, map[string]string{"gate.go": src, "gate_test.go": test}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := rep.Results[0]; r.Outcome != Crashed {
+			t.Fatalf("want crashed, got %s, evidence %s %q", r.Outcome, r.Evidence, r.FirstFailure)
+		}
+	})
 	t.Run("log.Fatal with a short file prefix", func(t *testing.T) {
 		const test = `package mini
 
