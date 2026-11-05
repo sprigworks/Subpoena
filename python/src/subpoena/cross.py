@@ -27,7 +27,8 @@ that can carry the allow decision, so it is invalid. Mark the guard. Verdicts:
   (docs/architecture.md, "What a kill does not prove").
 - unconfirmed: a kill, but a test that failed also failed in one of _RERUNS
   reruns without the mutant, each on a fresh copy: state outside the copy, or a
-  flake. A rare flake can pass them all. The run fails.
+  flake. A rare flake can pass them all, and state that clears itself is gone
+  by the first rerun. -select does not retry it. The run fails.
 - survived: the suite stayed green. The run fails.
 - crashed: the suite went red only by another exception, or the test process
   died. A crash is not evidence that the enforcement is tested; the run fails.

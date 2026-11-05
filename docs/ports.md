@@ -203,7 +203,9 @@ hold the cases; the Python runner is `python/tests/test_network.py`.
   assertion, or a dead test process is `crashed`; an assertion library's own
   failure type counts as an assertion, as webtest's status check does in
   Python); a hang, or a test-framework
-  timeout, is `timeout`; a marker that takes no effect, and an enforcement point with no
+  timeout, is `timeout`; a kill whose failed tests also fail in a rerun without
+  the mutant is `unconfirmed`, which fails the run, and `-select` does not retry
+  it on the whole suite; a marker that takes no effect, and an enforcement point with no
   statement marker, are errors; the baseline must be green. Python's
   `subpoena-cross` also refuses a mutant the suite never imported from the
   copy (an installed package shadowing it) as invalid. It also implements layer
