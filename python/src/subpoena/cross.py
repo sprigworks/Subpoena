@@ -504,15 +504,15 @@ def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, L
     # order of the records is timing. Records of one test keep their order.
     collected = next((r.get("tests") or [] for r in records if r.get("kind") == "collected"), [])
     rank = {test: i for i, test in enumerate(collected)}
-    msg = min(assertion, key=lambda r: rank.get(r["test"], len(rank))).get("message", "").strip()
+    head = min(assertion, key=lambda r: rank.get(r["test"], len(rank)))
+    msg = head.get("message", "").strip()
     first = msg.splitlines()[0].strip() if msg else ""
-    # A tag counts only at the start of the message, which is the test's own
-    # text. Past it comes pytest's diff, which holds the values the code under
-    # test returned, and with no stated message the text starts "assert ".
-    for prefix, ev in (("witness:", "witness"), ("testimony:", "testimony")):
-        if first.startswith(prefix):
-            return KILLED, [r["test"] for r in fails], ev, first
-    return KILLED, [r["test"] for r in fails], "other", first
+    # Witness evidence is the failure's type, which the plugin read: the text can
+    # be the code under test's own (assert r.ok, r.body; an object's repr under
+    # assertEqual). Testimony claims no independence, so its tag is enough, at
+    # the start only: past it comes pytest's diff of the app's values.
+    ev = "witness" if head.get("witness") else "testimony" if first.startswith("testimony:") else "other"
+    return KILLED, [r["test"] for r in fails], ev, first
 
 
 def _baseline_reason(code, records, timeout) -> str:

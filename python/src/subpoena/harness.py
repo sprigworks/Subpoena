@@ -25,6 +25,7 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanLimits, SpanProcesso
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
 from . import traceql, witness
+from ._evidence import WitnessFailure
 
 DEFAULT_CAPACITY = 10000
 
@@ -313,13 +314,24 @@ def no_spawn(w: Any, trace_id: str) -> "tuple[Verdict, Optional[str]]":
     return Verdict.PASS, None
 
 
+def witness_fail(message: str) -> None:
+    """Fail the test with a message tagged "witness:". A test that asks a witness
+    itself reports what it saw through this, as the check_ functions' messages
+    go through it too: subpoena-cross counts only this failure as witness
+    evidence, whatever a message's text says, since the text can come from the
+    code under test. Called from the code under test it is a crash. The Go
+    harness's WitnessErrorf is its twin."""
+    __tracebackhide__ = True
+    raise WitnessFailure(message if message.startswith("witness:") else f"witness: {message}")
+
+
 def require_no_spawn(w: Any, trace_id: str) -> None:
     """Fail the test (AssertionError) unless a healthy witness saw no process
     for trace_id. Inconclusive fails too."""
     __tracebackhide__ = True
     v, err = no_spawn(w, trace_id)
     if v is not Verdict.PASS:
-        raise AssertionError(f"witness: no spawn for {trace_id}: {v}: {err}")
+        raise WitnessFailure(f"witness: no spawn for {trace_id}: {v}: {err}")
 
 
 @dataclass
@@ -415,7 +427,7 @@ def watch_spawns(addfinalizer, w: Any, trace_id: str, rule: SpawnRule) -> None:
         __tracebackhide__ = True
         errs = check_spawns(w, trace_id, rule)
         if errs:
-            raise AssertionError("\n".join(errs))
+            raise WitnessFailure("\n".join(errs))
     addfinalizer(finalize)
 
 
@@ -456,7 +468,7 @@ def require_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) ->
     __tracebackhide__ = True
     err = check_no_dial(w, trace_id, match)
     if err is not None:
-        raise AssertionError(err)
+        raise WitnessFailure(err)
 
 
 def check_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) -> Optional[str]:

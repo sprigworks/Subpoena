@@ -70,12 +70,13 @@ def test_weak_suite_survives_and_fails_the_run(tmp_path):
     assert r.outcome == SURVIVED and rep.failed()
 
 
-def test_tagged_assertion_is_witness_evidence(tmp_path):
+def test_witness_fail_is_witness_evidence(tmp_path):
     _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
         from auth import DENIED, allow
+        from subpoena.harness import witness_fail
         def test_denied():
             if allow(False) != DENIED:
-                raise AssertionError("witness: refused command ran for t: pid 7 'rm -rf /'")
+                witness_fail("refused command ran for t: pid 7 'rm -rf /'")
     """})
     assert r.outcome == KILLED and r.evidence == "witness"
     assert r.first_failure.startswith("witness: refused command ran")
@@ -86,12 +87,13 @@ def test_teardown_assertion_kills(tmp_path):
     _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
         import pytest
         from auth import DENIED, allow
+        from subpoena.harness import witness_fail
         seen = []
         @pytest.fixture
         def watch(request):
             def check():
                 if seen and seen[0] != DENIED:
-                    raise AssertionError("witness: refused command ran for t")
+                    witness_fail("refused command ran for t")
             request.addfinalizer(check)
         def test_denied(watch):
             seen.append(allow(False))
@@ -520,13 +522,17 @@ def test_forged_report_is_not_a_kill(tmp_path):
 @pytest.mark.parametrize("message,evidence", [
     ("wrong return value", "other"),
     ("testimony: deny span missing", "testimony"),
-    ("witness: denied side effect occurred", "witness"),
+    ("witness: a hand-written tag", "other"),
+    (None, "witness"),
 ])
 def test_require_witness_gate(tmp_path, message, evidence):
+    check = f"assert allow(False) == DENIED, {message!r}" if message else (
+        "if allow(False) != DENIED: witness_fail('denied side effect occurred')")
     files = {"auth.py": AUTH, "test_auth.py": f'''
         from auth import DENIED, allow
+        from subpoena.harness import witness_fail
         def test_denied():
-            assert allow(False) == DENIED, {message!r}
+            {check}
     '''}
     rep, r = outcome(tmp_path, files, require_witness=True)
     expected = KILLED if evidence == "witness" else cross.KILLED_BY_SELF_REPORT
@@ -550,12 +556,13 @@ def test_require_witness_rejects_testimony_before_teardown_witness(tmp_path):
     rep, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": '''
         import pytest
         from auth import DENIED, allow
+        from subpoena.harness import witness_fail
         seen = []
         @pytest.fixture
         def observer(request):
             def check():
                 if seen and seen[0] != DENIED:
-                    pytest.fail("witness: denied side effect occurred")
+                    witness_fail("denied side effect occurred")
             request.addfinalizer(check)
         def test_denied(observer):
             result = allow(False)
@@ -887,11 +894,13 @@ def test_xdist_assertion_is_a_kill(tmp_path):
     assert r.first_failure.startswith("assert None ==")
 
 
-def test_xdist_keeps_the_witness_tag(tmp_path):
+def test_xdist_keeps_witness_evidence(tmp_path):
     _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
         from auth import DENIED, allow
+        from subpoena.harness import witness_fail
         def test_denied():
-            assert allow(False) == DENIED, "witness: it ran"
+            if allow(False) != DENIED:
+                witness_fail("it ran")
     """}, pytest_args=XDIST)
     assert r.outcome == KILLED and r.evidence == "witness", r.output
 

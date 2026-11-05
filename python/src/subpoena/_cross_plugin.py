@@ -17,6 +17,11 @@ A failure's verdict:
   _status_check.
 - crash: anything else, including an assert in the code under test.
 
+An assertion is witness evidence only when it is a WitnessFailure, which the
+harness raises. Text decides nothing there: a message can be a value the code
+under test returned. The same frame rule holds, so the code under test raising
+one is a crash.
+
 Every record carries $SUBPOENA_CROSS_NONCE, and cross rejects a report line
 without it. That raises the bar only: test code runs in this process and can
 still forge a record. Both variables are removed from the environment when
@@ -35,6 +40,8 @@ import sys
 import threading
 
 import pytest
+
+from subpoena._evidence import WitnessFailure
 
 _REPORT = os.environ.pop("SUBPOENA_CROSS_REPORT", "")
 _NONCE = os.environ.pop("SUBPOENA_CROSS_NONCE", "")
@@ -146,6 +153,7 @@ def pytest_runtest_makereport(item, call):
         verdict = _verdict(item, call.excinfo)
         _write({"kind": "failure", "test": item.nodeid, "when": call.when, "verdict": verdict,
                 "assertion": verdict == "assertion", "type": call.excinfo.typename,
+                "witness": verdict == "assertion" and call.excinfo.errisinstance(WitnessFailure),
                 "message": str(call.excinfo.value)[:2000]})
 
 
