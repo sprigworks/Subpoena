@@ -37,8 +37,9 @@
   call and stated the status. With no `status=` the test expected nothing, and
   a 5xx is the app falling over, so both stay a crash, as does an `AppError`
   for errors the app logged.
-- **Cross reads Ginkgo failures.** A Ginkgo v2 `[FAILED]` spec is a kill; it was
-  `crashed`, because Ginkgo prints no `file.go:N:` line. Any panic in the package
+- **Cross reads Ginkgo failures.** A Ginkgo v2 `[FAILED]` spec under the suite's
+  `Running Suite:` banner is a kill; it was `crashed`, because Ginkgo prints no
+  `file.go:N:` line. Any panic in the package
   still makes it a crash, ahead of or behind the failure, Ginkgo's `[PANICKED]`
   included: the output cannot show that an assertion library printed a report.
 - **Cross prints the failure text of testify and multi-line failures.** Both

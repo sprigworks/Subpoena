@@ -749,6 +749,7 @@ func failures(raw string) []failure {
 	}
 	var fs []failure
 	blank := map[key]int{}   // test -> index in fs of the blank head being read
+	suite := map[key]bool{}  // test -> Ginkgo's "Running Suite:" banner seen
 	ginkgo := map[key]bool{} // test -> inside a Ginkgo spec's failure report
 	gomega := map[key]int{}  // test -> index in fs of the Ginkgo message being read
 	for _, e := range evs {
@@ -757,7 +758,9 @@ func failures(raw string) []failure {
 			continue
 		}
 		line := strings.TrimRight(e.Output, "\n")
-		if ginkgoReportRE.MatchString(line) {
+		if ginkgoSuiteRE.MatchString(line) {
+			suite[k] = true
+		} else if suite[k] && ginkgoReportRE.MatchString(line) {
 			ginkgo[k] = true
 		} else if m := ginkgoFailedRE.FindStringSubmatch(line); m != nil && ginkgo[k] && !strings.HasPrefix(m[1], "in [") {
 			delete(ginkgo, k)
@@ -793,14 +796,16 @@ func failures(raw string) []failure {
 // crashRE matches the first line of a panic or a runtime fatal error.
 var crashRE = regexp.MustCompile(`^(panic|fatal error): `)
 
-// Ginkgo v2's failure report. It runs a whole suite as one test and colours its
-// report, even under go test: "• [FAILED] [0.001 seconds]" opens a spec's report
+// Ginkgo v2's failure report. It runs a whole suite as one test, which opens with
+// "Running Suite:", and colours its report, even under go test: a report counts
+// only under that banner. "• [FAILED] [0.001 seconds]" opens a spec's report
 // and "[FAILED] msg" gives the message below it, down to "In [It] at:". A
 // timeline above it can hold "[FAILED] in [It] - file:line", which names no
 // failure of its own. It recovers a spec's panic, which it reports as
 // "• [PANICKED]".
 var (
 	ansiRE         = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	ginkgoSuiteRE  = regexp.MustCompile(`^Running Suite: `)
 	ginkgoReportRE = regexp.MustCompile(`^\s*• \[FAILED\] \[`)
 	ginkgoFailedRE = regexp.MustCompile(`^\s*\[FAILED\] (.*)$`)
 	ginkgoAtRE     = regexp.MustCompile(`^\s*In \[`)

@@ -316,6 +316,7 @@ func TestAssertionFrameworkFailures(t *testing.T) {
 	}
 	ginkgo := func(tag, msg string) [][2]string {
 		return [][2]string{
+			{"TestSuite", "Running Suite: x - /tmp/x"},
 			{"TestSuite", ansiRed + "• [" + tag + "] [0.001 seconds]" + ansiOff},
 			{"TestSuite", "x " + ansiRed + "[It] does a thing" + ansiOff},
 			{"TestSuite", "  " + ansiRed + "[" + tag + "] " + msg},
@@ -347,6 +348,7 @@ func TestAssertionFrameworkFailures(t *testing.T) {
 		{"ginkgo assertion", ginkgo("FAILED", "Expected redirect not to be valid"), []string{"TestSuite"},
 			EvidenceOther, "Expected redirect not to be valid", false},
 		{"ginkgo: the timeline entry is not the message, and the message runs to In [It]", [][2]string{
+			{"TestSuite", "Running Suite: x - /tmp/x"},
 			{"TestSuite", ansiRed + "• [FAILED] [0.002 seconds]" + ansiOff},
 			{"TestSuite", "  Timeline >>"},
 			{"TestSuite", "  " + ansiRed + "[FAILED] in [It] - /tmp/x/a_test.go:193 @ 11/04/26 19:45:35.1" + ansiOff},
@@ -365,6 +367,13 @@ func TestAssertionFrameworkFailures(t *testing.T) {
 		{"ginkgo: a panic first is a crash", join(ginkgo("PANICKED", "Test Panicked"), ginkgo("FAILED", "Expected 1")),
 			[]string{"TestSuite"}, "", "", true},
 		{"ginkgo panic alone", ginkgo("PANICKED", "Test Panicked"), []string{"TestSuite"}, "", "", true},
+		{"a report with no Ginkgo suite running is output", [][2]string{
+			{"TestA", "• [FAILED] [0.001 seconds]"},
+			{"TestA", "[FAILED] relayed text"}}, []string{"TestA"}, "", "", true},
+		{"a suite banner in another test proves nothing", [][2]string{
+			{"TestB", "Running Suite: x - /tmp/x"},
+			{"TestA", "• [FAILED] [0.001 seconds]"},
+			{"TestA", "[FAILED] relayed text"}}, []string{"TestA"}, "", "", true},
 		{"[FAILED] with no ginkgo report around it is output", [][2]string{{"TestA", "  [FAILED] login for bob"}},
 			[]string{"TestA"}, "", "", true},
 		{"ginkgo timeout is not an assertion", ginkgo("TIMEDOUT", "A spec timeout occurred"), []string{"TestSuite"}, "", "", true},
