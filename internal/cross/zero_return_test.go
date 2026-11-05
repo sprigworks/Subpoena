@@ -4,6 +4,10 @@ package cross
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -169,6 +173,99 @@ func check(admin bool) error {
 	}
 	if group == nil || group.Outcome == Invalid || len(group.ZeroReturns) != 1 {
 		t.Fatalf("want one replaced return in the group run, got %+v", group)
+	}
+}
+
+// Two layers in one function: the compiler names the function's end, which the
+// early return has no part in. It stays removed, so the group mutant runs on to
+// the guarded effect, and a test of that effect sees what the true mutant does.
+func TestAReturnTheFunctionCanDoWithoutIsRemovedInAGroup(t *testing.T) {
+	const src = `package mini
+
+import "errors"
+
+var ErrDenied = errors.New("denied")
+var Ran []string
+
+func audit(admin bool) error {
+	if !admin {
+		return errors.New("audit refused")
+	}
+	return nil
+}
+
+//subpoena:enforcement_point
+func denied(admin bool) error {
+	if !admin {
+		return ErrDenied //subpoena:enforcement group=g
+	}
+	Ran = append(Ran, "effect")
+	return audit(admin) //subpoena:enforcement group=g
+}
+`
+	const test = `package mini
+
+import "testing"
+
+func TestDeny(t *testing.T) {
+	Ran = nil
+	denied(false)
+	if len(Ran) != 0 {
+		t.Fatalf("effect ran=%v", Ran)
+	}
+}
+`
+	dir := module(t, map[string]string{"auth.go": src, "auth_test.go": test})
+	rep, err := Run(context.Background(), Options{Target: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group *Result
+	for i, r := range rep.Results {
+		if r.Group == "g" {
+			group = &rep.Results[i]
+		}
+	}
+	if group == nil || group.Outcome != Killed || len(group.ZeroReturns) != 1 || !strings.Contains(group.FirstFailure, "effect ran=[effect]") {
+		t.Fatalf("want a kill on the effect through one stand-in, got %+v", group)
+	}
+}
+
+// Every branch of a terminating statement ends the function, so each marked
+// return there is one it cannot end without.
+func TestTailReturn(t *testing.T) {
+	cases := []struct {
+		name, body string
+		want       []bool // for each return, in source order
+	}{
+		{"last", "return a", []bool{true}},
+		{"early", "if c { return a }; return b", []bool{false, true}},
+		{"if else", "if c { return a } else { return b }", []bool{true, true}},
+		{"else if", "if c { return a } else if d { return b } else { return e }", []bool{true, true, true}},
+		{"switch", "switch { case c: return a; default: return b }", []bool{true, true}},
+		{"type switch", "switch any(a).(type) { case int: return a; default: return b }", []bool{true, true}},
+		{"select", "select { case <-ch: return a }", []bool{true}},
+		{"block and label", "L: { return a }", []bool{true}},
+		{"statement after", "if c { return a }; panic(b)", []bool{false}},
+		{"loop", "for { if c { return a } }", []bool{false}},
+	}
+	for _, c := range cases {
+		src := "package p\nfunc f() error {\n" + c.body + "\n}\n"
+		file, err := parser.ParseFile(token.NewFileSet(), "f.go", src, 0)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		body := file.Decls[0].(*ast.FuncDecl).Body
+		var got []bool
+		ast.Inspect(body, func(n ast.Node) bool {
+			if ret, ok := n.(*ast.ReturnStmt); ok {
+				got = append(got, tailReturn(body.List, ret))
+			}
+			return true
+		})
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

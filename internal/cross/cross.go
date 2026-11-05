@@ -1250,7 +1250,49 @@ func zeroReturn(src []byte, fset *token.FileSet, fd *ast.FuncDecl, ret *ast.Retu
 	if !errorRefusal(ret.Results, isError) {
 		return "", end //subpoena:enforcement
 	}
+	if !tailReturn(body.List, ret) {
+		return "", end //subpoena:enforcement
+	}
 	return "return " + strings.Join(zeros, ", "), end
+}
+
+// tailReturn reports whether ret is one the function cannot end without: it
+// ends list, or a branch of the statement that ends list, by the language's
+// rule for a terminating statement. Any other return can go. In a group with one
+// that cannot, the compiler names the same function end for both, and a stand-in
+// here would stop the mutant where it must carry on.
+func tailReturn(list []ast.Stmt, ret *ast.ReturnStmt) bool {
+	if len(list) == 0 {
+		return false
+	}
+	clauses := func(body *ast.BlockStmt) bool {
+		return slices.ContainsFunc(body.List, func(s ast.Stmt) bool {
+			switch c := s.(type) {
+			case *ast.CaseClause:
+				return tailReturn(c.Body, ret)
+			case *ast.CommClause:
+				return tailReturn(c.Body, ret)
+			}
+			return false
+		})
+	}
+	switch s := list[len(list)-1].(type) {
+	case *ast.ReturnStmt:
+		return s == ret
+	case *ast.BlockStmt:
+		return tailReturn(s.List, ret)
+	case *ast.LabeledStmt:
+		return tailReturn([]ast.Stmt{s.Stmt}, ret)
+	case *ast.IfStmt:
+		return tailReturn(s.Body.List, ret) || s.Else != nil && tailReturn([]ast.Stmt{s.Else}, ret)
+	case *ast.SwitchStmt:
+		return clauses(s.Body)
+	case *ast.TypeSwitchStmt:
+		return clauses(s.Body)
+	case *ast.SelectStmt:
+		return clauses(s.Body)
+	}
+	return false
 }
 
 // errorRefusal reports whether a return's only news is an error, so that its
