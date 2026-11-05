@@ -20,6 +20,12 @@ Every record carries $SUBPOENA_CROSS_NONCE, and cross rejects a report line
 without it. That raises the bar only: test code runs in this process and can
 still forge a record. Both variables are removed from the environment when
 the plugin loads, so the tests do not see them by accident.
+
+Under pytest-xdist the tests run in worker processes, which start after that
+and so never see the variables. The controller hands them over in xdist's
+workerinput. Each worker writes its own records, and its last one is
+"worker_finished", since the module under test may be imported only there. A
+worker that dies is a crash, as the whole process dying is without xdist.
 """
 
 import fnmatch
@@ -38,6 +44,7 @@ _SELECTED = os.environ.pop("SUBPOENA_CROSS_SELECTED", "")
 _SELECTED = set(json.loads(_SELECTED)) if _SELECTED else None
 _COVERAGE = {os.path.realpath(p) for p in json.loads(os.environ.pop("SUBPOENA_CROSS_COVERAGE", "[]"))}
 _ROOT = os.path.realpath(os.environ.pop("SUBPOENA_CROSS_ROOT", ""))
+_WORKER_INPUT = "subpoena_cross"
 
 # Frames from these packages are assertion machinery, not where a failure
 # came from: skip past them to the code that called them.
@@ -47,8 +54,31 @@ _HELPERS = {"_pytest", "pytest", "pluggy", "unittest", "subpoena"}
 def _write(rec):
     if _REPORT:
         rec["nonce"] = _NONCE
-        with open(_REPORT, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec) + "\n")
+        # One write on an append descriptor: xdist workers share the file.
+        fd = os.open(_REPORT, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, (json.dumps(rec) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+
+
+def pytest_configure(config):
+    global _REPORT, _NONCE, _MUTATED_FILES
+    settings = getattr(config, "workerinput", {}).get(_WORKER_INPUT)
+    if settings:
+        _REPORT, _NONCE, _MUTATED_FILES = settings["report"], settings["nonce"], settings["mutated"]
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_configure_node(node):
+    node.workerinput[_WORKER_INPUT] = {"report": _REPORT, "nonce": _NONCE, "mutated": _MUTATED_FILES}
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error):
+    if error:
+        _write({"kind": "failure", "test": f"xdist worker {node.gateway.id}", "when": "worker",
+                "verdict": "crash", "assertion": False, "type": "WorkerDied", "message": str(error)[:2000]})
 
 
 def _frames(excinfo):
@@ -169,5 +199,6 @@ def pytest_runtest_protocol(item, nextitem):
 
 def pytest_sessionfinish(session, exitstatus):
     loaded = {os.path.realpath(getattr(m, "__file__", "") or "") for m in list(sys.modules.values())}
-    all_loaded = all(os.path.realpath(path) in loaded for path in _MUTATED_FILES)
-    _write({"kind": "finished", "exitstatus": int(exitstatus), "mutated_loaded": all_loaded})
+    missing = [path for path in _MUTATED_FILES if os.path.realpath(path) not in loaded]
+    kind = "worker_finished" if hasattr(session.config, "workerinput") else "finished"
+    _write({"kind": kind, "exitstatus": int(exitstatus), "missing": missing})

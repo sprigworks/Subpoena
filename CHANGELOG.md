@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Python cross works under pytest-xdist.** Workers start after the plugin
+  takes its settings out of the environment, so they recorded nothing: with
+  `-- -n 4`, a real kill came back `crashed`, or `invalid` if only workers
+  imported the module. Workers now record their own failures and imports, and
+  a worker that dies is a crash. `-select` stops with a reason under `-n`.
 - **Python cross forces a guard that spans lines.** `if check(\n    x,\n):`
   became `if False\n\n:`, a SyntaxError, so the mutant came back `invalid`.
   The forced condition keeps its line breaks in brackets now.

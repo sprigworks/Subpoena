@@ -434,11 +434,13 @@ def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, L
         return INVALID, [], "", ""
     if any(r.get("verdict") == "invalid" for r in fails):
         return INVALID, [r["test"] for r in fails], "", ""
-    if finished and not finished[-1].get("mutated_loaded", True):
-        return INVALID, [], "", ""
+    workers = [r for r in records if r.get("kind") == "worker_finished"]
+    if finished and set.intersection(*(set(r.get("missing", [])) for r in finished[-1:] + workers)):
+        return INVALID, [], "", ""  # no process of the run imported it
     if code == 0 and finished:
         return SURVIVED, [], "", ""
-    if code != 1 or not finished:
+    # xdist ends a run stopped by -x as interrupted, exit 2, not as failed.
+    if (code != 1 and not (code == 2 and workers)) or not finished:
         return CRASHED, [], "", ""  # the process died, or pytest stopped abnormally
     assertion = [r for r in fails if r.get("verdict") == "assertion"]
     crashed = [r for r in fails if r.get("verdict") != "assertion"]
@@ -588,6 +590,8 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
             raise CrossError("cross: baseline suite is not green, cannot judge mutants:\n" + _tail(out, 40))
         selected_tests = {}
         if select:
+            if any(r.get("kind") == "worker_finished" for r in records):
+                raise CrossError("cross: select: per-test coverage needs one process; drop pytest-xdist's -n")
             collected = [r for r in records if r.get("kind") == "collected"]
             if len(collected) != 1 or not isinstance(collected[0].get("tests"), list):
                 raise CrossError("cross: select: missing test collection report")

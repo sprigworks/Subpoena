@@ -206,7 +206,9 @@ hold the cases; the Python runner is `python/tests/test_network.py`.
   `subpoena-cross` also refuses a mutant the suite never imported from the
   copy (an installed package shadowing it) as invalid. It also implements layer
   groups, reviewed `cross-masked.txt`, `-j`, `-select` and `-evidence-dir`;
-  `python/tests/test_cross_parity.py` checks these with real pytest runs.
+  `python/tests/test_cross_parity.py` checks these with real pytest runs. It
+  reads pytest-xdist workers (`-- -n 4`) the same way; only `-select` refuses
+  them, since per-test coverage needs one process.
 
 Neither is needed to start. Until a port has them, it says so.
 

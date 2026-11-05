@@ -512,7 +512,7 @@ def test_forged_report_is_not_a_kill(tmp_path):
                 f.write(json.dumps({"kind": "failure", "test": "test_auth.py::test_denied", "when": "call",
                                     "verdict": "assertion", "assertion": True, "type": "AssertionError",
                                     "message": "forged"}) + "\\n")
-                f.write(json.dumps({"kind": "finished", "exitstatus": 1, "mutated_loaded": True}) + "\\n")
+                f.write(json.dumps({"kind": "finished", "exitstatus": 1, "missing": []}) + "\\n")
     """})
     assert r.outcome == CRASHED and rep.failed()
 
@@ -717,3 +717,136 @@ def test_forcing_a_multi_line_guard_keeps_every_line_where_it_was():
     mutated = cross.apply(data, m)
     compile(mutated, "x.py", "exec")
     assert mutated.count(b"\n") == data.count(b"\n")
+
+
+# pytest-xdist runs the tests in workers: another process, started after the
+# plugin took its settings out of the environment.
+XDIST = ["-n", "2"]
+
+
+def test_xdist_assertion_is_a_kill(tmp_path):
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        from auth import DENIED, allow
+        def test_denied():
+            assert allow(False) == DENIED
+        def test_allowed():
+            assert allow(True) is None
+    """}, pytest_args=XDIST)
+    assert r.outcome == KILLED and r.evidence == "other", r.output
+    assert r.first_failure.startswith("assert None ==")
+
+
+def test_xdist_keeps_the_witness_tag(tmp_path):
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        from auth import DENIED, allow
+        def test_denied():
+            assert allow(False) == DENIED, "witness: it ran"
+    """}, pytest_args=XDIST)
+    assert r.outcome == KILLED and r.evidence == "witness", r.output
+
+
+def test_xdist_survivor_stays_a_survivor(tmp_path):
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        from auth import allow
+        def test_allowed():
+            assert allow(True) is None
+    """}, pytest_args=XDIST)
+    assert r.outcome == SURVIVED, r.output
+
+
+def test_xdist_exception_in_a_worker_is_a_crash(tmp_path):
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        from auth import DENIED, allow
+        def test_denied():
+            if allow(False) != DENIED:
+                raise RuntimeError("boom")
+    """}, pytest_args=XDIST)
+    assert r.outcome == CRASHED, r.output
+
+
+def test_xdist_dead_worker_is_a_crash_beside_a_kill(tmp_path):
+    # One worker fails cleanly, the other dies: the process that died proves
+    # nothing, and in a single process it would have been a crash.
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        import os, time
+        from auth import DENIED, allow
+        def test_dies():
+            if allow(False) != DENIED:
+                os._exit(3)
+        def test_denied():
+            time.sleep(1)
+            assert allow(False) == DENIED
+    """}, pytest_args=XDIST + ["--maxfail=2"])
+    assert r.outcome == CRASHED, r.output
+
+
+def test_xdist_never_imported_is_invalid(tmp_path):
+    # No worker imports the mutated file, so the suite proved nothing about it.
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        def test_nothing():
+            assert False is False
+    """}, pytest_args=XDIST)
+    assert r.outcome == INVALID, r.output
+
+
+def test_xdist_files_loaded_in_different_workers_count(tmp_path):
+    # A group across two files: neither worker need import both.
+    rep = cross.run(project(tmp_path, {
+        "a.py": AUTH.replace("subpoena:enforcement\n", "subpoena:enforcement group=g\n"),
+        "b.py": AUTH.replace("subpoena:enforcement\n", "subpoena:enforcement group=g\n"),
+        "test_a.py": """
+            import time
+            def test_a():
+                from a import DENIED, allow
+                time.sleep(0.5)
+                assert allow(False) == DENIED
+        """,
+        "test_b.py": """
+            import time
+            def test_b():
+                from b import DENIED, allow
+                time.sleep(0.5)
+                assert allow(False) == DENIED
+        """}), pytest_args=XDIST + ["--dist=loadfile"])
+    assert [r.outcome for r in rep.results] == [KILLED, KILLED, KILLED], [r.output for r in rep.results]
+
+
+def test_xdist_report_is_kept_in_the_evidence(tmp_path):
+    evidence = tmp_path / "ev"
+    src = tmp_path / "src"
+    src.mkdir()
+    rep = cross.run(project(src, {"auth.py": AUTH, "test_auth.py": """
+        from auth import DENIED, allow
+        def test_denied():
+            assert allow(False) == DENIED
+    """}), pytest_args=XDIST, evidence_dir=str(evidence))
+    assert rep.results[0].outcome == KILLED
+    records = (evidence / os.path.basename(rep.results[0].evidence_file)).with_suffix(".jsonl").read_text()
+    assert '"kind": "failure"' in records
+
+
+def test_xdist_with_selection_says_why_it_stops(tmp_path):
+    with pytest.raises(CrossError, match="drop pytest-xdist"):
+        cross.run(project(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+            from auth import DENIED, allow
+            def test_denied():
+                assert allow(False) == DENIED
+        """}), pytest_args=XDIST, select=True)
+
+
+def test_interrupted_run_without_workers_is_a_crash():
+    # Exit 2 passes only as xdist's -x. Elsewhere pytest was interrupted.
+    records = [{"kind": "failure", "test": "t", "verdict": "assertion", "message": "m"},
+               {"kind": "finished", "exitstatus": 2, "missing": []}]
+    assert cross.classify(2, records, "")[0] == CRASHED
+    assert cross.classify(2, records + [{"kind": "worker_finished", "missing": []}], "")[0] == KILLED
+
+
+def test_a_file_one_process_loaded_is_loaded():
+    fail = {"kind": "failure", "test": "t", "verdict": "assertion", "message": "m"}
+    done = {"kind": "finished", "exitstatus": 1, "missing": ["a.py", "b.py"]}
+    w1 = {"kind": "worker_finished", "missing": ["b.py"]}
+    w2 = {"kind": "worker_finished", "missing": ["a.py"]}
+    w3 = {"kind": "worker_finished", "missing": ["a.py", "b.py"]}
+    assert cross.classify(1, [fail, w1, w2, done], "")[0] == KILLED
+    assert cross.classify(1, [fail, w1, w3, done], "")[0] == INVALID
