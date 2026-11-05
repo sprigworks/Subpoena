@@ -187,7 +187,7 @@ func TestFirstFailureCrashes(t *testing.T) {
 			`{"Action":"output","Package":"p","Test":"TestP","Output":"panic: recovered and expected\n"}`,
 			`{"Action":"pass","Package":"p","Test":"TestP"}`,
 			`{"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:9: witness: spawned\n"}`,
-			`{"Action":"fail","Package":"p","Test":"TestA"}`), true, ""},
+			`{"Action":"fail","Package":"p","Test":"TestA"}`), false, "witness: spawned"},
 		{"one package crashes, another kills", j(
 			`{"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:3: setup\n"}`,
 			`{"Action":"output","Package":"p","Test":"TestA","Output":"panic: boom\n"}`,

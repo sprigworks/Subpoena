@@ -113,9 +113,16 @@ tested. A package whose test binary died (a panic, a runtime fatal error or
 look like failure messages; a clean failure in another package still counts.
 That holds for an assertion library's report too: `go test -json` carries it as
 plain text, which the code under test can print, so a testify or Ginkgo failure
-ahead of a panic is a crash. Ginkgo reports a recovered panic as `[PANICKED]`,
+ahead of a panic is a crash. Cross reads the death from the binary's exit code,
+which it records through `go test -exec`, since `go test -json` does not give
+it: anything but 1 is a death, wherever the panic's text fell, even beside
+another writer's open line. A `panic:` line also voids a package's kills when it
+sits in a test that did not pass, so a panic something recovered, with the
+binary exiting 1, stays a crash. In a test that passed it is a log line, and
+order does not matter: the binary lived. Ginkgo reports a recovered panic as `[PANICKED]`,
 which counts as a crash wherever it falls in the suite, since Ginkgo runs a suite
-as one test in random order. Mutant runs use `go test -json -failfast`, so a
+as one test in random order. Failures outside any test never count: a line
+printed while `TestMain` or `init` ran is package output, whatever its shape. Mutant runs use `go test -json -failfast`, so a
 package stops at its first red test. Each kill reports its first evidence, the
 first failure message of a failed test: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`

@@ -567,7 +567,13 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			args = append(args, "-run", f)
 			fmt.Fprintf(o.Log, "  selected tests: %s\n", f)
 		}
-		testOut, testErr = goIn(ctx, o.Timeout, sb, append(args, pkgs)...)
+		exits, err := newExitLog()
+		if err != nil {
+			return res, err
+		}
+		defer exits.remove()
+		testOut, testErr = goIn(ctx, o.Timeout, sb, append(append(args, exits.args()...), pkgs)...)
+		testOut += exits.events(testOut, sb.dir)
 	}
 	if ctx.Err() != nil {
 		return res, fmt.Errorf("cross: run stopped: %w", ctx.Err()) //subpoena:enforcement
@@ -684,10 +690,10 @@ func (f *failure) addLine(line string) {
 // a test that failed (a skipped or passing test's log lines don't count).
 // crashed is true when no failed test gave one cleanly: the binary died by a
 // panic, a runtime fatal error or os.Exit, or failed without a message. A
-// package with a crash line anywhere in its output gives no kills at all, since
-// a test's log lines before its panic look just like failure messages, and so
-// does an assertion library's report: go test -json carries both as plain text,
-// which the code under test can print. t.Log and t.Error print the same way, so a failed test's log line counts as its first
+// package whose binary died gives no kills at all, since a test's log lines
+// before its panic look just like failure messages, and so does an assertion
+// library's report: go test -json carries both as plain text, which the code
+// under test can print. t.Log and t.Error print the same way, so a failed test's log line counts as its first
 // failure: tagged, it can set ev; untagged, it hides a witness failure after it.
 func firstFailure(raw string) (ev Evidence, msg string, crashed bool) {
 	fs := failures(raw)
@@ -720,8 +726,13 @@ func witnessFailure(raw string) string {
 }
 
 // failures lists, in order, the failure messages of failed tests. A package
-// with a crash line anywhere gives none, whatever came first: Ginkgo runs a
-// suite as one test, in random order, so order must not decide.
+// gives none, whatever came first, if its test binary exited with anything but
+// 1, or a crash line sits in the output of a test that did not pass: Ginkgo runs
+// a suite as one test, in random order, so order must not decide. The exit code
+// sees a real panic wherever its text fell, even beside an open line. The text
+// is for a panic that something recovered, as Ginkgo does, and only a test that
+// did not pass can hold one: a binary that died ended no test with a pass, and
+// in one that lived, a passing test's line is a log line.
 //
 //subpoena:enforcement_point
 func failures(raw string) []failure {
@@ -730,7 +741,7 @@ func failures(raw string) []failure {
 	}
 	type key [2]string
 	var evs []event
-	failed, dead := map[key]bool{}, map[string]bool{}
+	failed, passed, crash, dead := map[key]bool{}, map[key]bool{}, map[key]bool{}, map[string]bool{}
 	for _, line := range strings.Split(raw, "\n") {
 		var e event
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
@@ -742,10 +753,21 @@ func failures(raw string) []failure {
 		switch e.Action {
 		case "fail":
 			failed[k] = true
+		case "pass":
+			passed[k] = true
 		case "output":
 			if crashRE.MatchString(e.Output) || ginkgoPanicRE.MatchString(e.Output) {
+				crash[k] = true
+			}
+		case exitAction:
+			if e.Output != "1" {
 				dead[e.Package] = true //subpoena:enforcement
 			}
+		}
+	}
+	for k := range crash {
+		if !passed[k] {
+			dead[k[0]] = true //subpoena:enforcement
 		}
 	}
 	var fs []failure
@@ -826,6 +848,96 @@ var (
 	ginkgoAtRE     = regexp.MustCompile(`^\s*In \[`)
 	ginkgoPanicRE  = regexp.MustCompile(`^\s*• \[PANICKED\] \[`)
 )
+
+// exitAction is the action of an event cross adds to go test -json output,
+// carrying a failed package's exit code. go test prints no "exit status" line
+// for a test binary that printed anything, and its events hold no exit code, so
+// cross runs each binary under -exec with a wrapper that records it. The events
+// are top-level lines: what a test prints is carried inside an Output, so the
+// code under test cannot write one.
+const exitAction = "subpoena-exit"
+
+// exitUnknown is the code of a failed package whose binary left no record.
+const exitUnknown = "unknown"
+
+func exitEvent(pkg, code string) string {
+	b, _ := json.Marshal(struct{ Action, Package, Output string }{exitAction, pkg, code})
+	return string(b)
+}
+
+// exitLog records the exit code of each test binary of one go test run.
+type exitLog struct {
+	dir string // "" where there is no sh to run the wrapper: the text alone decides
+}
+
+func newExitLog() (*exitLog, error) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		return &exitLog{}, nil
+	}
+	dir, err := os.MkdirTemp("", "subpoena-cross-exit-")
+	if err != nil {
+		return nil, err
+	}
+	script := "#!/bin/sh\n\"$@\"\ncode=$?\necho \"$code $(pwd -P)\" >> '" + filepath.Join(dir, "codes") + "'\nexit $code\n"
+	return &exitLog{dir: dir}, os.WriteFile(filepath.Join(dir, "wrap"), []byte(script), 0o755)
+}
+
+func (l *exitLog) remove() {
+	if l.dir != "" {
+		os.RemoveAll(l.dir)
+	}
+}
+
+// args are the go test flags that run each test binary under the wrapper.
+func (l *exitLog) args() []string {
+	if l.dir == "" {
+		return nil
+	}
+	return []string{"-exec", "sh '" + filepath.Join(l.dir, "wrap") + "'"}
+}
+
+// events gives an exit event for each package that failed in raw, a run in the
+// module copy at root. go test runs a binary in its package's directory, which
+// names the package. A failed package with no record is exitUnknown, and counts
+// as dead.
+func (l *exitLog) events(raw, root string) string {
+	if l.dir == "" {
+		return ""
+	}
+	codes := map[string]string{}
+	base, err := filepath.EvalSymlinks(root)
+	if b, rerr := os.ReadFile(filepath.Join(l.dir, "codes")); err == nil && rerr == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if code, dir, ok := strings.Cut(line, " "); ok {
+				if rel, err := filepath.Rel(base, dir); err == nil {
+					codes[filepath.ToSlash(rel)] = code
+				}
+			}
+		}
+	}
+	modPath := ""
+	if gomod, err := os.ReadFile(filepath.Join(root, "go.mod")); err == nil {
+		if m := moduleRE.FindSubmatch(gomod); m != nil {
+			modPath = string(m[1])
+		}
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(raw, "\n") {
+		var e struct{ Action, Package, Test string }
+		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || e.Action != "fail" || e.Test != "" {
+			continue
+		}
+		code, ok := codes[strings.TrimPrefix(strings.TrimPrefix(e.Package, modPath), "/")]
+		if e.Package == modPath {
+			code, ok = codes["."]
+		}
+		if !ok {
+			code = exitUnknown
+		}
+		b.WriteString(exitEvent(e.Package, code) + "\n")
+	}
+	return b.String()
+}
 
 // baselineReason says why a baseline run failed. Timeouts come first and
 // apart, since a timeout on a busy host is not a red test, and their output

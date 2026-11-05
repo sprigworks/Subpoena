@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Cross reads a test binary's exit code.** A panic beside another writer's
+  open line (`....panic: runtime error`) matched no crash line, so a real panic
+  came back a kill about half the time. `go test -json` gives no exit code, so
+  cross records it through `go test -exec`, and any exit but 1 is a death. That
+  also settles a `panic:` line a passing test printed, say from a recover
+  middleware: the binary lived, so the line voids no kill, in either test order.
+  It did before, but only when the printing test ran first. A `panic:` line in a
+  test that did not pass still voids the package's kills.
 - **Output outside a test is never a failure message.** A `file.go:N:` line
   printed while `TestMain` or `init` ran, then an exit, was a kill with no test
   failed, and a `witness:` tag on that line passed `-require-witness`. It is a
@@ -50,8 +58,8 @@
   now builds its copies with `-buildvcs=false`.
 - **Cross reads Ginkgo failures.** A Ginkgo v2 `[FAILED]` spec under the suite's
   `Running Suite:` banner is a kill; it was `crashed`, because Ginkgo prints no
-  `file.go:N:` line. Any panic in the package still makes it a crash, ahead of
-  or behind the failure, Ginkgo's `[PANICKED]` included: the output cannot show
+  `file.go:N:` line. A panic beside it still makes it a crash, ahead of or
+  behind the failure, Ginkgo's `[PANICKED]` included: the output cannot show
   that an assertion library printed a report. A `witness:` tag counts only when
   a report holds one message, since its timeline prints the spec's log lines.
 - **Cross prints the failure text of testify and multi-line failures.** Both
