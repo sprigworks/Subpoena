@@ -9,8 +9,8 @@ A failure's verdict:
 - invalid: a SyntaxError in the mutated file, raised when a test imported it.
 - assertion: an AssertionError, pytest.fail or failed pytest.raises whose
   innermost frame, past pytest's and subpoena's own helper frames, is in test
-  code: a module pytest collects as tests (python_files), a conftest.py, or
-  the failing test's own file. One raised wholly inside subpoena's helpers,
+  code: a file pytest collected a test from, or a conftest.py. A file's name
+  decides nothing: python_files can match production code. One raised wholly inside subpoena's helpers,
   run by pytest (a watch_spawns finalizer), is an assertion too. So is
   webtest's check of a status the test stated, read the same way: webtest
   raises its own AppError for it, not an AssertionError. A 5xx is not one: see
@@ -29,7 +29,6 @@ workerinput. Each worker writes its own records, and its last one is
 worker that dies is a crash, as the whole process dying is without xdist.
 """
 
-import fnmatch
 import json
 import os
 import sys
@@ -46,6 +45,9 @@ _SELECTED = set(json.loads(_SELECTED)) if _SELECTED else None
 _COVERAGE = {os.path.realpath(p) for p in json.loads(os.environ.pop("SUBPOENA_CROSS_COVERAGE", "[]"))}
 _ROOT = os.path.realpath(os.environ.pop("SUBPOENA_CROSS_ROOT", ""))
 _WORKER_INPUT = "subpoena_cross"
+
+# The files pytest collected a test from, ahead of any deselection.
+_TEST_FILES = set()
 
 # Frames from these packages are assertion machinery, not where a failure
 # came from: skip past them to the code that called them.
@@ -92,17 +94,8 @@ def _frames(excinfo):
     return out
 
 
-def _is_test_file(item, filename):
-    base = os.path.basename(filename)
-    if base == "conftest.py":
-        return True
-    try:
-        if os.path.realpath(filename) == os.path.realpath(str(item.path)):
-            return True
-    except (OSError, AttributeError):
-        pass
-    patterns = item.config.getini("python_files") or ["test_*.py", "*_test.py"]
-    return any(fnmatch.fnmatch(base, p) for p in patterns)
+def _is_test_file(filename):
+    return os.path.basename(filename) == "conftest.py" or os.path.realpath(filename) in _TEST_FILES
 
 
 def _same_file(a, b):
@@ -140,7 +133,7 @@ def _verdict(item, excinfo):
     for pkg, filename in reversed(frames):
         if pkg in _HELPERS or (status_check and pkg == "webtest"):
             continue
-        return "assertion" if _is_test_file(item, filename) else "crash"
+        return "assertion" if _is_test_file(filename) else "crash"
     # Raised and run wholly by pytest and subpoena: a subpoena teardown check.
     return "assertion" if any(pkg == "subpoena" for pkg, _ in frames) else "crash"
 
@@ -163,6 +156,7 @@ def pytest_collectreport(report):
 
 @pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(session, config, items):
+    _TEST_FILES.update(os.path.realpath(str(item.path)) for item in items)
     if _SELECTED is None:
         return
     available = {item.nodeid for item in items}

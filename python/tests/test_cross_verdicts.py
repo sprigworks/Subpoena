@@ -133,3 +133,62 @@ def test_the_tests_own_message_still_carries_the_tag(tmp_path):
     assert r.outcome == KILLED and r.evidence == "witness" and r.first_failure == "witness: it ran"
 
 
+# --- test code is what pytest collected (a2-named, a1-pyfiles) ---
+
+HELPED = '''
+from limit_test import use
+
+# subpoena:enforcement_point
+def gate(user):
+    if user == "mallory":
+        return None  # subpoena:enforcement
+    return use(user)
+'''
+
+INVARIANT = '''
+def use(user):
+    assert user != "mallory", "internal invariant"
+    return "ok"
+'''
+
+
+def test_an_assert_in_a_module_named_like_a_test_is_a_crash(tmp_path):
+    r = outcome(tmp_path, {"auth.py": HELPED, "limit_test.py": INVARIANT, "test_auth.py": """
+        from auth import gate
+        def test_denied():
+            gate("mallory")
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_an_assert_under_python_files_star_is_a_crash(tmp_path):
+    r = outcome(tmp_path, {"pytest.ini": "[pytest]\npython_files = *.py\n", "auth.py": '''
+# subpoena:enforcement_point
+def gate(user):
+    if user == "mallory":
+        return None  # subpoena:enforcement
+    assert user != "mallory", "internal invariant"
+    return "ok"
+''', "test_auth.py": """
+        from auth import gate
+        def test_denied():
+            gate("mallory")
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_an_assert_in_another_collected_test_file_is_test_code(tmp_path):
+    r = outcome(tmp_path, {"auth.py": GATE, "test_helpers.py": """
+        def check(value):
+            assert value == {"denied": True}, "not denied"
+        def test_check():
+            check({"denied": True})
+    """, "test_auth.py": """
+        from auth import gate
+        from test_helpers import check
+        def test_denied():
+            check(gate("mallory"))
+    """})
+    assert r.outcome == KILLED
+
+

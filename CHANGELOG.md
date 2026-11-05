@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Python test code is what pytest collected.** A file counted as test code by
+  its name, so an `assert` in a production `limit_test.py`, or anywhere under
+  `python_files = *.py`, was a kill. It is a crash now, as any assert in the code
+  under test is, unless pytest collected a test from that file.
 - **A kill needs its tests to pass without the mutant.** A suite that went red
   for any reason was a kill: a file a test left in the shared copy, a marker
   outside it, a flake, with the enforcement never called. Each Go case now gets

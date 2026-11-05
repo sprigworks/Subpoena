@@ -18,8 +18,8 @@ that can carry the allow decision, so it is invalid. Mark the guard. Verdicts:
 
 - killed: a test failed on an assertion raised from test code: an
   AssertionError, pytest.fail or a failed pytest.raises whose innermost frame
-  (past pytest's and subpoena's own helpers) is in a test module (pytest's
-  python_files, conftest.py, or the failing test's own file), or a subpoena
+  (past pytest's and subpoena's own helpers) is in test code (a file pytest
+  collected a test from, or a conftest.py), or a subpoena
   teardown check such as watch_spawns, or webtest's check of the status a test
   expected. An assert in the code under test is a crash, as a panic is in Go.
 - unconfirmed: a kill, but a test that failed also failed in one of _RERUNS
