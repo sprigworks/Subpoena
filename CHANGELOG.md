@@ -30,6 +30,23 @@
 - **The Python Sinkhole reads a request as Go's does,** including what `http.ReadRequest` refuses
   and marks in UTF-8, from one table, `conformance/sinkhole.yaml`.
 
+- **A witness file must name the capture a claim needs.** Every start record now
+  lists its capture, with `file` and `row` beside `exec` and `delivery`, and every
+  absence claim reads it in Go and Python: a file that does not name the capture is
+  Inconclusive, however healthy. `subpoena-witness -file-root`, `FileWatch.WriteLog`
+  and `subpoena-witness db` write the new names. **A file from before this change, or
+  one written by hand with no `captures`, no longer passes.** Python gains `no_row`.
+  Only a start record's `roots` count.
+- **`execbpf` has `netbpf`'s checks.** A recursion miss, a task leaving its session and
+  a path too long to walk fail `Health`, and a session past 8 levels is attributed
+  where it was missed. `Start` refuses a root no cgroup name can match.
+- **The delivery witness reports a source route and `SO_BROADCAST`.** A send with an IP
+  source route adds its first hop as a peer on port 0, or an unknown peer if the
+  route cannot be read. A delivery line gains `broadcast`, and `NoDelivery`, `DeliveryTo`
+  and `Never` are Inconclusive on a broadcast or multicast send on the rule's port.
+  A cgroup elsewhere that shares the root's name no longer fails `Health`.
+- **`subpoena-witness -file-root` no longer hangs on a stalled output**, and refuses
+  `-out` or `-ready` under a watched root.
 - **The file witness no longer overstates.** A SQLite table claim is Inconclusive
   for a virtual table, whose rows are on no page of its own, and the reader now
   names any table whose schema row changed or whose pages changed owner, so a

@@ -10,13 +10,13 @@
 # no_delivery: the verdict of the no-delivery check for that trace ID, about the
 # peers in no_delivery_peers (none named: every send).
 # committed: the verbs of the committed row lines (a database witness), per trace
-# ID, in file order.
+# ID, in file order. no_row: the verdict of the no-row check for that trace ID.
 traces: {A: c0de00000000000000000000000000a1, B: c0de00000000000000000000000000b2, C: c0de00000000000000000000000000c3}
 cases:
   # One capture window closed by a healthy stop: absence rests on it.
   - name: healthy_window
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:01Z","pid":8,"ppid":1,"host_pid":4008,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000b2","trace_id":"c0de00000000000000000000000000b2","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
@@ -52,7 +52,7 @@ cases:
   # The witness was killed, or the file read before it stopped.
   - name: never_stopped
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
     health: "never stopped"
     spawned:
@@ -64,7 +64,7 @@ cases:
   # The stop record says kernel events were lost.
   - name: lost_events
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":false,"error":"execbpf: lost 3 kernel event(s)"}'
     health: "lost 3 kernel event(s)"
     spawned:
@@ -75,7 +75,7 @@ cases:
   # A stop that claims health but carries an error is unhealthy.
   - name: healthy_with_error
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"error":"write: disk full"}'
     health: "disk full"
     spawned:
@@ -87,7 +87,7 @@ cases:
   - name: exec_outside_window
     lines:
       - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "outside any capture window"
     spawned:
@@ -99,10 +99,10 @@ cases:
   # Two runs appended to one file, each closed by a healthy stop.
   - name: two_windows
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
-      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:01:01Z","pid":9,"ppid":1,"host_pid":4009,"comm":"curl","exe":"/usr/bin/x","command":"curl x","args":["curl","x"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:01:09Z","record":"stop","healthy":true}'
     health: "2 capture windows"
@@ -115,10 +115,10 @@ cases:
   # An exec after one stop and before the next start.
   - name: exec_between_windows
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
       - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "outside any capture window"
     spawned:
@@ -129,8 +129,8 @@ cases:
   # A second start before the first window stopped.
   - name: start_inside_window
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "still open"
     spawned:
@@ -151,7 +151,7 @@ cases:
   # A record kind this reader does not know is an error, never skipped.
   - name: unknown_record
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time": "2026-10-28T12:00:05Z", "record": "pause"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "unknown record"
@@ -165,14 +165,14 @@ cases:
   # healthy of the wrong type: the read fails.
   - name: healthy_not_a_boolean
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":"yes"}'
     read_error: "line 2"
 
   # A line cut mid-object: the read fails, it is never skipped.
   - name: malformed_line
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:01Z","pid":7,'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -180,7 +180,7 @@ cases:
   # NaN is not JSON: the read fails.
   - name: nan_value
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:01Z","pid":NaN,"ppid":1,"trace_id":"c0de00000000000000000000000000a1"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -188,28 +188,28 @@ cases:
   # A record at the zero time has no time.
   - name: zero_time
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"0001-01-01T00:00:00Z","record":"stop","healthy":true}'
     read_error: "no time"
 
   # A time without a zone is not RFC 3339: the read fails.
   - name: time_without_zone
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09","record":"stop","healthy":true}'
     read_error: "line 2"
 
   # A numeric time: the read fails.
   - name: time_not_a_string
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":5,"record":"stop","healthy":true}'
     read_error: "line 2"
 
   # A key that differs from a known one only by case is refused, so no reader takes it for that field.
   - name: key_in_another_case
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:01Z","pid":7,"ppid":1,"host_pid":4007,"comm":"sleep","exe":"/usr/bin/x","command":"sleep 1","args":["sleep","1"],"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","Record":"stop","healthy":true}'
     read_error: "another case"
@@ -217,7 +217,7 @@ cases:
   # A stop that does not say healthy is unhealthy.
   - name: stop_without_healthy
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop"}'
     health: "capture unhealthy"
     no_spawn:
@@ -226,7 +226,7 @@ cases:
   # A stop with healthy null is unhealthy.
   - name: healthy_null
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":null}'
     health: "capture unhealthy"
     no_spawn:
@@ -235,9 +235,9 @@ cases:
   # A healthy second window does not clear the first window's fault.
   - name: unhealthy_then_healthy
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:05Z","record":"stop","healthy":false,"error":"ring buffer lost 3 events"}'
-      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:01:09Z","record":"stop","healthy":true}'
     health: "capture unhealthy"
     no_spawn:
@@ -246,9 +246,9 @@ cases:
   # A start after the last stop: that capture never stopped.
   - name: trailing_start
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
-      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:01:00Z","record":"start","healthy":false,"captures":["exec"]}'
     health: "never stopped"
     no_spawn:
       C: Inconclusive
@@ -256,7 +256,7 @@ cases:
   # An integer outside the range its field is decoded into (uint64 for cgroup_id): the read fails.
   - name: cgroup_id_negative
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:00Z","cgroup_id":-1}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -264,7 +264,7 @@ cases:
   # int64 for the PIDs: one past its maximum fails the read.
   - name: pid_past_int64
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:01Z","pid":9223372036854775808,"trace_id":"c0de00000000000000000000000000a1"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -272,7 +272,7 @@ cases:
   # The largest cgroup ID is still a cgroup ID.
   - name: cgroup_id_max
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:01Z","pid":7,"cgroup_id":18446744073709551615,"trace_id":"c0de00000000000000000000000000a1"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
@@ -284,7 +284,7 @@ cases:
   # A null integer is the same as an absent one: the exec still counts.
   - name: integer_null
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-10-28T12:00:01Z","pid":null,"cgroup_id":null,"trace_id":"c0de00000000000000000000000000a1"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
@@ -297,7 +297,7 @@ cases:
   # A file event is returned for every trace: inotify cannot tell them apart.
   - name: file_events_for_every_trace
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"create","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
@@ -312,7 +312,7 @@ cases:
   # Nothing seen, on a healthy capture of a watched root.
   - name: file_nothing_seen
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
     wrote:
@@ -324,7 +324,7 @@ cases:
   # A change elsewhere under the root is not about this path.
   - name: file_seen_elsewhere
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/log","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
@@ -335,7 +335,7 @@ cases:
   # A path is matched with everything below it, on a directory boundary.
   - name: file_below_the_path
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/secret/deep","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/secrets","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
@@ -347,7 +347,7 @@ cases:
   # A rename of a directory above the path moved it with no event naming it.
   - name: file_rename_above_the_path
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"rename","path":"/r/dir","root":"/r","is_dir":true,"source":"inotify","attribution":"root","rename":"from","cookie":7}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
@@ -358,7 +358,7 @@ cases:
   # A path outside the roots could never be seen: no absence rests on it.
   - name: file_path_not_watched
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
     no_write:
@@ -368,7 +368,7 @@ cases:
   # A start record naming no roots covers no path.
   - name: file_no_roots
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
     no_write:
@@ -379,7 +379,7 @@ cases:
   # nothing under it either. An exec witness's file looks like this.
   - name: file_no_roots_no_paths
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
     no_write:
@@ -388,7 +388,7 @@ cases:
   # A line is still a line with no roots to put it under.
   - name: file_no_roots_with_a_line
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
@@ -398,7 +398,7 @@ cases:
   # A path through a symlink is spelled another way, or lands outside the root.
   - name: file_path_crosses_a_symlink
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"symlinks":["/r/current"]}'
     health: "ok"
     no_write:
@@ -408,7 +408,7 @@ cases:
   # A symlink elsewhere, or inside a claimed directory, is not crossed.
   - name: file_path_beside_a_symlink
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"symlinks":["/r/dir/link"]}'
     health: "ok"
     no_write:
@@ -418,7 +418,7 @@ cases:
   # Closed with no write seen: all a change by mmap or native AIO may leave.
   - name: file_silent_close
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"silent_closes":["/r/dir/a"]}'
     health: "ok"
     no_write:
@@ -428,7 +428,7 @@ cases:
   # With no paths the claim is about everything, so any silent close counts.
   - name: file_silent_close_no_paths
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"silent_closes":["/r/a"]}'
     health: "ok"
     no_write:
@@ -436,7 +436,7 @@ cases:
 
   - name: file_silent_close_elsewhere
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"silent_closes":["/r/a"]}'
     health: "ok"
     no_write:
@@ -446,7 +446,7 @@ cases:
   # What the check at stop found counts as any other line.
   - name: file_found_by_the_stop_check
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:08Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"stat","attribution":"root"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
@@ -457,7 +457,7 @@ cases:
   # The queue overflowed: what was seen stands, silence proves nothing.
   - name: file_overflow
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":false,"error":"file witness: 1 gap(s), first: overflow: events lost","coverage":"overflows=1"}'
     health: "overflow"
@@ -469,7 +469,7 @@ cases:
   # The same, about a path nothing touched.
   - name: file_overflow_other_path
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":false,"error":"file witness: 1 gap(s), first: overflow: events lost"}'
     health: "overflow"
     no_write:
@@ -480,7 +480,7 @@ cases:
   - name: file_outside_window
     lines:
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "outside any capture window"
     wrote:
@@ -491,7 +491,7 @@ cases:
   # Exec lines and file lines can share a file, and do not mix.
   - name: file_and_exec_together
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","pid":7,"trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
@@ -505,7 +505,7 @@ cases:
   # A line with a trace ID belongs to that trace alone.
   - name: file_event_with_a_trace
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"cgroup","trace_id":"c0de00000000000000000000000000a1"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
@@ -516,7 +516,7 @@ cases:
   # An unknown kind might have been a write: never skipped.
   - name: file_unknown_op
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"mangle","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "unknown file_op"
@@ -524,7 +524,7 @@ cases:
   # A file event must say where.
   - name: file_no_path
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "no path"
@@ -532,7 +532,7 @@ cases:
   # A file event must say when.
   - name: file_no_time
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"file_op":"write","path":"/r/a"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "no time"
@@ -540,7 +540,7 @@ cases:
   # A path of the wrong type is a read error.
   - name: file_path_not_a_string
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":7}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -548,7 +548,7 @@ cases:
   # is_dir of the wrong type is a read error.
   - name: file_is_dir_not_a_bool
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","is_dir":"yes"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -556,7 +556,7 @@ cases:
   # A key that differs only by case is refused, as for an exec.
   - name: file_key_in_another_case
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
       - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","Is_Dir":true}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "another case"
@@ -564,7 +564,7 @@ cases:
   # Roots must be a list of strings.
   - name: file_roots_not_a_list
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":"/r"}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":"/r","captures":["file"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 1"
 
@@ -806,7 +806,7 @@ cases:
   # Row lines: only what committed is committed, and it holds for every trace.
   - name: rows_committed_for_every_trace
     lines:
-      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false,"captures":["row"]}'
       - '{"time":"2026-11-06T12:00:01Z","event":"row","engine":"postgres","conn":1,"dest":"127.0.0.1:5432","statement":"INSERT INTO users VALUES (1)","verb":"INSERT","tables":["users"],"opaque":false,"rows":1,"outcome":"committed","attribution":"destination"}'
       - '{"time":"2026-11-06T12:00:02Z","event":"row","engine":"postgres","conn":1,"dest":"127.0.0.1:5432","statement":"DELETE FROM users","verb":"DELETE","tables":["users"],"opaque":false,"rows":3,"outcome":"rolled_back","attribution":"destination"}'
       - '{"time":"2026-11-06T12:00:03Z","event":"row","engine":"postgres","conn":1,"dest":"127.0.0.1:5432","statement":"UPDATE users SET a = 1","verb":"UPDATE","tables":["users"],"opaque":false,"rows":-1,"outcome":"failed","attribution":"destination"}'
@@ -823,7 +823,7 @@ cases:
   # A write with no seen outcome is not committed, and no absence rests on the file.
   - name: row_with_unknown_outcome
     lines:
-      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false,"captures":["row"]}'
       - '{"time":"2026-11-06T12:00:01Z","event":"row","engine":"mysql","conn":1,"dest":"127.0.0.1:3306","statement":"INSERT INTO a VALUES (1)","verb":"INSERT","tables":["a"],"opaque":false,"rows":1,"outcome":"unknown","attribution":"destination"}'
       - '{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":true}'
     health: "outcome was not seen"
@@ -832,7 +832,7 @@ cases:
 
   - name: row_outside_a_window
     lines:
-      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false,"captures":["row"]}'
       - '{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":true}'
       - '{"time":"2026-11-06T12:00:10Z","event":"row","engine":"mysql","conn":1,"dest":"127.0.0.1:3306","statement":"INSERT INTO a VALUES (1)","verb":"INSERT","tables":["a"],"opaque":false,"rows":1,"outcome":"committed","attribution":"destination"}'
     health: "outside any capture window"
@@ -842,7 +842,7 @@ cases:
   # The witness's own verdict on a blind connection reaches the reader.
   - name: rows_from_an_unhealthy_capture
     lines:
-      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
       - '{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":false,"error":"connection 1: unreadable: client message type 64"}'
     health: "capture unhealthy"
     committed:
@@ -873,3 +873,203 @@ cases:
     lines:
       - '{"time":"2026-11-06T12:00:01Z","event":"row","Rows":1,"rows":1,"outcome":"committed"}'
     read_error: "in another case"
+
+  # A file witness's file has no exec lines because nothing looked, however healthy.
+  - name: capture_no_spawn_on_a_file_witness
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["file"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_spawn:
+      A: Inconclusive
+
+  # The same for a database witness's file.
+  - name: capture_no_spawn_on_a_row_witness
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["row"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_spawn:
+      A: Inconclusive
+
+  # And for a file that names nothing.
+  - name: capture_no_spawn_none_named
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_spawn:
+      A: Inconclusive
+
+  # A stop record cannot claim a capture.
+  - name: capture_exec_on_the_stop_record
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"captures":["exec"]}'
+    health: ok
+    no_spawn:
+      A: Inconclusive
+
+  # What ran is evidence whatever the file names.
+  - name: capture_a_sighting_with_none_named
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,"comm":"sh","trace_id":"c0de00000000000000000000000000a1"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_spawn:
+      A: Fail
+
+  # Roots alone are not a file witness.
+  - name: capture_no_write_roots_but_no_capture
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_write:
+      A: Inconclusive
+    no_write_paths: ["/r/x"]
+
+  # An exec witness cannot speak to a write, whatever roots it names.
+  - name: capture_no_write_on_an_exec_witness
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"],"captures":["exec"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_write:
+      A: Inconclusive
+    no_write_paths: ["/r/x"]
+
+  # Only a start record's roots count: a stop record cannot widen a claim.
+  - name: file_roots_on_the_stop_record
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["file"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"roots":["/r"]}'
+    health: ok
+    no_write:
+      A: Inconclusive
+    no_write_paths: ["/r/x"]
+
+  # A database witness's file, empty: absence rests on it.
+  - name: capture_no_row_named
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["row"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_row:
+      A: Pass
+
+  # An exec witness has no row lines because nothing looked.
+  - name: capture_no_row_on_an_exec_witness
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_row:
+      A: Inconclusive
+
+  # A real row is evidence whatever the file names.
+  - name: capture_no_row_with_a_commit
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","event":"row","engine":"postgres","conn":1,"dest":"127.0.0.1:5432","statement":"INSERT INTO a VALUES (1)","verb":"INSERT","tables":["a"],"opaque":false,"rows":1,"outcome":"committed","attribution":"destination"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_row:
+      A: Fail
+
+  # A multicast send may have reached the subscriber on its port.
+  - name: delivery_multicast_on_the_port
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"sendmsg","pid":7,"comm":"app","protocol":"udp","peer":"239.7.7.7:41913","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Inconclusive
+    no_delivery_peers: ["172.17.0.3:41913"]
+
+  # On another port it cannot have.
+  - name: delivery_multicast_on_another_port
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"sendmsg","pid":7,"comm":"app","protocol":"udp","peer":"239.7.7.7:41999","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Pass
+    no_delivery_peers: ["172.17.0.3:41913"]
+
+  # A claim about the group itself is settled.
+  - name: delivery_multicast_itself
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"sendmsg","pid":7,"comm":"app","protocol":"udp","peer":"239.7.7.7:41913","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Fail
+    no_delivery_peers: ["239.7.7.7:41913"]
+
+  # The limited broadcast address.
+  - name: delivery_limited_broadcast
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"sendmsg","pid":7,"comm":"app","protocol":"udp","peer":"255.255.255.255:41912","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Inconclusive
+    no_delivery_peers: ["172.17.0.3:41912"]
+
+  # IPv6 has only multicast.
+  - name: delivery_ipv6_multicast
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"sendmsg","pid":7,"comm":"app","protocol":"udp","peer":"[ff02::1]:41912","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Inconclusive
+    no_delivery_peers: ["[fd00::3]:41912"]
+
+  # A subnet's broadcast address looks like a host: only the socket option says.
+  - name: delivery_subnet_broadcast
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"sendmsg","pid":7,"comm":"app","protocol":"udp","peer":"172.17.255.255:41912","broadcast":true,"trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Inconclusive
+    no_delivery_peers: ["172.17.0.3:41912"]
+
+  # The same address with no option is a host, and another one.
+  - name: delivery_broadcast_flag_absent
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"sendmsg","pid":7,"comm":"app","protocol":"udp","peer":"172.17.255.255:41912","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Pass
+    no_delivery_peers: ["172.17.0.3:41912"]
+
+  # A first hop arrives on port 0: a rule on its address matches on any port.
+  - name: delivery_first_hop_any_port
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"sendmsg","pid":7,"comm":"app","protocol":"udp","peer":"10.77.0.2:0","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Fail
+    no_delivery_peers: ["10.77.0.2:41900"]
+
+  # broadcast has one type.
+  - name: delivery_broadcast_not_a_boolean
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"sendmsg","pid":7,"comm":"app","protocol":"udp","peer":"172.17.255.255:41912","broadcast":1,"trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"

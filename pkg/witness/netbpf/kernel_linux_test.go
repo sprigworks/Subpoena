@@ -172,6 +172,16 @@ func helper(spec string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
+	case "rthdr":
+		if err := rthdrSend(f[1]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "route", "bcast": // see route_linux_test.go
+		if err := routedSend(f); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 	case "broker":
 		if err := broker(f[1], f[2], f[3], f[4] == "leak"); err != nil {
 			fmt.Fprintln(os.Stderr, err)

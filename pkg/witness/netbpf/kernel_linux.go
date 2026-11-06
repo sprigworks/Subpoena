@@ -191,6 +191,15 @@ func sum(m *ebpf.Map, what string) (uint64, error) {
 	return total, nil
 }
 
+// cgroupID is the kernel's ID of the cgroup at path: its inode on cgroup v2.
+func cgroupID(path string) (uint64, bool) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0, false
+	}
+	return st.Ino, true
+}
+
 // sessionBase is the kernel filter's copy of the session root's last element.
 // The kernel reads path elements up to nameLen-1 bytes long, so a longer name
 // could never compare equal, and a session's sends would vanish as if none were
@@ -325,14 +334,16 @@ func decode(raw []byte, at time.Time) (Event, error) {
 		return Event{}, fmt.Errorf("netbpf: decode: %w", err)
 	}
 	e := Event{
-		PID:      int(r.Pid),
-		HostPID:  int(r.HostPid),
-		Comm:     cstr(r.Comm[:]),
-		Bytes:    r.Bytes,
-		SockType: int(r.SockType),
-		Protocol: protocolName(r.Protocol),
-		CgroupID: r.CgroupId,
-		Time:     at,
+		PID:       int(r.Pid),
+		HostPID:   int(r.HostPid),
+		Comm:      cstr(r.Comm[:]),
+		Bytes:     r.Bytes,
+		Broadcast: r.Broadcast != 0,
+		RootID:    r.RootId,
+		SockType:  int(r.SockType),
+		Protocol:  protocolName(r.Protocol),
+		CgroupID:  r.CgroupId,
+		Time:      at,
 	}
 	switch r.Op {
 	case opConnect:

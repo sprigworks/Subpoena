@@ -229,10 +229,14 @@ Needs root (or CAP_BPF plus CAP_PERFMON), cgroup v2 and BTF.
 `make test-ebpf` runs its kernel tests in a privileged container: execs in a
 real session cgroup are attributed with the right cgroup ID, a process that
 exits at once is seen, lineage follows a fork that never execs, and a burst
-of execs before `Stop` is not lost. The checks `netbpf` has for a task leaving its
-session, for kernel recursion misses and for a deeply nested cgroup are not in
-`execbpf` yet, so `Spawned` still rests on the application staying where it was
-put. In the OATS stack it is the witness for
+of execs before `Stop` is not lost, a task leaving its session each way fails
+`Health`, and so does a path too long to walk. It has `netbpf`'s checks, on the
+same hooks: a recursion miss, a task leaving its session by a move or
+`CLONE_INTO_CGROUP`, and a path too long to walk each fail `Health` for every trace
+in the capture, and past 8 levels `Cgroup` keeps the session root and loses the
+elements nearest the leaf. A move by the operator counts just the same, so end the
+capture first. `make test-ebpf` does not force a recursion miss: it runs the real
+read of the count, and a scripted count fails `Health`. In the OATS stack it is the witness for
 both cases (`examples/gateway/oats/README.md`).
 
 ### Network, tier 1: `Sinkhole` (runs in `go test`)
@@ -292,7 +296,8 @@ host name needs the test to pin what the name resolves to.
 Loss accounting is the same as `execbpf`: a per-CPU counter of failed
 ring-buffer reservations, the drain on `Stop`, and reader errors, all retained
 in `Health`. Not seen: packet sockets; the header destination of raw sockets
-that write their own IP header; traffic the kernel originates; and
+that write their own IP header; the first hop of an IP source route, which only
+`Delivered` reports; traffic the kernel originates; and
 destinations reached through another process outside the session cgroup (a
 proxy, a resolver, a sidecar); and SCTP `connectx`, which goes through
 setsockopt. `make test-ebpf` runs its kernel tests: a
@@ -420,7 +425,12 @@ A test in another language runs `subpoena-witness -file-root dir`, which needs
 no privilege, writes the start record once attached and the rest when it gets
 SIGTERM, or calls `FileWatch.WriteLog` itself. A witness killed before it stopped
 leaves a window that never closed, so `Health` fails on the file, even one an
-earlier run left healthy. `witness.ReadLog` and Python's `read_log` read the file
+earlier run left healthy. An `-out` or `-ready` under a watched root is refused, as
+the witness would see its own file. A consumer that stops reading cannot hold
+`SIGTERM` for long: past a 3s stall the witness exits 1, most likely with no stop
+record, which proves nothing. An output held up that long by a busy machine reads
+the same way, on this path and the eBPF one, so a healthy capture can come back
+Inconclusive. `witness.ReadLog` and Python's `read_log` read the file
 (`docs/ports.md`, W7). A file name that is not UTF-8 cannot be carried in JSON, so
 a capture holding one is written as unhealthy.
 
@@ -621,7 +631,9 @@ Read a Pass with these in mind:
   root, an ancestor or another session, and a child made elsewhere with
   `CLONE_INTO_CGROUP`, each fail `Health` for the whole capture, every trace in it.
   A move inside the session is fine. A send from under the root that names no
-  session fails `Health` too. A move by the operator counts just the same, so end
+  session fails `Health` too. Under means the root itself: a cgroup elsewhere that
+  only shares its last name does not count, if the root can be read at the send. A
+  move by the operator counts just the same, so end
   the capture first.
 - **A wrong peer passes.** Naming the broker's listener port instead of the
   subscriber's matches nothing. Pair the claim with a positive control, as with
@@ -633,13 +645,35 @@ Read a Pass with these in mind:
   peer. A datagram or raw socket goes to the name a send gives, so that send is
   charged to the name, not to the peer the socket holds. A raw IPv6 name with
   family 0 is a name; on UDP over IPv6 it is none, and the send goes to the peer.
+  The two exceptions are below.
+- **A source route goes elsewhere first.** IP options, which need no privilege, send
+  a packet to a first hop and name the peer only as the last. A route set on the
+  socket reports that hop as well, on port 0, so a rule on that address matches on
+  any port. One given with the send (`IP_RETOPTS`), and an IPv6 routing header either
+  way, are not read: such a send also has an unknown peer, which every rule matches.
+  Later hops are not reported. Stream sockets ignore such a control message.
+  `Dialed` reports the name only.
+- **A raw socket can write its own header.** With `IP_HDRINCL`, which needs
+  `CAP_NET_RAW`, the packet goes to the header's address, and the witness reports the
+  name the send gave: `NoDelivery` on the header's address is Pass. Rule that out
+  with the session's capabilities.
+- **A broadcast or multicast send may reach anyone on its port.** The subscriber can
+  get the bytes while the peer names a group, or a subnet's broadcast address. The
+  send cannot say who was listening, so `NoDelivery` with `DeliveryTo`, and a `Never`
+  entry, are Inconclusive on one for the entry's port, or any port if it has none. A
+  rule naming that very address still fails. A subnet's broadcast address cannot be
+  told from a host's, so a datagram or raw send with `SO_BROADCAST` set counts if its
+  IPv4 address ends in two set bits, as every such address does, even one that named
+  a host. Go sets the option on every socket it makes, so expect this from a Go
+  sender to a host ending that way, on the rule's port. A match of your own sees only `Peer`, unless it reads
+  `AnyPeer`. `Allowed` is not affected: such a peer is not on the list.
 - **The peer is what the sender's kernel holds.** Behind NAT or a proxy it is the
   proxy. It is an address, not an identity: an ephemeral port reused inside the
   window is a different peer with the same name, and two network namespaces can
   hold the same address.
 
-Not seen: sockets that are not inet (`AF_UNIX`, netlink), which have no address
-to report, so a broker serving subscribers over a Unix socket needs another
+Not seen: the header destination of `IP_HDRINCL` sends, above; sockets that are
+not inet (`AF_UNIX`, netlink), which have no address to report, so a broker serving subscribers over a Unix socket needs another
 witness; `sendfile` and `splice` before Linux 6.5, which by the kernel's history
 took a path without this hook (not tested; only Linux 6.17 has been run), with no
 fault raised, so do not rest this claim on an older kernel; kernel TCP
@@ -707,9 +741,12 @@ forged sessions and a path too long to walk.
 
 `subpoena-witness -deliveries` runs this next to `execbpf` and writes one line per
 send from a session cgroup, so a test in another language can read it. Its start
-record lists `"captures":["exec","delivery"]`. A file that does not name
-`delivery` has no delivery lines because nothing looked, so `NoDelivery` over it
-is Inconclusive in both languages, however healthy it is. Python's
+record lists `"captures":["exec","delivery"]`. Every witness's start record says
+which capture ran: `exec`, `delivery`, `file` for `-file-root`, `row` for
+`subpoena-witness db`. A file that does not name the capture a claim needs holds no
+such lines because nothing looked, so `NoSpawn`, `NoWrite`, `NoCommit`, `NoRow`,
+`NoDelivery` and the `Watch` checks over it are Inconclusive, however healthy it is,
+in both languages (Python has no `NoCommit`). Python's
 `Log.delivered`, `no_delivery`, `require_no_delivery`, `check_no_delivery` and
 `delivery_to` read that file. Running the witness stays Go-only, and Python has
 no `watch_deliveries`.

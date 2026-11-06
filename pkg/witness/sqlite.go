@@ -242,6 +242,8 @@ func readSQLiteImage(path string) (*sqliteImage, error) {
 }
 
 // readSQLiteOnce reads the files once. stable is false if they moved meanwhile.
+//
+//subpoena:enforcement_point
 func readSQLiteOnce(path string) (img *sqliteImage, stable bool, err error) {
 	if real, err := filepath.EvalSymlinks(path); err != nil {
 		return nil, false, err
@@ -820,6 +822,8 @@ func newSQLiteNames() sqliteNames {
 // table with no root page is virtual, and owns nothing. A page claimed twice, a
 // pointer out of range or a page of the wrong type is an error: the map would
 // not be sound.
+//
+//subpoena:enforcement_point
 func sqliteOwners(v sqliteView, names sqliteNames) (*sqliteMap, error) {
 	m := &sqliteMap{owners: map[uint32]string{}, rows: map[string]schemaRow{}}
 	if len(v.pages) == 0 {

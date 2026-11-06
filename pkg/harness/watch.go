@@ -108,7 +108,8 @@ type SpawnRule struct {
 //
 // At cleanup it stops w (if w has a Stop method), then fails the test, with
 // messages tagged "witness:", for every process seen for traceID that the rule
-// refuses, and with "inconclusive:" for missing or bad capture health. If the test has already
+// refuses, and with "inconclusive:" for a witness file with no exec capture in it,
+// or missing or bad capture health. If the test has already
 // failed, every process the witness saw is logged as well.
 //
 // Cleanups run last-registered first, so this runs before a Stop registered
@@ -144,6 +145,10 @@ func checkSpawns(tb testing.TB, w witness.Witness, traceID string, rule SpawnRul
 		case failedBefore:
 			tb.Logf("%s: after an earlier failure, saw pid %d %q (%s)", TagWitness, p.PID, p.Command, p.Attribution)
 		}
+	}
+	if err := execCapture(w); err != nil {
+		tb.Errorf("%s: %s: %v", TagInconclusive, traceID, err) //subpoena:enforcement
+		return false
 	}
 	h, isReporter := w.(witness.HealthReporter)
 	if !isReporter {

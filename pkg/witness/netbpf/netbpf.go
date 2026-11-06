@@ -26,6 +26,11 @@
 // to walk, and a send from under the session root but in no session, count too.
 // An empty Dialed or Delivered means nothing until Health says so.
 //
+// A send with an IP source route, set on the socket or with the send, leaves for
+// its first hop, not its peer, so Delivered has that hop as well, on port 0. A send
+// on a socket with SO_BROADCAST may reach a subnet, which no address can show, so
+// the event says so. Dialed has neither: it reports the destination named.
+//
 // What it does not see: packet sockets (AF_PACKET); raw sockets that write
 // their own IP header (the reported destination is the one passed to the
 // call, not the one in the header); traffic the kernel originates itself; and
@@ -97,7 +102,12 @@ type Event struct {
 	// session root, then the ones nearest the leaf, so the session root stays.
 	// It is empty if the kernel could not walk the path to the top.
 	Cgroup string
-	Time   time.Time
+	// RootID is the kernel's ID of the cgroup that Cgroup's session root element
+	// names, 0 if it names none. A cgroup anywhere can share that name.
+	RootID uint64
+	// Broadcast says a datagram or raw socket had SO_BROADCAST set.
+	Broadcast bool
+	Time      time.Time
 
 	// Set by the Witness: how the event was attributed to a trace, if at all.
 	TraceID     string
@@ -108,7 +118,7 @@ type Event struct {
 func (e Event) DeliveryLine() witness.DeliveryLine {
 	l := witness.DeliveryLine{
 		Time: e.Time.UTC(), DeliveryOp: string(e.Op), PID: e.PID, HostPID: e.HostPID, Comm: e.Comm,
-		Protocol: e.Protocol, Bytes: e.Bytes, CgroupID: e.CgroupID, Cgroup: e.Cgroup,
+		Protocol: e.Protocol, Bytes: e.Bytes, Broadcast: e.Broadcast, CgroupID: e.CgroupID, Cgroup: e.Cgroup,
 		TraceID: e.TraceID, Attribution: string(e.Attribution),
 	}
 	if e.Dest.IsValid() {
@@ -124,6 +134,7 @@ func (e Event) DeliveryLine() witness.DeliveryLine {
 // package.
 type Witness struct {
 	cfg  Config
+	root string
 	base string
 
 	lifecycle sync.Mutex // serializes Start and Stop
@@ -153,7 +164,7 @@ func New(cfg Config) *Witness {
 	if root == "" {
 		root = cgroup.FromEnv().Root
 	}
-	return &Witness{cfg: cfg, base: cgroup.RootBase(root)}
+	return &Witness{cfg: cfg, root: root, base: cgroup.RootBase(root)}
 }
 
 // handle attributes one event and records it. It is the whole of the
@@ -163,11 +174,12 @@ func New(cfg Config) *Witness {
 // fork events to a root PID; a connection carries no parent, so an attempt
 // from outside a session cgroup is not attributed to any trace. One from under
 // the session root that names no session is counted, and fails Health at Stop: a
-// task that left its session for the root looks like that.
+// task that left its session for the root looks like that. A cgroup elsewhere on
+// the machine that shares the root's name is not under it.
 func (w *Witness) handle(e Event) {
 	if tid, ok := cgroup.SessionTrace("0::/"+e.Cgroup, w.base); ok {
 		e.TraceID, e.Attribution = tid, witness.ByCgroup
-	} else if slices.Contains(strings.Split(e.Cgroup, "/"), w.base) {
+	} else if slices.Contains(strings.Split(e.Cgroup, "/"), w.base) && !w.elsewhere(e) {
 		w.mu.Lock()
 		w.unattributed++
 		w.mu.Unlock()
@@ -178,6 +190,15 @@ func (w *Witness) handle(e Event) {
 	if w.cfg.OnEvent != nil {
 		w.cfg.OnEvent(e)
 	}
+}
+
+// elsewhere reports whether e's cgroup path only shares the session root's name:
+// the kernel found a cgroup with that name, and it is known not to be the root. The
+// root is read now, not at Start, as it may come and go during a capture. If it
+// cannot be read, the name is all there is, and it counts.
+func (w *Witness) elsewhere(e Event) bool {
+	id, ok := cgroupID(w.root)
+	return ok && e.RootID != 0 && e.RootID != id
 }
 
 // record keeps one attributed event: a connection attempt, a send, or both.
@@ -193,6 +214,7 @@ func (w *Witness) record(e Event) {
 		Peer:        e.Dest,
 		Local:       e.Local,
 		Bytes:       e.Bytes,
+		Broadcast:   e.Broadcast,
 		Cgroup:      e.Cgroup,
 		CgroupID:    e.CgroupID,
 		TraceID:     e.TraceID,

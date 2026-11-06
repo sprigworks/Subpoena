@@ -15,8 +15,10 @@ const stallLimit = 3 * time.Second
 
 // stallGuard writes to dst from one goroutine, so that a caller can give up on a
 // write that never returns. Until stopping is called it waits as long as dst
-// does: a slow consumer loses nothing. After that, once a Write has waited limit
-// with no line getting through, every Write fails. An output with nothing to
+// does, and no line is dropped here. That holds up the reader behind it, though,
+// so a slow consumer can fill the kernel's ring buffer: those events are lost, and
+// Health says so. After stopping, once a Write has waited limit with no line
+// getting through, every Write fails. An output with nothing to
 // write is not stalled, however long Stop takes. The goroutine stuck in dst is left
 // behind, for the process's exit to end.
 type stallGuard struct {

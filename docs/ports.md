@@ -151,6 +151,10 @@ ones keep their name and meaning.
   has exactly one start..stop window, every exec lies inside it, it is
   closed, and its stop says `healthy: true` with no error. Anything else is
   a capture fault: the execs still count, but no absence rests on the file.
+  The start record's `captures` lists the hooks behind the window: `"exec"`,
+  `"delivery"`, `"file"`, `"row"`. Only a start record's `captures` and `roots`
+  count. Every absence claim reads it: a file that does not name the capture the
+  claim needs is Inconclusive however healthy, as nothing was looking.
   A read error, never a skip: an unknown record kind, a line that is not a
   JSON object (NaN and Infinity included), a time that is not RFC 3339 with
   a zone or is the zero time, a field of the wrong type, an integer outside
@@ -158,8 +162,8 @@ ones keep their name and meaning.
   case. A null field is the same as an absent one.
 - **W5. Absence checks.** `no_spawn(witness, trace_id)` is Fail when the
   witness saw any process for the trace (even from an unhealthy capture),
-  Inconclusive when it saw none but its health is bad or unreported, and Pass
-  only from a healthy witness. `watch_spawns` registers a teardown check with
+  Inconclusive when it saw none but its health is bad or unreported, or its
+  file names no `exec` capture, and Pass only from a healthy witness. `watch_spawns` registers a teardown check with
   a `SpawnRule`: `Never` entries match a command line whose words end with
   theirs, the program compared without its directory on either side;
   `Allowed` matches exactly; a name-only sighting fails when its name is a
@@ -237,8 +241,9 @@ Check: the `file_` cases in `conformance/witness.yaml`; the Python runners are
   | `local` | string | this end, in the same form; empty when unknown |
   | `bytes` | integer (uint64) | what the caller asked to send, not what the peer received |
 
-  The start record's `captures` lists the hooks that ran (`"exec"`, `"delivery"`),
-  and only a start record's counts. A stop record may carry `coverage`, one line on
+  | `broadcast` | boolean | a datagram or raw socket had `SO_BROADCAST` set; absent when false |
+
+  A stop record may carry `coverage`, one line on
   what the capture might have missed even when healthy. W3 and W4 apply: `delivered(trace_id)` returns every
   line whose `trace_id` equals it, the empty trace ID matches nothing, and a line
   outside the window is a capture fault. A read error, never a skip: an unknown
@@ -248,7 +253,10 @@ Check: the `file_` cases in `conformance/witness.yaml`; the Python runners are
   gone to any peer.
   `no_delivery(witness, trace_id, match)` follows W6's rule over `delivered`, and
   with no matching send a file whose start record does not list `delivery` is
-  Inconclusive, however healthy: nothing was looking.
+  Inconclusive, however healthy: nothing was looking. A send a match does not
+  take, that is `fanout` (its `peer` multicast or `255.255.255.255`, or `broadcast`
+  set with an IPv4 `peer` whose last two bits are set), and that the match takes as `any_member()`, is Inconclusive too: it may
+  have reached the peer. `delivery_to` then compares only the port.
   `delivery_to(peers)` matches a send that may have gone to a peer: a zero port
   matches every port of the address, an unspecified address matches the port on
   any address, an IPv4-mapped address matches its IPv4 form, a send with an

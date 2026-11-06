@@ -65,6 +65,7 @@ type DeliveryLine struct {
 	Peer        string    `json:"peer"`
 	Local       string    `json:"local"`
 	Bytes       uint64    `json:"bytes"`
+	Broadcast   bool      `json:"broadcast,omitempty"`
 	CgroupID    uint64    `json:"cgroup_id"`
 	Cgroup      string    `json:"cgroup"`
 	TraceID     string    `json:"trace_id,omitempty"`
@@ -80,10 +81,12 @@ type Record struct {
 	Healthy bool      `json:"healthy"`
 	Error   string    `json:"error,omitempty"`
 	// Roots, on a file witness's start record, are the directories it watched.
+	// Only a start record's count.
 	Roots []string `json:"roots,omitempty"`
 	// Captures, on a start record, are the hooks that ran (CaptureExec,
-	// CaptureDelivery). A file that does not name a capture cannot prove an
-	// absence of what it would have seen.
+	// CaptureDelivery, CaptureFile, CaptureRow). A file that does not name a
+	// capture cannot prove an absence of what it would have seen, so every
+	// absence claim over a file reads this. Only a start record's count.
 	Captures []string `json:"captures,omitempty"`
 	// Coverage, on a stop record, says in one line what the capture might have
 	// missed even when healthy.
@@ -100,6 +103,8 @@ type Record struct {
 const (
 	CaptureExec     = "exec"
 	CaptureDelivery = "delivery"
+	CaptureFile     = "file"
+	CaptureRow      = "row"
 )
 
 // Record kinds.
@@ -207,7 +212,6 @@ func ReadLog(r io.Reader) (*Log, error) {
 				return nil, fmt.Errorf("witness: line %d: no time", n) //subpoena:enforcement
 			}
 			records++
-			l.roots = append(l.roots, rec.Roots...)
 			l.silent = append(l.silent, rec.SilentCloses...)
 			l.symlinks = append(l.symlinks, rec.Symlinks...)
 			if rec.Coverage != "" {
@@ -221,6 +225,7 @@ func ReadLog(r io.Reader) (*Log, error) {
 				open = n
 				windows++
 				l.captures = append(l.captures, rec.Captures...)
+				l.roots = append(l.roots, rec.Roots...)
 			case RecordStop:
 				switch {
 				case open == 0:
@@ -328,7 +333,7 @@ func readDelivery(b []byte) (DeliveryEvent, error) {
 		return DeliveryEvent{}, fmt.Errorf("unknown delivery_op %q", d.DeliveryOp)
 	}
 	e := DeliveryEvent{
-		PID: d.PID, Comm: d.Comm, Op: Op(d.DeliveryOp), Protocol: d.Protocol, Bytes: d.Bytes,
+		PID: d.PID, Comm: d.Comm, Op: Op(d.DeliveryOp), Protocol: d.Protocol, Bytes: d.Bytes, Broadcast: d.Broadcast,
 		Cgroup: d.Cgroup, CgroupID: d.CgroupID, TraceID: d.TraceID, Attribution: Attribution(d.Attribution), SeenAt: d.Time,
 	}
 	var err error
@@ -514,6 +519,25 @@ func (l *Log) Delivered(traceID string) []DeliveryEvent {
 // which says nothing about sends: harness.NoDelivery is then Inconclusive.
 func (l *Log) CapturedDeliveries() bool {
 	return slices.Contains(l.captures, CaptureDelivery)
+}
+
+// CapturedExecs reports whether the file's start record says the exec hook ran.
+// Without it the file has no exec lines because nothing looked: harness.NoSpawn
+// is then Inconclusive.
+func (l *Log) CapturedExecs() bool {
+	return slices.Contains(l.captures, CaptureExec)
+}
+
+// CapturedFiles reports whether the file's start record says a file witness ran.
+// Without it harness.NoWrite and NoCommit are Inconclusive.
+func (l *Log) CapturedFiles() bool {
+	return slices.Contains(l.captures, CaptureFile)
+}
+
+// CapturedRows reports whether the file's start record says a database witness
+// ran. Without it harness.NoRow is Inconclusive.
+func (l *Log) CapturedRows() bool {
+	return slices.Contains(l.captures, CaptureRow)
 }
 
 // Covers reports whether path lies under a root the file's start record names,

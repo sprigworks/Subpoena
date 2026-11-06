@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sprigworks/subpoena/pkg/harness"
 	"github.com/sprigworks/subpoena/pkg/witness"
 )
 
@@ -39,6 +40,10 @@ func TestStartRecordNamesTheCaptures(t *testing.T) {
 		if l.CapturedDeliveries() != tc.deliveries {
 			t.Errorf("deliveries=%v read back as %v", tc.deliveries, l.CapturedDeliveries())
 		}
+		if !l.CapturedExecs() || l.CapturedFiles() || l.CapturedRows() {
+			t.Errorf("deliveries=%v names the wrong captures: %+v", tc.deliveries, r)
+		}
+		harness.RequireNoSpawn(t, l, "c0de00000000000000000000000000a1")
 	}
 }
 

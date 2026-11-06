@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -326,6 +327,14 @@ func TestDecode(t *testing.T) {
 		t.Fatalf("a peer with no port keeps its address: %+v, %v", e, err)
 	}
 
+	// A first hop arrives on port 0, and keeps its address.
+	hop := base()
+	hop.Op, hop.Family, hop.Broadcast, hop.RootId = opDeliver, afInet, 1, 77
+	copy(hop.Addr[:], []byte{10, 77, 0, 2})
+	if e, err := decode(encode(t, hop), at); err != nil || e.Dest != netip.MustParseAddrPort("10.77.0.2:0") || !e.Broadcast || e.RootID != 77 {
+		t.Fatalf("a first hop decodes to %+v, %v", e, err)
+	}
+
 	raw := encode(t, v4)
 	if _, err := decode(raw[:10], at); err == nil {
 		t.Fatal("short record must fail")
@@ -345,5 +354,36 @@ func TestDecode(t *testing.T) {
 func copy8(dst []int8, s string) {
 	for i := 0; i < len(s) && i < len(dst); i++ {
 		dst[i] = int8(s[i])
+	}
+}
+
+// A cgroup that shares the root's last name is not under it, if the root says so.
+// When the root cannot be read the name is all there is, and it must still count.
+func TestUnderTheRootMeansTheRoot(t *testing.T) {
+	dir := t.TempDir()
+	id, ok := cgroupID(dir)
+	if !ok {
+		t.Fatal("no id for a directory that exists")
+	}
+	base := filepath.Base(dir)
+	for _, tc := range []struct {
+		name   string
+		root   string
+		rootID uint64
+		want   uint64
+	}{
+		{"this root", dir, id, 1},
+		{"another with its name", dir, id + 1, 0},
+		{"the kernel found none", dir, 0, 1},
+		{"a root that cannot be read", filepath.Join(dir, "gone"), id + 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := New(Config{CgroupRoot: tc.root})
+			w.base = base
+			w.handle(Event{Op: witness.OpConnect, Cgroup: "other/" + base, RootID: tc.rootID})
+			if w.unattributed != tc.want {
+				t.Fatalf("unattributed = %d, want %d", w.unattributed, tc.want)
+			}
+		})
 	}
 }

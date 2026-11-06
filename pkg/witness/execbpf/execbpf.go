@@ -9,6 +9,12 @@
 // move or exit. Compared with Tetragon outside Kubernetes: the session cgroup
 // name is reported, not only a container ID. See witnesses/README.md.
 //
+// Like netbpf, it fails Health on the ways an exec can go unseen without a lost
+// event. The kernel skips a program already active on a CPU and counts it only as
+// a recursion miss. A task can leave its session, by a move or with
+// CLONE_INTO_CGROUP, and two more programs count that, since attribution reads
+// the cgroup at the moment of the exec. A cgroup path too long to walk counts too.
+//
 // Loading the program needs root (or CAP_BPF plus CAP_PERFMON), cgroup v2 and
 // a kernel with BTF (5.8 or later). It observes only; it does not block.
 package execbpf
@@ -64,8 +70,10 @@ type Event struct {
 	Exe               string // path passed to execve (may be relative); empty for forks
 	Args              []string
 	CgroupID          uint64 // bpf_get_current_cgroup_id: equals pkg/cgroup Group.ID()
-	// Cgroup is the cgroup path as far up as the kernel walked (up to 8
-	// elements), root-most first, without the hierarchy root: "subpoena/<trace id>".
+	// Cgroup is the cgroup path, up to 8 elements, root-most first, without the
+	// hierarchy root: "subpoena/<trace id>". Longer paths lose elements above the
+	// session root, then the ones nearest the leaf, so the session root stays.
+	// It is empty if the kernel could not walk the path to the top.
 	Cgroup string
 	Time   time.Time
 
