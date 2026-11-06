@@ -76,7 +76,45 @@ def test_the_schema_names_the_fields_the_reader_checks():
     schema = json.loads((ROOT / "docs" / "witness-event.schema.json").read_text())
     from subpoena import witness
     exec_fields = set(witness._INT_FIELDS) | set(witness._STR_FIELDS) | {"time", "args"}
-    record_fields = {"time", "record", "healthy", "error"}
-    assert exec_fields | record_fields == set(schema["properties"])
+    record_fields = {"time", "record", "healthy", "error", "roots", "coverage"}
+    file_fields = set(witness._FILE_STR_FIELDS) | {"time", "is_dir", "cookie"}
+    assert exec_fields | record_fields | file_fields == set(schema["properties"])
+    assert set(witness._KNOWN) == set(schema["properties"])
     assert schema["if"] == {"required": ["record"]}
+    assert schema["else"]["if"] == {"required": ["file_op"]}
     assert schema["additionalProperties"] is True
+
+
+def file_line(**over):
+    l = {"time": "2026-10-28T12:00:01Z", "file_op": "rename", "path": "/r/dir", "root": "/r", "is_dir": True,
+         "source": "inotify", "rename": "from", "cookie": 7, "attribution": "root"}
+    l.update(over)
+    return json.dumps(l)
+
+
+START = '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+STOP = '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"coverage":"gaps=0"}'
+
+
+def test_a_file_line_reads_back_whole():
+    log = read_log(io.StringIO("\n".join([START, file_line(), STOP]) + "\n"))
+    assert log.health() is None and log.coverage() == "gaps=0" and len(log) == 0
+    (e,) = log.wrote(A)
+    assert (e.op, e.path, e.root, e.is_dir, e.source, e.rename, e.cookie, e.trace_id, e.attribution) == (
+        "rename", "/r/dir", "/r", True, "inotify", "from", 7, "", "root")
+    assert e.seen_at.isoformat() == "2026-10-28T12:00:01+00:00"
+
+
+def test_touches_and_covers():
+    log = read_log(io.StringIO("\n".join([START, file_line(), STOP]) + "\n"))
+    (e,) = log.wrote(A)
+    assert e.touches("/r/dir") and e.touches("/r") and e.touches("/r/dir/secret")
+    assert not e.touches("/r/dirt")
+    assert log.covers("/r/x") and log.covers("/r")
+    assert not log.covers("/rx") and not log.covers("r/x") and not log.covers("/")
+
+
+@pytest.mark.parametrize("over", [{"cookie": -1}, {"cookie": 2**32}, {"cookie": True}, {"root": 7}, {"rename": 7}])
+def test_a_file_line_of_the_wrong_shape_is_an_error(over):
+    with pytest.raises(WitnessError, match="line 2"):
+        read_log(io.StringIO("\n".join([START, file_line(**over), STOP]) + "\n"))

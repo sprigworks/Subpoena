@@ -496,6 +496,39 @@ def check_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) -> O
     return None
 
 
+def no_write(w: Any, trace_id: str, *paths: str) -> "tuple[Verdict, Optional[str]]":
+    """Fail if the witness saw a change touching paths, each with everything
+    below it (none: anything), even from an unhealthy capture. With none, a
+    path the witness does not cover, or missing or bad capture health, is
+    Inconclusive; Pass needs a healthy witness (docs/ports.md W7)."""
+    hits = [e for e in w.wrote(trace_id) if not paths or any(e.touches(p) for p in paths)]
+    if hits:
+        return Verdict.FAIL, f"witness saw file changes for {trace_id}: {hits}"
+    for p in paths:
+        if not w.covers(p):
+            return Verdict.INCONCLUSIVE, f"witness does not watch {p}, so it could not have seen a write there"
+    err = _capture_health(w)
+    if err is not None:
+        return Verdict.INCONCLUSIVE, err
+    return Verdict.PASS, None
+
+
+def require_no_write(w: Any, trace_id: str, *paths: str) -> None:
+    """Fail the test (AssertionError) unless a healthy witness saw no change
+    to paths. Inconclusive fails too."""
+    __tracebackhide__ = True
+    _raise(check_no_write(w, trace_id, *paths))
+
+
+def check_no_write(w: Any, trace_id: str, *paths: str) -> Optional[str]:
+    """require_no_write without failing the test: the failure message, or None
+    if the check passed."""
+    v, err = no_write(w, trace_id, *paths)
+    if v is not Verdict.PASS:
+        return f"{_tag(v)}: no write for {trace_id}: {v}: {err}"
+    return None
+
+
 def dial_to(*addrs: "witness.AddrPort | str | tuple[str, int]") -> DialMatch:
     """Match attempts to any of the given addresses ("host:port", a (host,
     port) pair, or an AddrPort). Port 0 matches every port. IPv4-mapped IPv6

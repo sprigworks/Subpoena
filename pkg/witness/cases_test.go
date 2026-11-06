@@ -24,12 +24,15 @@ func TestReadLogPassesTheSharedCases(t *testing.T) {
 	var doc struct {
 		Traces map[string]string `yaml:"traces"`
 		Cases  []struct {
-			Name      string            `yaml:"name"`
-			Lines     []string          `yaml:"lines"`
-			ReadError string            `yaml:"read_error"`
-			Health    string            `yaml:"health"`
-			Spawned   map[string][]int  `yaml:"spawned"`
-			NoSpawn   map[string]string `yaml:"no_spawn"`
+			Name         string              `yaml:"name"`
+			Lines        []string            `yaml:"lines"`
+			ReadError    string              `yaml:"read_error"`
+			Health       string              `yaml:"health"`
+			Spawned      map[string][]int    `yaml:"spawned"`
+			NoSpawn      map[string]string   `yaml:"no_spawn"`
+			Wrote        map[string][]string `yaml:"wrote"`
+			NoWrite      map[string]string   `yaml:"no_write"`
+			NoWritePaths []string            `yaml:"no_write_paths"`
 		} `yaml:"cases"`
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(b))

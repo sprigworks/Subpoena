@@ -1,8 +1,10 @@
 package witness
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -45,6 +47,8 @@ type FileWatch struct {
 	coverage  FileCoverage
 	silent    map[string]bool
 	finished  bool
+	started   time.Time
+	stopped   time.Time
 	stopOnce  sync.Once
 	lastEmpty time.Time // when the queue was last seen empty
 }
@@ -73,7 +77,7 @@ func newFileWatch(h fileHooks, roots ...string) (*FileWatch, error) {
 	if h.readDir == nil {
 		h.readDir = os.ReadDir
 	}
-	w := &FileWatch{hooks: h, done: make(chan struct{}), silent: map[string]bool{}, lastEmpty: time.Now()}
+	w := &FileWatch{hooks: h, done: make(chan struct{}), silent: map[string]bool{}, started: time.Now(), lastEmpty: time.Now()}
 	for _, r := range roots {
 		abs, err := filepath.Abs(r)
 		if err != nil {
@@ -131,7 +135,7 @@ func (w *FileWatch) Stop() error {
 		w.stop()
 		<-w.done
 		w.mu.Lock()
-		w.finished = true
+		w.finished, w.stopped = true, time.Now()
 		w.mu.Unlock()
 	})
 	return w.Health()
@@ -185,4 +189,34 @@ func (w *FileWatch) Coverage() FileCoverage {
 	}
 	sort.Strings(c.SilentCloses)
 	return c
+}
+
+// WriteLog writes a stopped capture as witness-file lines (docs/ports.md W7): a
+// start record naming the roots, one FileLine per event, and a stop record with
+// the capture's health and coverage. It is how a test in another language gets
+// the capture; ReadLog reads it back.
+func (w *FileWatch) WriteLog(dst io.Writer) error {
+	w.mu.Lock()
+	finished := w.finished
+	w.mu.Unlock()
+	if !finished {
+		return errors.New("file witness: capture has not stopped")
+	}
+	enc := json.NewEncoder(dst)
+	if err := enc.Encode(Record{Time: w.started.UTC(), Record: RecordStart, Roots: w.roots}); err != nil {
+		return err
+	}
+	for _, e := range w.Wrote("") {
+		if err := enc.Encode(FileLine{
+			Time: e.SeenAt.UTC(), FileOp: string(e.Op), Path: e.Path, Root: e.Root, IsDir: e.IsDir, Source: string(e.Source),
+			Rename: e.Rename, Cookie: e.Cookie, TraceID: e.TraceID, Attribution: string(e.Attribution),
+		}); err != nil {
+			return err
+		}
+	}
+	stop := Record{Time: w.stopped.UTC(), Record: RecordStop, Healthy: true, Coverage: w.Coverage().String()}
+	if err := w.Health(); err != nil {
+		stop.Healthy, stop.Error = false, err.Error()
+	}
+	return enc.Encode(stop)
 }

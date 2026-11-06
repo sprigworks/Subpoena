@@ -3,6 +3,9 @@
 # read itself fails, with a message containing this text. health: "ok" or
 # text the capture fault must contain. spawned: PIDs per trace ID, in file
 # order. no_spawn: the verdict of the no-spawn check for that trace ID.
+# wrote: file-event paths per trace ID, in file order (W7). no_write: the
+# verdict of the no-write check for that trace ID, about no_write_paths (none:
+# anything).
 traces: {A: c0de00000000000000000000000000a1, B: c0de00000000000000000000000000b2, C: c0de00000000000000000000000000c3}
 cases:
   # One capture window closed by a healthy stop: absence rests on it.
@@ -285,3 +288,198 @@ cases:
     no_spawn:
       A: Fail
       C: Pass
+
+  # A file event is returned for every trace: inotify cannot tell them apart.
+  - name: file_events_for_every_trace
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"create","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    wrote:
+      A: ["/r/a", "/r/a"]
+      B: ["/r/a", "/r/a"]
+    no_write:
+      A: Fail
+      C: Fail
+
+  # Nothing seen, on a healthy capture of a watched root.
+  - name: file_nothing_seen
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    wrote:
+      A: []
+    no_write:
+      A: Pass
+    no_write_paths: ["/r/secret"]
+
+  # A change elsewhere under the root is not about this path.
+  - name: file_seen_elsewhere
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/log","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    no_write:
+      A: Pass
+    no_write_paths: ["/r/secret"]
+
+  # A path is matched with everything below it, on a directory boundary.
+  - name: file_below_the_path
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/secret/deep","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/secrets","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    no_write:
+      A: Fail
+    no_write_paths: ["/r/secret"]
+
+  # A rename of a directory above the path moved it with no event naming it.
+  - name: file_rename_above_the_path
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"rename","path":"/r/dir","root":"/r","is_dir":true,"source":"inotify","attribution":"root","rename":"from","cookie":7}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    no_write:
+      A: Fail
+    no_write_paths: ["/r/dir/secret"]
+
+  # A path outside the roots could never be seen: no absence rests on it.
+  - name: file_path_not_watched
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    no_write:
+      A: Inconclusive
+    no_write_paths: ["/elsewhere/secret"]
+
+  # A start record naming no roots covers no path.
+  - name: file_no_roots
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    no_write:
+      A: Inconclusive
+    no_write_paths: ["/r/secret"]
+
+  # The queue overflowed: what was seen stands, silence proves nothing.
+  - name: file_overflow
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":false,"error":"file witness: 1 gap(s), first: overflow: events lost","coverage":"overflows=1"}'
+    health: "overflow"
+    wrote:
+      A: ["/r/a"]
+    no_write:
+      A: Fail
+
+  # The same, about a path nothing touched.
+  - name: file_overflow_other_path
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":false,"error":"file witness: 1 gap(s), first: overflow: events lost"}'
+    health: "overflow"
+    no_write:
+      A: Inconclusive
+    no_write_paths: ["/r/secret"]
+
+  # A file event outside the window is a fault, and still counts.
+  - name: file_outside_window
+    lines:
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "outside any capture window"
+    wrote:
+      A: ["/r/a"]
+    no_write:
+      A: Fail
+
+  # Exec lines and file lines can share a file, and do not mix.
+  - name: file_and_exec_together
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","pid":7,"trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    spawned:
+      A: [7]
+      B: []
+    wrote:
+      A: ["/r/a"]
+
+  # A line with a trace ID belongs to that trace alone.
+  - name: file_event_with_a_trace
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"cgroup","trace_id":"c0de00000000000000000000000000a1"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    wrote:
+      A: ["/r/a"]
+      B: []
+
+  # An unknown kind might have been a write: never skipped.
+  - name: file_unknown_op
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"mangle","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "unknown file_op"
+
+  # A file event must say where.
+  - name: file_no_path
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "no path"
+
+  # A file event must say when.
+  - name: file_no_time
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"file_op":"write","path":"/r/a"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "no time"
+
+  # A path of the wrong type is a read error.
+  - name: file_path_not_a_string
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":7}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # is_dir of the wrong type is a read error.
+  - name: file_is_dir_not_a_bool
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","is_dir":"yes"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # A key that differs only by case is refused, as for an exec.
+  - name: file_key_in_another_case
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","Is_Dir":true}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "another case"
+
+  # Roots must be a list of strings.
+  - name: file_roots_not_a_list
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":"/r"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 1"
