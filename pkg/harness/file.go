@@ -26,8 +26,8 @@ func NoWrite(w witness.FileWitness, traceID string, paths ...string) (Verdict, e
 	if len(hits) != 0 {
 		return Fail, fmt.Errorf("witness saw file changes for %s: %+v", traceID, hits) //subpoena:enforcement
 	}
-	if p, ok := uncovered(w, paths); ok {
-		return Inconclusive, fmt.Errorf("witness does not watch %s, so it could not have seen a write there", p) //subpoena:enforcement
+	if err := uncovered(w, paths); err != nil {
+		return Inconclusive, err //subpoena:enforcement
 	}
 	if err := captureHealth(w); err != nil {
 		return Inconclusive, err //subpoena:enforcement
@@ -39,14 +39,14 @@ func touchesAny(e witness.FileEvent, paths []string) bool {
 	return slices.ContainsFunc(paths, e.Touches)
 }
 
-// uncovered returns the first path w does not cover.
-func uncovered(w witness.FileWitness, paths []string) (string, bool) {
+// uncovered is the fault of a claim about a path w does not cover.
+func uncovered(w witness.FileWitness, paths []string) error {
 	for _, p := range paths {
 		if !w.Covers(p) {
-			return p, true
+			return fmt.Errorf("witness does not watch %s, so it could not have seen a write there", p)
 		}
 	}
-	return "", false
+	return nil
 }
 
 // RequireNoWrite fails the test unless a healthy witness saw no change to paths
@@ -120,8 +120,8 @@ func checkWrites(tb testing.TB, w witness.FileWitness, traceID string, rule Writ
 			tb.Logf("%s: after an earlier failure, saw %s %s (%s)", TagWitness, e.Op, e.Path, e.Attribution)
 		}
 	}
-	if p, bad := uncovered(w, slices.Concat(rule.Never, rule.Allowed)); bad {
-		tb.Errorf("%s: %s: witness does not watch %s; a rule about it proves nothing", TagInconclusive, traceID, p) //subpoena:enforcement
+	if err := uncovered(w, slices.Concat(rule.Never, rule.Allowed)); err != nil {
+		tb.Errorf("%s: %s: %v", TagInconclusive, traceID, err) //subpoena:enforcement
 		return false
 	}
 	if err := captureHealth(w); err != nil {
