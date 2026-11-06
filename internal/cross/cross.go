@@ -277,8 +277,9 @@ type Options struct {
 	Target         string // directory to cross-examine, inside a Go module
 	// Timeout bounds each go command; 5 minutes if zero. A kill is a build and
 	// 1+killRepeats+killReruns test commands, one more for a green first run that
-	// goes again and for each repeat that crashed or hung, so a mutant can take that
-	// many times as long.
+	// goes again, for a first run that said PASS after a failure and left no failed
+	// test, and for each repeat that crashed or hung, so a mutant can take that many
+	// times as long.
 	Timeout time.Duration
 	Log     io.Writer // progress; io.Discard if nil
 	// EvidenceDir, if set, keeps the full go test -json output of every
@@ -1763,8 +1764,8 @@ func crashLine(output string) bool {
 // log line, but a framed "=== NAME" line can put a real crash line on any test, one
 // that passed or one that will, and no reading of the output tells that from a log
 // line. RequireWitness asks for what holds against printed text, so it reads the
-// line as a crash wherever it sits. The cost: a passing test that prints such a line
-// at the start of a line, beside a witness failure in its package, reads crashed.
+// line as a crash wherever it sits. The cost: a passing test that prints such a line,
+// as crashLine reads one, beside a witness failure in its package, reads crashed.
 // Without RequireWitness the line stays a log line. See docs/architecture.md.
 //
 //subpoena:enforcement_point

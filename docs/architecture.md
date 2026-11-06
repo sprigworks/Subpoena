@@ -202,8 +202,9 @@ order does not matter: the binary lived. The exception is a test that passed bes
 not, read from each test's events from `run`, or from `cont` if it paused, to its end, which covers subtests
 started from goroutines, as those never pause: package testing's frames carry a line printed with no
 frame to whichever test printed last, so a parallel test's `panic:` line can land on its neighbour.
-There it is a crash. The cost is a passing parallel test that logs such a line at the start of a
-line beside a real failure: that kill reads crashed, and the run fails, wherever the line lands. Sequential tests keep the
+There it is a crash. The cost is a passing test that prints such a line beside a real failure, `panic:`
+or `fatal error:` at the start of a line, or `test panicked:` after a file and line, anywhere on a
+line, as `t.Log` gives it: that kill reads crashed, and the run fails, wherever the line lands. Sequential tests keep the
 rule, and so do subtests in turn inside one parallel test. Which test holds which is read from what ran, not cut
 from the names, as go keeps a slash in a subtest's name: `T/GET_/admin` is a subtest of `T`, and `T/read/all` a sibling of `T/read` if it
 started while that test was paused. One shape cannot be read: a subtest started from a goroutine, whose name goes on from a
@@ -241,7 +242,7 @@ or package testing's `no tests to run` line, has none. A selected run does not l
 same, and the whole-suite run after it does. What is left pays: a `TestMain` that hides `m.Run`'s output
 and calls it again only on failure shows no test on any green run, so each of its package's survivors takes one more suite run,
 and a flake gets that one first try, which still has to fail again in the same test and pass three times
-without the mutant. A framed `=== RUN` line printed by a `TestMain` can hide the signature, as printed text can
+without the mutant. That run can hang where the first did not, which reads as a timeout and fails the run. A `TestMain` that shows one `m.Run`, hides a later red one, and takes its exit code from a third shows tests on a green run, so it is not seen: that reads survived, and the run fails. A framed `=== RUN` line printed by a `TestMain` can hide the signature, as printed text can
 anything here, and that reads survived, which fails the run. A red one can also say `PASS` after
 a real failure, so when that leaves no failed test, the failed tests come from a run without the
 flag. A suite whose second `m.Run` truly passes says `PASS` there too, and that kill reads
