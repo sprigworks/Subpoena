@@ -26,7 +26,13 @@
 //
 // -deliveries also runs pkg/witness/netbpf and writes one witness.DeliveryLine
 // per send from a session cgroup, -all or not: a broker's write to a subscriber
-// on a socket it accepted, or a send that names its destination.
+// on a socket it accepted, or a send that names its destination. The start record
+// lists the captures that ran, and a reader refuses a delivery claim on a file
+// that does not name this one.
+//
+// Stopping does not wait on a stalled output: if a line can make no progress for
+// stallLimit once told to stop, the capture is unhealthy and the process exits
+// non-zero, most likely with no stop record, which proves nothing, as it should.
 package main
 
 import (
@@ -132,6 +138,15 @@ func runFiles(roots []string, out, ready string, stop <-chan os.Signal) error {
 	return errors.Join(stopErr, w.WriteEnd(dst))
 }
 
+// startRecord opens the capture window and says which hooks are behind it.
+func startRecord(deliveries bool) witness.Record {
+	captures := []string{witness.CaptureExec}
+	if deliveries {
+		captures = append(captures, witness.CaptureDelivery)
+	}
+	return witness.Record{Time: time.Now().UTC(), Record: witness.RecordStart, Captures: captures}
+}
+
 func run(root string, all, deliveries bool, out, ready string) error {
 	var dst io.Writer = os.Stdout
 	if out != "-" {
@@ -142,8 +157,9 @@ func run(root string, all, deliveries bool, out, ready string) error {
 		defer f.Close()
 		dst = f
 	}
+	guard := newStallGuard(dst, stallLimit)
 	var mu sync.Mutex
-	enc := json.NewEncoder(dst)
+	enc := json.NewEncoder(guard)
 	var writeErr error
 	w := execbpf.New(execbpf.Config{
 		CgroupRoot: root,
@@ -211,7 +227,7 @@ func run(root string, all, deliveries bool, out, ready string) error {
 			return err
 		}
 	}
-	err := enc.Encode(witness.Record{Time: time.Now().UTC(), Record: witness.RecordStart})
+	err := enc.Encode(startRecord(net != nil))
 	mu.Unlock()
 	if err != nil {
 		stopAll()
@@ -229,6 +245,7 @@ func run(root string, all, deliveries bool, out, ready string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
+	guard.stopping()
 	err = stopAll()
 	mu.Lock()
 	defer mu.Unlock()

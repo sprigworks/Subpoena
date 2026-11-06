@@ -71,6 +71,7 @@ func TestDialTo(t *testing.T) {
 		{"mapped dest", v4, mapped, true},
 		{"mapped rule", mapped, v4, true},
 		{"other addr", v4, netip.MustParseAddrPort("192.0.2.8:443"), false},
+		{"zoned rule", netip.MustParseAddrPort("[fe80::1%eth0]:443"), netip.MustParseAddrPort("[fe80::1]:443"), true},
 	} {
 		if got := DialTo(tc.rule)(witness.NetworkEvent{Dest: tc.dest}); got != tc.want {
 			t.Errorf("%s: DialTo(%v)(%v) = %v, want %v", tc.name, tc.rule, tc.dest, got, tc.want)

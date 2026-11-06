@@ -73,10 +73,22 @@ type DeliveryCoverage struct {
 	// Lost is failed ring-buffer reservations, host-wide. Above zero, Health
 	// fails as well.
 	Lost uint64
+	// RecursionMisses is program runs the kernel skipped, host-wide, each maybe a
+	// send or a dial that was never reported. Above zero, Health fails.
+	RecursionMisses uint64
+	// LeftSession is tasks that left a session cgroup during the capture. Above
+	// zero, Health fails: what they did next is in no session.
+	LeftSession uint64
+	// TooDeep is attempts and moves in cgroup paths too long to walk to the top,
+	// host-wide. Above zero, Health fails.
+	TooDeep uint64
+	// Unattributed is attempts from under the session root in no session. Above
+	// zero, Health fails.
+	Unattributed uint64
 }
 
 // String is the coverage in one line, as a stop record carries it.
 func (c DeliveryCoverage) String() string {
-	return fmt.Sprintf("%d send(s) reported, %d with an unknown peer; %d send(s) on sockets that are not inet, not reported; %d kernel event(s) lost",
-		c.Sends, c.UnknownPeers, c.OtherFamilySends, c.Lost)
+	return fmt.Sprintf("%d send(s) reported, %d with an unknown peer; %d send(s) on sockets that are not inet, not reported; %d kernel event(s) lost; %d recursion miss(es); %d task(s) left a session; %d too deep to attribute; %d under the root in no session",
+		c.Sends, c.UnknownPeers, c.OtherFamilySends, c.Lost, c.RecursionMisses, c.LeftSession, c.TooDeep, c.Unattributed)
 }

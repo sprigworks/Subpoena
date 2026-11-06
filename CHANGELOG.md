@@ -40,6 +40,22 @@
   the session cgroup, so a broker inside the test binary is not seen.
   `witnesses/README.md` has what else it misses. `subpoena-witness -deliveries`
   writes delivery lines, and Python reads them (`Log.delivered`, `no_delivery`).
+- **The delivery witness no longer passes on what it did not see.** A witness
+  file now says which captures ran (`captures` on the start record), and
+  `NoDelivery` over a file without `delivery` is Inconclusive in Go and Python,
+  so files written before this change are too. `netbpf` `Health` fails on kernel
+  recursion misses, which `preempt=full` makes common, for `Delivered` and
+  `Dialed`; on a task leaving its session by a move or `CLONE_INTO_CGROUP`; on a
+  cgroup path too long to walk; and on a send under the session root in no session.
+  Attribution now walks to the top of the hierarchy, so a session can nest past 8
+  levels without going unseen, and a cgroup it names like another session cannot
+  take the charge; `SessionTrace` in Go and Python counts only the first root
+  element in a path. A raw IPv6 name with family 0 is reported, a datagram or raw
+  send is charged to its name and not the socket's peer, and a name no hook can
+  read is an unknown peer. `DeliveryTo`, `Never` and `DialTo` ignore a zone. `Start`
+  refuses a root of `..`. `subpoena-witness` gives up on a stalled output when
+  stopping, and both readers refuse a zone, a bracketed IPv4 address and a trailing
+  newline in a peer.
 - **A failed `netbpf` start says why.** `Health` already failed, as "capture has
   not stopped"; it now keeps the load or attach error. `Start` also refuses a
   cgroup root name the kernel can never match, which read as silence.

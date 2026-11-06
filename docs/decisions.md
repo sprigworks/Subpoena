@@ -30,7 +30,7 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 
 `cmd/subpoena-witness` ships exec events, with `-deliveries` the sends `netbpf` sees, or with `-file-root` file events. It does not ship dials.
 
-**Why:** lineage only says "a descendant of the gateway ran X", not which session it ran for, and a compromised child can fork past any environment-variable marker. Every process in the session lands in its cgroup regardless. Tetragon was the first witness, but outside Kubernetes it does not report the session cgroup: v1.7.1 reports a container ID only when the cgroup name looks like one. Tetragon is kept for enforcement, not for witnessing ([witnesses/README.md](../witnesses/README.md)).
+**Why:** lineage only says "a descendant of the gateway ran X", not which session it ran for, and a compromised child can fork past any environment-variable marker. Every process the session starts lands in its cgroup regardless, and one that leaves it during a capture fails `netbpf`'s health, not yet `execbpf`'s. Tetragon was the first witness, but outside Kubernetes it does not report the session cgroup: v1.7.1 reports a container ID only when the cgroup name looks like one. Tetragon is kept for enforcement, not for witnessing ([witnesses/README.md](../witnesses/README.md)).
 
 ## The exec backstop
 

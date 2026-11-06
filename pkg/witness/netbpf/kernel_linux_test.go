@@ -10,6 +10,7 @@ package netbpf
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -23,6 +24,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 
@@ -125,6 +127,48 @@ func helper(spec string) int {
 		}
 		defer c.Close()
 		if _, err := c.Write([]byte("x")); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "raw6": // a raw IPv6 send: raw6 <family> <connect to, or -> <name>
+		if err := raw6(f[1], f[2], f[3]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "udp6unspec": // connected UDP, naming somewhere else with family 0: udp6unspec <connect to> <name>
+		if err := udp6Unspec(f[1], f[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "emptyname": // a name of length zero on an unconnected socket
+		if err := emptyName(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "leave": // leave <cgroup dir> <udp addr>: move out, then send
+		if err := os.WriteFile(f[1]+"/cgroup.procs", []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		c, err := net.Dial("udp4", f[2])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer c.Close()
+		c.Write([]byte("x"))
+	case "forkout": // forkout <cgroup dir> <udp addr>: a child made outside, which sends
+		dir, err := os.Open(f[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer dir.Close()
+		c := exec.Command(os.Args[0], "-test.run=^$")
+		c.Env = append(os.Environ(), "NETBPF_HELPER=udpsend "+f[2]+" 1")
+		c.Stderr = os.Stderr
+		c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(dir.Fd())}
+		if err := c.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -782,4 +826,300 @@ func TestKernelFailedAttachFailsHealth(t *testing.T) {
 	if v, _ := harness.NoDelivery(w, tidA, nil); v != harness.Inconclusive {
 		t.Fatalf("no capture, no absence: %v", v)
 	}
+}
+
+// sockaddr6 is a struct sockaddr_in6 with the family the caller chooses.
+func sockaddr6(family uint16, addr string) []byte {
+	b := make([]byte, 28)
+	binary.NativeEndian.PutUint16(b, family)
+	a := netip.MustParseAddr(addr).As16()
+	copy(b[8:], a[:])
+	return b
+}
+
+func sendRaw(fd int, name []byte) syscall.Errno {
+	msg := []byte("hello")
+	var p, n uintptr
+	if name != nil {
+		p, n = uintptr(unsafe.Pointer(unsafe.SliceData(name))), uintptr(len(name))
+	}
+	_, _, e := syscall.Syscall6(syscall.SYS_SENDTO, uintptr(fd), uintptr(unsafe.Pointer(&msg[0])), uintptr(len(msg)), 0, p, n)
+	return e
+}
+
+func connect6(fd int, to string) error {
+	sa := &syscall.SockaddrInet6{Addr: netip.MustParseAddr(to).As16()}
+	return syscall.Connect(fd, sa)
+}
+
+// The send's own failure does not matter: the hook runs before it.
+func raw6(family, to, name string) error {
+	fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_RAW, 253)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	if to != "-" {
+		if err := connect6(fd, to); err != nil {
+			return err
+		}
+	}
+	fam, err := strconv.Atoi(family)
+	if err != nil {
+		return err
+	}
+	sendRaw(fd, sockaddr6(uint16(fam), name))
+	return nil
+}
+
+func udp6Unspec(to, name string) error {
+	fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	ap := netip.MustParseAddrPort(to)
+	if err := syscall.Connect(fd, &syscall.SockaddrInet6{Addr: ap.Addr().As16(), Port: int(ap.Port())}); err != nil {
+		return err
+	}
+	if e := sendRaw(fd, sockaddr6(0, name)); e != 0 {
+		return e
+	}
+	return nil
+}
+
+func emptyName() error {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	sendRaw(fd, make([]byte, 16)[:0:16])
+	return nil
+}
+
+func peersOf(events []witness.DeliveryEvent) []string {
+	var out []string
+	for _, e := range events {
+		out = append(out, e.Peer.Addr().String())
+	}
+	return out
+}
+
+// Raw IPv6 goes to the address in a name whose family is 0. That send must be
+// charged to that address: not lost, and not to the peer the socket holds.
+func TestKernelSeesRawIPv6WithFamilyZero(t *testing.T) {
+	for _, tc := range []struct {
+		name, spec string
+		want       string
+	}{
+		{"control, AF_INET6", "raw6 10 - ::1", "::1"},
+		{"family 0, no peer", "raw6 0 - ::1", "::1"},
+		{"family 0, another peer held", "raw6 0 ::1 2001:db8::7", "2001:db8::7"},
+		{"AF_INET6, another peer held", "raw6 10 ::1 2001:db8::7", "2001:db8::7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, root := sessionGroup(t, tidB)
+			w := start(t, Config{CgroupRoot: root})
+			dial(t, g, tc.spec)
+			if err := w.Stop(); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+			if got := peersOf(w.Delivered(tidB)); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("Delivered peers = %v, want only %s", got, tc.want)
+			}
+			var named []string
+			for _, d := range w.Dialed(tidB) {
+				if d.Op == witness.OpSendmsg { // a connect to the peer held is a true attempt of its own
+					named = append(named, d.Dest.Addr().String())
+				}
+			}
+			if len(named) != 1 || named[0] != tc.want {
+				t.Fatalf("Dialed sends = %v, want only %s", named, tc.want)
+			}
+		})
+	}
+}
+
+// UDP over IPv6 is the other way round: family 0 is no name, so the datagram goes
+// to the socket's peer, and the name must not take the charge.
+func TestKernelChargesUDP6FamilyZeroToTheSocketPeer(t *testing.T) {
+	g, root := sessionGroup(t, tidB)
+	pc, err := net.ListenPacket("udp6", "[::1]:0")
+	if err != nil {
+		skipOrFail(t, "no IPv6 loopback: %v", err)
+	}
+	defer pc.Close()
+	w := start(t, Config{CgroupRoot: root})
+	dial(t, g, "udp6unspec "+pc.LocalAddr().String()+" 2001:db8::7")
+	pc.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := pc.ReadFrom(make([]byte, 16)); err != nil {
+		t.Fatalf("the datagram went somewhere else: %v", err)
+	}
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := peersOf(w.Delivered(tidB)); len(got) != 1 || got[0] != "::1" {
+		t.Fatalf("Delivered peers = %v, want only ::1", got)
+	}
+}
+
+// A name the sendmsg hook cannot read leaves no one to report the send, so the
+// delivery hook reports it, with an unknown peer.
+func TestKernelReportsANameNoHookCanRead(t *testing.T) {
+	g, root := sessionGroup(t, tidB)
+	w := start(t, Config{CgroupRoot: root})
+	dial(t, g, "emptyname")
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := w.Delivered(tidB); len(got) != 1 || !got[0].PeerUnknown() {
+		t.Fatalf("Delivered = %+v, want one with an unknown peer", got)
+	}
+}
+
+// A task that leaves its session takes its sends with it, so nothing may read
+// as absence afterwards, wherever it went.
+func TestKernelALeavingTaskFailsHealth(t *testing.T) {
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	addr := pc.LocalAddr().String()
+	for _, tc := range []struct {
+		name string
+		spec func(g *cgroup.Group, root string) string
+		want string
+	}{
+		{"moved to the session root", func(_ *cgroup.Group, root string) string { return "leave " + root + " " + addr }, "left a session"},
+		{"moved above the root", func(_ *cgroup.Group, root string) string { return "leave " + filepath.Dir(root) + " " + addr }, "left a session"},
+		{"moved to another session", func(_ *cgroup.Group, root string) string { return "leave " + root + "/" + tidA + " " + addr }, "left a session"},
+		{"child made above the root", func(_ *cgroup.Group, root string) string { return "forkout " + filepath.Dir(root) + " " + addr }, "left a session"},
+		{"moved within the session", func(g *cgroup.Group, _ string) string { return "leave " + g.Dir() + "/child " + addr }, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, root := sessionGroup(t, tidB)
+			other := filepath.Join(root, tidA)
+			child := filepath.Join(g.Dir(), "child")
+			for _, d := range []string{other, child} {
+				if err := os.Mkdir(d, 0o755); err != nil {
+					skipOrFail(t, "no cgroup %s: %v", d, err)
+				}
+				t.Cleanup(func() {
+					for i := 0; i < 50 && os.Remove(d) != nil; i++ {
+						time.Sleep(20 * time.Millisecond)
+					}
+				})
+			}
+			w := start(t, Config{CgroupRoot: root})
+			dial(t, g, tc.spec(g, root))
+			err := w.Stop()
+			v, verr := harness.NoDelivery(w, tidB, nil)
+			if tc.want == "" {
+				if err != nil || v != harness.Fail {
+					t.Fatalf("a move inside the session: Stop=%v, verdict=%v (%v), want a healthy sighting", err, v, verr)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Stop = %v, want %q", err, tc.want)
+			}
+			if v != harness.Inconclusive {
+				t.Fatalf("verdict = %v (%v), want Inconclusive", v, verr)
+			}
+			if w.DeliveryCoverage().LeftSession == 0 {
+				t.Fatalf("coverage = %+v", w.DeliveryCoverage())
+			}
+		})
+	}
+}
+
+// nest makes dir/names[0]/names[1]/... and returns the innermost.
+func nest(t *testing.T, dir string, names ...string) string {
+	t.Helper()
+	for _, n := range names {
+		dir = filepath.Join(dir, n)
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			skipOrFail(t, "no nested cgroup: %v", err)
+		}
+		d := dir
+		t.Cleanup(func() {
+			for i := 0; i < 50 && os.Remove(d) != nil; i++ {
+				time.Sleep(20 * time.Millisecond)
+			}
+		})
+	}
+	return dir
+}
+
+func sendFrom(t *testing.T, dir, addr string) {
+	t.Helper()
+	fd, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fd.Close()
+	c := exec.Command(os.Args[0], "-test.run=^$")
+	c.Env = append(os.Environ(), "NETBPF_HELPER=udpsend "+addr+" 1")
+	c.Stderr = os.Stderr
+	c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(fd.Fd())}
+	if err := c.Run(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The application owns everything below its session, so however it nests, the
+// send stays the session's. It cannot be pushed out of sight or onto a trace it
+// chooses by building a path that ends like another session.
+func TestKernelNestingCannotMoveASend(t *testing.T) {
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	addr := pc.LocalAddr().String()
+	levels := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = "n"
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name  string
+		extra []string
+	}{
+		{"a forged session within reach", []string{"a"}},
+		{"a forged session past the path kept", []string{"a", "b", "c", "d", "e"}},
+		{"far past the path kept", levels(14)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, root := sessionGroup(t, tidB)
+			leaf := nest(t, g.Dir(), append(tc.extra, filepath.Base(root), tidA)...)
+			w := start(t, Config{CgroupRoot: root})
+			sendFrom(t, leaf, addr)
+			if err := w.Stop(); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+			if got := w.Delivered(tidA); len(got) != 0 {
+				t.Fatalf("charged to the forged trace: %+v", got)
+			}
+			if got := w.Delivered(tidB); len(got) != 1 {
+				t.Fatalf("Delivered to the real trace = %+v", got)
+			}
+		})
+	}
+	t.Run("too deep to walk", func(t *testing.T) {
+		g, root := sessionGroup(t, tidB)
+		leaf := nest(t, g.Dir(), levels(40)...)
+		w := start(t, Config{CgroupRoot: root})
+		sendFrom(t, leaf, addr)
+		if err := w.Stop(); err == nil || !strings.Contains(err.Error(), "too long to walk") {
+			t.Fatalf("Stop = %v", err)
+		}
+		if v, err := harness.NoDelivery(w, tidB, nil); v != harness.Inconclusive {
+			t.Fatalf("verdict = %v (%v), want Inconclusive", v, err)
+		}
+	})
 }

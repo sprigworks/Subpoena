@@ -56,8 +56,10 @@ func TestCaptureHealthAccountsForShutdownLoss(t *testing.T) {
 	for _, tc := range []struct {
 		name                      string
 		readErr, flushErr, mapErr error
-		otherErr                  error
-		lost                      uint64
+		otherErr, leftErr         error
+		deepErr, missErr          error
+		lost, left, deep, misses  uint64
+		unattributed              bool
 		malformed                 bool
 		want                      string
 	}{
@@ -69,16 +71,29 @@ func TestCaptureHealthAccountsForShutdownLoss(t *testing.T) {
 		{name: "counter unreadable", readErr: ringbuf.ErrFlushed, mapErr: mapErr, want: "loss counter unavailable"},
 		{name: "other-sends counter unreadable", readErr: ringbuf.ErrFlushed, otherErr: mapErr, want: "loss counter unavailable"},
 		{name: "bad record", readErr: ringbuf.ErrFlushed, malformed: true, want: "short record"},
+		{name: "recursion misses", readErr: ringbuf.ErrFlushed, misses: 3, want: "skipped the programs 3 time(s)"},
+		{name: "recursion misses unreadable", readErr: ringbuf.ErrFlushed, missErr: mapErr, want: "loss counter unavailable"},
+		{name: "a task left", readErr: ringbuf.ErrFlushed, left: 1, want: "1 task(s) left a session"},
+		{name: "left counter unreadable", readErr: ringbuf.ErrFlushed, leftErr: mapErr, want: "loss counter unavailable"},
+		{name: "too deep", readErr: ringbuf.ErrFlushed, deep: 2, want: "2 attempt(s) or move(s)"},
+		{name: "deep counter unreadable", readErr: ringbuf.ErrFlushed, deepErr: mapErr, want: "loss counter unavailable"},
+		{name: "a send under the root in no session", readErr: ringbuf.ErrFlushed, unattributed: true, want: "1 attempt(s) from under the session root"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &scriptedReader{readErr: tc.readErr, flushErr: tc.flushErr, end: make(chan struct{})}
 			if tc.malformed {
 				r.records = []ringbuf.Record{{RawSample: []byte{1}}}
 			}
-			w := New(Config{})
+			w := New(Config{CgroupRoot: "/sys/fs/cgroup/subpoena"})
 			k := &kernel{rd: r, done: make(chan struct{}), lost: func() (uint64, error) { return tc.lost, tc.mapErr },
-				other: func() (uint64, error) { return 0, tc.otherErr }}
+				other:  func() (uint64, error) { return 0, tc.otherErr },
+				left:   func() (uint64, error) { return tc.left, tc.leftErr },
+				deep:   func() (uint64, error) { return tc.deep, tc.deepErr },
+				misses: func() (uint64, error) { return tc.misses, tc.missErr }}
 			w.k = k
+			if tc.unattributed {
+				w.handle(Event{Op: witness.OpDeliver, Cgroup: "subpoena"})
+			}
 			go w.read(k)
 			err := w.Stop()
 			if tc.want == "" {
@@ -108,14 +123,18 @@ func TestStopRecordsCoverage(t *testing.T) {
 	r := &scriptedReader{readErr: ringbuf.ErrFlushed, end: make(chan struct{})}
 	w := New(Config{})
 	k := &kernel{rd: r, done: make(chan struct{}), lost: func() (uint64, error) { return 2, nil },
-		other: func() (uint64, error) { return 5, nil }}
+		other:  func() (uint64, error) { return 5, nil },
+		left:   func() (uint64, error) { return 7, nil },
+		deep:   func() (uint64, error) { return 11, nil },
+		misses: func() (uint64, error) { return 13, nil }}
 	w.k = k
 	go w.read(k)
 	if w.Stop() == nil {
 		t.Fatal("kernel loss must fail Stop")
 	}
-	if c := w.DeliveryCoverage(); c.Lost != 2 || c.OtherFamilySends != 5 {
-		t.Fatalf("coverage = %+v", c)
+	want := witness.DeliveryCoverage{Lost: 2, OtherFamilySends: 5, LeftSession: 7, TooDeep: 11, RecursionMisses: 13}
+	if c := w.DeliveryCoverage(); c != want {
+		t.Fatalf("coverage = %+v, want %+v", c, want)
 	}
 }
 
@@ -184,7 +203,7 @@ func TestSessionBaseMustBeMatchableInTheKernel(t *testing.T) {
 	if _, err := sessionBase(strings.Repeat("x", nameLen-1)); err != nil {
 		t.Fatalf("the longest name the kernel reads whole: %v", err)
 	}
-	for _, bad := range []string{"", "/", ".", strings.Repeat("x", nameLen)} {
+	for _, bad := range []string{"", "/", ".", "..", strings.Repeat("x", nameLen)} {
 		if _, err := sessionBase(bad); err == nil {
 			t.Errorf("sessionBase(%q) must fail: no cgroup element can equal it", bad)
 		}
@@ -204,7 +223,7 @@ func TestGeneratedObjectContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"lost", "other_sends"} {
+	for _, name := range []string{"lost", "other_sends", "left_session", "too_deep"} {
 		m := spec.Maps[name]
 		if m == nil || m.Type != ebpf.PerCPUArray || m.MaxEntries != 1 || m.KeySize != 4 || m.ValueSize != 8 {
 			t.Fatalf("generated map %s = %+v", name, m)
@@ -217,6 +236,8 @@ func TestGeneratedObjectContract(t *testing.T) {
 		"handle_connect": "fentry/security_socket_connect",
 		"handle_sendmsg": "fentry/security_socket_sendmsg",
 		"handle_deliver": "fentry/security_socket_sendmsg",
+		"handle_attach":  "fentry/cgroup_attach_task",
+		"handle_fork":    "tp_btf/sched_process_fork",
 	} {
 		if p := spec.Programs[name]; p == nil || p.SectionName != section {
 			t.Errorf("program %s = %+v, want section %s", name, p, section)

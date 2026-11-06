@@ -41,11 +41,12 @@ func RequireNoDial(tb testing.TB, w witness.NetworkWitness, traceID string, matc
 }
 
 // DialTo matches attempts to any of the given addresses. A zero port in an
-// address matches every port.
+// address matches every port. A zone is left out of the comparison: the kernel
+// reports none, so a link-local address written with one would match nothing.
 func DialTo(addrs ...netip.AddrPort) func(witness.NetworkEvent) bool {
 	return func(e witness.NetworkEvent) bool {
 		for _, a := range addrs {
-			if e.Dest.Addr().Unmap() == a.Addr().Unmap() && (a.Port() == 0 || a.Port() == e.Dest.Port()) {
+			if e.Dest.Addr().WithZone("").Unmap() == a.Addr().WithZone("").Unmap() && (a.Port() == 0 || a.Port() == e.Dest.Port()) {
 				return true
 			}
 		}

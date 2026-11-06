@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -13,7 +14,8 @@ import (
 // window has ended. match selects the sends the claim is about (nil: any send,
 // which on a broker includes its acks to the publisher; DeliveryTo names a
 // peer). One matching send contradicts absence even if capture was unhealthy.
-// With none, missing or bad health makes the claim Inconclusive.
+// With none, missing or bad health makes the claim Inconclusive, and so does a
+// witness file with no delivery capture in it.
 //
 //subpoena:enforcement_point
 func NoDelivery(w witness.DeliveryWitness, traceID string, match func(witness.DeliveryEvent) bool) (Verdict, error) {
@@ -26,10 +28,21 @@ func NoDelivery(w witness.DeliveryWitness, traceID string, match func(witness.De
 	if len(hits) != 0 {
 		return Fail, fmt.Errorf("witness saw sends for %s: %+v", traceID, hits) //subpoena:enforcement
 	}
-	if err := captureHealth(w); err != nil {
+	if err := deliveryCapture(w); err != nil {
 		return Inconclusive, err //subpoena:enforcement
 	}
 	return Pass, nil
+}
+
+// deliveryCapture is why absence of a send cannot rest on w, or nil: a witness
+// file that says no delivery hook ran, or missing or bad capture health.
+//
+//subpoena:enforcement_point
+func deliveryCapture(w witness.DeliveryWitness) error {
+	if c, ok := w.(interface{ CapturedDeliveries() bool }); ok && !c.CapturedDeliveries() {
+		return errors.New("the witness file's start record names no delivery capture, so a send could not have been seen (run subpoena-witness with -deliveries)") //subpoena:enforcement
+	}
+	return captureHealth(w)
 }
 
 // RequireNoDelivery fails the test unless a healthy witness reports no matching
@@ -58,25 +71,27 @@ func DeliveryTo(peers ...netip.AddrPort) func(witness.DeliveryEvent) bool {
 }
 
 // mayBePeer reports whether e may have gone to rule: it did, or the witness
-// cannot say it did not.
+// cannot say it did not. The kernel reports no zone, so a rule's zone (which a
+// link-local conn.LocalAddr() has) cannot tell a peer apart and is left out.
 func mayBePeer(e witness.DeliveryEvent, rule netip.AddrPort) bool {
 	if e.PeerUnknown() {
 		return true
 	}
-	return addrFits(e, rule) && (rule.Port() == 0 || e.Peer.Port() == 0 || e.Peer.Port() == rule.Port())
+	return addrFits(e.Peer.Addr().WithZone(""), rule.Addr().WithZone("")) && (rule.Port() == 0 || e.Peer.Port() == 0 || e.Peer.Port() == rule.Port())
 }
 
-// isPeer reports whether e is known to have gone to rule.
+// isPeer reports whether e is known to have gone to rule. A rule with a zone is
+// not: the event does not say which link the send took.
 func isPeer(e witness.DeliveryEvent, rule netip.AddrPort) bool {
 	if e.PeerUnknown() {
 		return false
 	}
-	return addrFits(e, rule) && (rule.Port() == 0 || e.Peer.Port() == rule.Port())
+	return addrFits(e.Peer.Addr(), rule.Addr()) && (rule.Port() == 0 || e.Peer.Port() == rule.Port())
 }
 
-func addrFits(e witness.DeliveryEvent, rule netip.AddrPort) bool {
-	a := rule.Addr().Unmap()
-	return !a.IsValid() || a.IsUnspecified() || e.Peer.Addr().Unmap() == a
+func addrFits(peer, rule netip.Addr) bool {
+	a := rule.Unmap()
+	return !a.IsValid() || a.IsUnspecified() || peer.Unmap() == a
 }
 
 // DeliveryRule says which peers a WatchDeliveries check accepts. Entries are
@@ -137,7 +152,7 @@ func checkDeliveries(tb testing.TB, w witness.DeliveryWitness, traceID string, r
 			tb.Logf("%s: %s: %d send(s) on sockets that are not inet (AF_UNIX, netlink, ...) were not reported", TagWitness, traceID, n)
 		}
 	}
-	if err := captureHealth(w); err != nil {
+	if err := deliveryCapture(w); err != nil {
 		tb.Errorf("%s: %s: capture unhealthy, absence of refused sends is not proven: %v", TagInconclusive, traceID, err) //subpoena:enforcement
 		return false
 	}

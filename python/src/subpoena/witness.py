@@ -150,7 +150,8 @@ _ZERO = datetime(1, 1, 1, tzinfo=timezone.utc)
 # Every field name of an exec line, a record or a row line. A key that differs
 # from one only by case is refused: Go's decoder would read it as that field.
 _KNOWN = ("time", "pid", "ppid", "host_pid", "comm", "exe", "command", "args", "cgroup_id", "cgroup",
-          "trace_id", "attribution", "record", "healthy", "error", "roots", "coverage", "silent_closes", "symlinks",
+          "trace_id", "attribution", "record", "healthy", "error", "roots", "captures", "coverage", "silent_closes",
+          "symlinks",
           "file_op", "path", "root", "is_dir", "source", "rename", "cookie",
           "delivery_op", "protocol", "peer", "local", "bytes",
           "event", "engine", "conn", "dest", "statement", "verb", "tables", "opaque", "reason", "rows", "outcome")
@@ -195,10 +196,11 @@ class Log:
     def __init__(self, lines: List[dict], health: Optional[str] = None, files: Optional[List[dict]] = None,
                  roots: Optional[List[str]] = None, coverage: str = "",
                  deliveries: Optional[List["DeliveryEvent"]] = None, rows: Optional[List[dict]] = None,
-                 silent: Optional[List[str]] = None, symlinks: Optional[List[str]] = None):
+                 silent: Optional[List[str]] = None, symlinks: Optional[List[str]] = None,
+                 captures: Optional[List[str]] = None):
         self._lines, self._health = lines, health
         self._files, self._roots, self._coverage = files or [], roots or [], coverage
-        self._deliveries, self._rows = deliveries or [], rows or []
+        self._deliveries, self._rows, self._captures = deliveries or [], rows or [], captures or []
         self._silent, self._symlinks = silent or [], symlinks or []
 
     def health(self) -> Optional[str]:
@@ -261,6 +263,12 @@ class Log:
             return []
         return [e for e in self._deliveries if e.trace_id == trace_id]
 
+
+    def captured_deliveries(self) -> bool:
+        """Whether the file's start record says the delivery hook ran. Without
+        it the file has no delivery lines because nothing looked, which says
+        nothing about sends: no_delivery is then Inconclusive."""
+        return "delivery" in self._captures
 
     def coverage(self) -> str:
         """The stop record's account of what the capture might have missed
@@ -338,7 +346,7 @@ def read_log(f: IO[str]) -> Log:
     naming its line number: skipping it could turn an exec into an absence.
     Capture faults (see Log.health) do not stop the read: the execs are still
     evidence that something ran."""
-    lines, files, roots, silent, symlinks = [], [], [], [], []
+    lines, files, roots, silent, symlinks, captures = [], [], [], [], [], []
     deliveries: "List[DeliveryEvent]" = []
     rows: List[dict] = []
     coverage = ""
@@ -376,6 +384,9 @@ def read_log(f: IO[str]) -> Log:
                 rs = l.get("roots")
                 if rs is not None and (not isinstance(rs, list) or not all(isinstance(r, str) for r in rs)):
                     raise ValueError("roots is not a list of strings")
+                cs = l.get("captures")
+                if cs is not None and (not isinstance(cs, list) or not all(isinstance(c, str) for c in cs)):
+                    raise ValueError("captures is not a list of strings")
                 if l.get("coverage") is not None and not isinstance(l["coverage"], str):
                     raise ValueError("coverage is not a string")
                 for k in ("silent_closes", "symlinks"):
@@ -391,6 +402,7 @@ def read_log(f: IO[str]) -> Log:
                         fault(f"witness: line {n}: a capture started while the one from line {open_at} was still open")
                     open_at = n
                     windows += 1
+                    captures.extend(cs or [])
                 elif rec == "stop":
                     if not open_at:
                         fault(f"witness: line {n}: a stop with no capture open")
@@ -467,7 +479,7 @@ def read_log(f: IO[str]) -> Log:
         # neither, so nothing vouches for its absence.
         fault(f"witness: the file holds {windows} capture windows, and nothing watched between them; "
               "use one witness run per file")
-    return Log(lines, health, files, roots, coverage, deliveries, rows, silent, symlinks)
+    return Log(lines, health, files, roots, coverage, deliveries, rows, silent, symlinks, captures)
 
 
 # The network witness (pkg/witness's NetworkEvent and Sinkhole). Go's eBPF
@@ -487,7 +499,7 @@ _ANSWER_200 = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\
 
 # "v4:port" or "[v6]:port", as Go's netip.ParseAddrPort takes them: an
 # unbracketed IPv6 address would split at its last colon into another address.
-_ADDR_PORT = re.compile(r"^(?:\[([0-9A-Fa-f:.]+)\]|([0-9.]+)):([0-9]{1,5})$")
+_ADDR_PORT = re.compile(r"(?:\[([0-9A-Fa-f:.]+)\]|([0-9.]+)):([0-9]{1,5})")
 
 
 @dataclass(frozen=True)
@@ -517,8 +529,8 @@ class AddrPort:
         if isinstance(a, AddrPort):
             return a
         if isinstance(a, str):
-            m = _ADDR_PORT.match(a)
-            if not m:
+            m = _ADDR_PORT.fullmatch(a)
+            if not m or (m.group(1) and ":" not in m.group(1)):
                 raise ValueError(f"{a!r} is not host:port ([host]:port for IPv6)")
             a = (m.group(1) or m.group(2), int(m.group(3)))
         host, port = a

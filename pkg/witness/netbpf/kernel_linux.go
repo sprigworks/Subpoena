@@ -27,6 +27,11 @@ type kernel struct {
 	done  chan struct{}
 	lost  func() (uint64, error) // read after detaching, before unloading
 	other func() (uint64, error) // the same, for sends on sockets that are not inet
+	left  func() (uint64, error) // the same, for tasks that left a session
+	deep  func() (uint64, error) // the same, for cgroup paths too long to walk
+	// misses is the invocations the kernel skipped, every program together. It
+	// reads the programs, so it too must run before they are unloaded.
+	misses func() (uint64, error)
 }
 
 // hook is one program to attach.
@@ -60,6 +65,8 @@ const (
 // Start loads and attaches the programs. Attempts after Start returns are seen.
 // A failure stays in Health until the next Start: a witness that never attached
 // has seen nothing.
+//
+//subpoena:enforcement_point
 func (w *Witness) Start() error {
 	w.lifecycle.Lock()
 	defer w.lifecycle.Unlock()
@@ -68,6 +75,7 @@ func (w *Witness) Start() error {
 	}
 	w.mu.Lock()
 	w.events, w.deliveries, w.healthErr, w.finished, w.coverage = nil, nil, nil, false, witness.DeliveryCoverage{}
+	w.unattributed = 0
 	w.mu.Unlock()
 	k, err := w.load()
 	if err != nil {
@@ -124,6 +132,9 @@ func (w *Witness) load() (*kernel, error) {
 	}
 	k.lost = func() (uint64, error) { return sum(k.objs.Lost, "loss") }
 	k.other = func() (uint64, error) { return sum(k.objs.OtherSends, "other-sends") }
+	k.left = func() (uint64, error) { return sum(k.objs.LeftSession, "left-session") }
+	k.deep = func() (uint64, error) { return sum(k.objs.TooDeep, "too-deep") }
+	k.misses = k.recursionMisses
 	return k, nil
 }
 
@@ -132,7 +143,26 @@ func (k *kernel) hooks() []hook {
 		{"handle_connect", k.objs.HandleConnect},
 		{"handle_sendmsg", k.objs.HandleSendmsg},
 		{"handle_deliver", k.objs.HandleDeliver},
+		{"handle_attach", k.objs.HandleAttach},
+		{"handle_fork", k.objs.HandleFork},
 	}
+}
+
+// recursionMisses adds up what the kernel counts for every program: invocations
+// it skipped because the program was already active on that CPU. On a preempt=full
+// kernel a task preempted inside a program holds that CPU's count up, so every send
+// there goes unreported until it runs again, with no event and no ring-buffer loss.
+// Linux before 5.12 has neither the guard nor the count, and reads as zero.
+func (k *kernel) recursionMisses() (uint64, error) {
+	var total uint64
+	for _, h := range k.hooks() {
+		st, err := h.prog.Stats()
+		if err != nil {
+			return 0, fmt.Errorf("netbpf: read recursion misses of %s: %w", h.name, err)
+		}
+		total += st.RecursionMisses
+	}
+	return total, nil
 }
 
 // attachAll attaches hooks in order and stops at the first failure, keeping
@@ -164,10 +194,13 @@ func sum(m *ebpf.Map, what string) (uint64, error) {
 // sessionBase is the kernel filter's copy of the session root's last element.
 // The kernel reads path elements up to nameLen-1 bytes long, so a longer name
 // could never compare equal, and a session's sends would vanish as if none were
-// made. Refused here, like a root with no last element.
+// made. Refused here, like a root with no last element, or one no cgroup can
+// have for a name.
+//
+//subpoena:enforcement_point
 func sessionBase(base string) ([nameLen]byte, error) {
 	var out [nameLen]byte
-	if base == "" || base == "/" || base == "." || len(base) >= nameLen {
+	if base == "" || base == "/" || base == "." || base == ".." || len(base) >= nameLen {
 		return out, fmt.Errorf("netbpf: cgroup root element %q cannot be matched in the kernel", base) //subpoena:enforcement
 	}
 	copy(out[:], base)
@@ -193,8 +226,9 @@ func (w *Witness) read(k *kernel) {
 	}
 }
 
-// Stop detaches the programs, drains buffered events and reads the loss
-// counter. Capture errors persist in Health, including after repeated Stop calls.
+// Stop detaches the programs, drains buffered events and reads the kernel's
+// counters of what it could not report. Capture errors persist in Health,
+// including after repeated Stop calls.
 //
 //subpoena:enforcement_point
 func (w *Witness) Stop() error {
@@ -235,9 +269,35 @@ func (w *Witness) Stop() error {
 	if err != nil {
 		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
 	}
+	misses, err := k.misses()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
+	}
+	if misses != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("netbpf: the kernel skipped the programs %d time(s) (recursion misses): sends and dials may have gone unseen", misses)) //subpoena:enforcement
+	}
+	left, err := k.left()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
+	}
+	if left != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("netbpf: %d task(s) left a session cgroup during the capture, and what they did after is no session's", left)) //subpoena:enforcement
+	}
+	deep, err := k.deep()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
+	}
+	if deep != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("netbpf: %d attempt(s) or move(s) in a cgroup path too long to walk, so nothing says whose they were", deep)) //subpoena:enforcement
+	}
 	k.close()
 	w.mu.Lock()
+	if w.unattributed != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("netbpf: %d attempt(s) from under the session root but in no session", w.unattributed)) //subpoena:enforcement
+	}
 	w.coverage.Lost, w.coverage.OtherFamilySends = lost, other
+	w.coverage.RecursionMisses, w.coverage.LeftSession, w.coverage.TooDeep = misses, left, deep
+	w.coverage.Unattributed = w.unattributed
 	w.healthErr = errors.Join(w.healthErr, stopErr)
 	w.finished = true
 	err = w.healthErr

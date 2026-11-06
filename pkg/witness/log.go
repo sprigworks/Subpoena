@@ -81,6 +81,10 @@ type Record struct {
 	Error   string    `json:"error,omitempty"`
 	// Roots, on a file witness's start record, are the directories it watched.
 	Roots []string `json:"roots,omitempty"`
+	// Captures, on a start record, are the hooks that ran (CaptureExec,
+	// CaptureDelivery). A file that does not name a capture cannot prove an
+	// absence of what it would have seen.
+	Captures []string `json:"captures,omitempty"`
 	// Coverage, on a stop record, says in one line what the capture might have
 	// missed even when healthy.
 	Coverage string `json:"coverage,omitempty"`
@@ -91,6 +95,12 @@ type Record struct {
 	// the roots: a path crossing one is not covered.
 	Symlinks []string `json:"symlinks,omitempty"`
 }
+
+// Capture names, as a start record lists them.
+const (
+	CaptureExec     = "exec"
+	CaptureDelivery = "delivery"
+)
 
 // Record kinds.
 const (
@@ -142,6 +152,7 @@ type Log struct {
 	roots      []string
 	silent     []string
 	symlinks   []string
+	captures   []string
 	deliveries []DeliveryEvent
 	rows       []RowLine
 	coverage   string
@@ -209,6 +220,7 @@ func ReadLog(r io.Reader) (*Log, error) {
 				}
 				open = n
 				windows++
+				l.captures = append(l.captures, rec.Captures...)
 			case RecordStop:
 				switch {
 				case open == 0:
@@ -324,11 +336,17 @@ func readDelivery(b []byte) (DeliveryEvent, error) {
 		if e.Peer, err = netip.ParseAddrPort(d.Peer); err != nil {
 			return DeliveryEvent{}, fmt.Errorf("peer: %w", err)
 		}
+		if e.Peer.Addr().Zone() != "" {
+			return DeliveryEvent{}, fmt.Errorf("peer: %q has a zone, which the kernel never reports", d.Peer)
+		}
 		e.Peer = netip.AddrPortFrom(e.Peer.Addr().Unmap(), e.Peer.Port())
 	}
 	if d.Local != "" {
 		if e.Local, err = netip.ParseAddrPort(d.Local); err != nil {
 			return DeliveryEvent{}, fmt.Errorf("local: %w", err)
+		}
+		if e.Local.Addr().Zone() != "" {
+			return DeliveryEvent{}, fmt.Errorf("local: %q has a zone, which the kernel never reports", d.Local)
 		}
 	}
 	return e, nil
@@ -489,6 +507,13 @@ func (l *Log) Delivered(traceID string) []DeliveryEvent {
 		}
 	}
 	return out
+}
+
+// CapturedDeliveries reports whether the file's start record says the delivery
+// hook ran. Without it the file has no delivery lines because nothing looked,
+// which says nothing about sends: harness.NoDelivery is then Inconclusive.
+func (l *Log) CapturedDeliveries() bool {
+	return slices.Contains(l.captures, CaptureDelivery)
 }
 
 // Covers reports whether path lies under a root the file's start record names,
