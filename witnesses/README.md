@@ -766,6 +766,11 @@ points the application's DSN at its loopback listener; it forwards to the real
 server and logs statements and commits per connection. There is no ORM awareness,
 nothing inside the database, and no trigger. It needs no root.
 
+**This witness is experimental.** A Pass from it can be false. It works out what
+SQL does from the statement text, and known statement shapes get past that. Do not
+rely on its results as proof. They do not count as witness evidence for any
+published claim yet. Open problems are listed below.
+
 **It has no SQLite or MongoDB support.** Neither speaks these protocols, and
 SQLite has no socket at all, so a suite on either gets nothing from it. MariaDB
 may work and has not been tested; its extended commands are unreadable frames.
@@ -888,7 +893,7 @@ a `SET` in the text counts at once, since a report waits for the next `Sync`. On
 MySQL `NO_BACKSLASH_ESCAPES` comes from the status flags, the charset from the
 handshake, and `ANSI_QUOTES`, `SET NAMES` and the like only from the text. A search
 path that puts a schema ahead of `pg_catalog` counts as well. Values are not parsed
-for what they mean. A statement that touches one of these settings, in any spelling
+for what they mean. A statement that touches one of these settings, in the spellings it knows
 (quoted, any case, `-` for `_`, `set_config`, or text the witness could not read that
 holds a `SET`), taints the session unless the value is on an allow-list in a plain
 form: a word, a quoted name, or a string with no escape in it. For a search path that
@@ -920,9 +925,8 @@ parser, or a reply matching no command (the connection goes on as a raw copy, so
 the application is not broken by its witness); a connection dropped with a transaction open or a reply owed, whose
 writes get outcome `unknown`; a connection it could not proxy, or left queued at
 `Stop`; a client insisting on TLS or compression; a routine that failed or rolled
-back where it could have committed; a failed write to the witness file; and a
-a MySQL session that ended with a write open; a failed write to the witness file;
-and a capture not yet stopped. Faults are per capture, not per table. A Postgres
+back where it could have committed; a MySQL session that ended with a write open;
+a failed write to the witness file; and a capture not yet stopped. Faults are per capture, not per table. A Postgres
 `Terminate` with a transaction open is a clean rollback. On MySQL `COM_QUIT`,
 `COM_RESET_CONNECTION` and `COM_CHANGE_USER` with a write open give that write outcome
 `unknown` and a fault, InnoDB or not: no reply follows, the wire does not show a
@@ -949,7 +953,7 @@ Not seen, in every capture:
   no statement named `users`, not that `users` gained no row. Only the catalog can
   resolve these, and these are ordinary schemas, so no adversary is needed. Claim every
   name rows can be written under, or claim the empty table for any write. Changes that
-  set such a link up through the listener are opaque; ones a migration made are not seen;
+  set such a link up through the listener are opaque on Postgres, and not on MySQL; ones a migration made are not seen;
 - bound values, so it can say a table was written, and not with what;
 - routines installed before the capture that read as something else, which the wire
   cannot show because only the catalog can. `SELECT * FROM v` where `v` is a view over
@@ -982,6 +986,58 @@ host:port -out file` runs the same witness, needs no privileges, and stops on
 SIGTERM; `Config.Output` is the same thing in Go. The file holds row lines
 (`docs/ports.md`, W9), which Python reads with `read_log(f).committed(trace_id)`.
 Running the witness stays Go-only.
+
+**Open problems.** These were known as of the last review. Each is a statement shape
+that gets a wrong answer, so treat a Pass here as unproven. Most need a routine, domain
+or table that a migration installed. Five give a false Pass: the row is present and the
+verdict is Pass.
+
+- Postgres: a function in `FROM` after a comma with a column definition list, such as
+  `SELECT * FROM one o, rw(1) AS (a int)`, is taken for a `WITH` item and not checked as
+  a call. A writing function runs, and the statement is logged as a read or as a write
+  to `one` only.
+- Postgres: a typed string whose type name is quoted, such as `SELECT "d_users" '1'`
+  or `public."d_users" '1'`, is not checked. A writing domain `CHECK` runs and the
+  statement is logged as a read. The unquoted form is caught.
+- Postgres: `UPDATE pg_settings SET setting = ...` changes a session setting through a
+  view rule, and the session is not marked as changed. A changed `search_path`, or
+  `standard_conforming_strings` in a pipeline, makes the text read differently from how
+  the server runs it, so a hidden call passes as a read.
+- MySQL: `SET CHAR SET gbk` changes the client character set and the session is not
+  marked as changed. A later statement such as `SELECT '\xbf\', f(1) -- '` is one
+  string to the witness and a call to the server.
+- Postgres: a column or table named `end`, as in `UPDATE one SET a = CASE WHEN one.end
+  = 1 THEN insert(1) ELSE 0 END`, throws off the `CASE` count, and a call to a function
+  named `insert` is excused as a `MERGE` action. The write is logged against `one` only.
+
+One gives a false Fail on ordinary traffic:
+
+- Postgres: a plain filter on a column with a keyword-like name before `LIKE` or
+  `ILIKE`, such as `WHERE type LIKE 'a%'` or `value NOT ILIKE 'a%'`, is read as a string
+  typed as `LIKE`, and the claim fails on every table. `type`, `value`, `path`,
+  `content`, `comment`, `source`, `location`, `version` and `language` are all hit. A
+  qualified name such as `u.type` is not.
+
+Four more give a false Pass, and are less likely to be reached:
+
+- Postgres: a parameter field written with a space, such as `SELECT $1 .fw` with a row
+  type bound, runs a field function that writes, and it is logged as a read.
+- Postgres: a domain reached through `ALTER TABLE`, as in `ALTER TABLE one ALTER COLUMN
+  a TYPE d` or `ADD COLUMN c d DEFAULT 1`, runs a writing `CHECK` over the existing rows.
+  It is logged as a write to `one` only.
+- MySQL: a `MERGE` table made through the listener, such as `CREATE TABLE m (...)
+  ENGINE=MERGE UNION=(users)`, then an insert into `m`, writes to `users` with no alarm.
+  The target must be MyISAM. Such links are opaque on Postgres only.
+- Both engines: a setting changed inside an opaque statement before `Mark`, such as a
+  `DO` block calling `set_config('search_path', ...)` on Postgres or a `PREPARE` of a
+  `SET sql_mode` on MySQL, leaves the session marked as unchanged, and a later hidden
+  call passes as a read. It needs application code that runs in setup on a connection
+  that stays open.
+
+Where the text above says a spelling or position is the only one, the problems listed
+here are the exceptions: a touched setting is not always marked "in any spelling", a
+cast or typed string to an unlisted type is not always opaque, and `INSERT (` is not
+excused in one position only.
 
 `pkg/witness/dbproxy/live` tests it against real `postgres` and `mysql` containers,
 with pgx, go-sql-driver, `psql` and the `mysql` client, checking each verdict against
@@ -1054,7 +1110,7 @@ outside Kubernetes, so off Kubernetes it is unproven as a backstop.
   program (dual MIT/GPL-2.0, as the kernel requires for its helpers).
 - `../pkg/witness/netbpf/`: the kernel-side network and delivery witness;
   `bpf/net.c` is its eBPF program (dual MIT/GPL-2.0).
-- `../pkg/witness/dbproxy/`: the database witness, a wire-protocol proxy.
+- `../pkg/witness/dbproxy/`: the database witness, a wire-protocol proxy (experimental).
 - `../cmd/subpoena-witness/`: runs it as a daemon, JSON lines out.
 - `../pkg/cgroup/`: per-session cgroup creation, placement and IDs, shared by
   the gateway and the witnesses.

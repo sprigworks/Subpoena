@@ -273,9 +273,10 @@ a control where the destination is allowed and the connection arrives (see
 connect and named send on the host, attributed by session cgroup; like `execbpf`
 it needs root and BTF. `witnesses/README.md` lists what each does not see.
 
-A row in Postgres or MySQL has a witness: point the application's DSN at
-`dbproxy` and assert with `harness.RequireNoRow(t, w, traceID, table)`
-([witnesses/README.md](../witnesses/README.md)).
+A row in Postgres or MySQL has an experimental witness: point the application's DSN
+at `dbproxy` and assert with `harness.RequireNoRow(t, w, traceID, table)`. A Pass from
+it can be false, so do not rely on it as proof. Its open problems are in
+[witnesses/README.md](../witnesses/README.md).
 
 For files the sibling is `witness.FileWitness`, with `Wrote(traceID)`:
 `witness.NewFileWatch(root)` is inotify on a directory, with no privilege, and

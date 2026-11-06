@@ -8,6 +8,11 @@
 // SQLite or MongoDB support: neither speaks these protocols, and SQLite has no
 // socket at all.
 //
+// This witness is experimental. A Pass from it can be false: it works out what
+// SQL does from the statement text, and known statement shapes get past that.
+// Do not rely on its results as proof. witnesses/README.md lists the open
+// problems known as of the last review.
+//
 // A connection goes through a session, a state machine with one step per protocol
 // message in each direction. What cannot be read is never read as absence: an
 // unknown frame, a connection dropped with a transaction open, a connection it

@@ -277,7 +277,7 @@ Check: the `delivery_` cases in `conformance/witness.yaml` (`delivered`,
 `pkg/harness/delivery_test.go`, and the Python runner is
 `python/tests/test_delivery.py`.
 
-- **W9. Row lines.** The database witness (`pkg/witness/dbproxy`) is not ported;
+- **W9. Row lines.** The database witness (`pkg/witness/dbproxy`, experimental) is not ported;
   `subpoena-witness db` runs it and writes the same file format, with one line
   per statement. A line with no `record` field and a non-null `event` field is
   a row line; `event` is `row`, and any other value is a read error.

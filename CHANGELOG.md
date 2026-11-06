@@ -182,7 +182,18 @@
   confirms the `Parse`, `PREPARE TRANSACTION` settles at its tag, and Postgres names
   are cut to 63 bytes. A view over a writing function, field notation (`o.w` calling
   `w(o)`) and an overload of a listed name stay out of reach: `witnesses/README.md`.
-- **A database witness, for Postgres and MySQL.** `pkg/witness/dbproxy` is a
+- **A database witness, for Postgres and MySQL, is experimental.** A Pass from it can
+  be false. It works out what SQL does from the statement text, and known statement
+  shapes get past that. Do not rely on its results as proof; they do not count as
+  witness evidence for any published claim yet. As of the last review it has ten open
+  problems. Postgres false Passes: a function after a comma in `FROM` with a column list;
+  a quoted type name on a typed string; `UPDATE pg_settings` changing the session; a
+  column named `end` inside a `CASE`; a space in `$1 .field`; a domain reached by
+  `ALTER TABLE`. MySQL false Passes: `SET CHAR SET`; a `MERGE` table. Both engines: a
+  setting changed inside an opaque statement before `Mark`. One false Fail on Postgres:
+  `LIKE` after a column with a keyword-like name such as `type`. The list is in
+  `witnesses/README.md`.
+  `pkg/witness/dbproxy` is a
   wire-protocol proxy: point the application's DSN at its loopback listener and
   it forwards to the real server, logging statements and commits per connection.
   `harness.RequireNoRow(t, w, traceID, table)`, `NoRow`, `CheckNoRow` and
