@@ -230,11 +230,13 @@ Needs root (or CAP_BPF plus CAP_PERFMON), cgroup v2 and BTF.
 real session cgroup are attributed with the right cgroup ID, a process that
 exits at once is seen, lineage follows a fork that never execs, and a burst
 of execs before `Stop` is not lost, a task leaving its session each way fails
-`Health`, and so does a path too long to walk. It has `netbpf`'s checks, on the same hooks: a recursion miss, a task leaving
-its session by a move or `CLONE_INTO_CGROUP`, and a path too long to walk each fail
-`Health` for every trace in the capture, and past 8 levels `Cgroup` keeps the
-session root and loses the elements nearest the leaf. A move by the operator counts
-just the same, so end the capture first. In the OATS stack it is the witness for
+`Health`, and so does a path too long to walk. It has `netbpf`'s checks, on the
+same hooks: a recursion miss, a task leaving its session by a move or
+`CLONE_INTO_CGROUP`, and a path too long to walk each fail `Health` for every trace
+in the capture, and past 8 levels `Cgroup` keeps the session root and loses the
+elements nearest the leaf. A move by the operator counts just the same, so end the
+capture first. `make test-ebpf` does not force a recursion miss: it runs the real
+read of the count, and a scripted count fails `Health`. In the OATS stack it is the witness for
 both cases (`examples/gateway/oats/README.md`).
 
 ### Network, tier 1: `Sinkhole` (runs in `go test`)
@@ -426,7 +428,9 @@ leaves a window that never closed, so `Health` fails on the file, even one an
 earlier run left healthy. An `-out` or `-ready` under a watched root is refused, as
 the witness would see its own file. A consumer that stops reading cannot hold
 `SIGTERM` for long: past a 3s stall the witness exits 1, most likely with no stop
-record, which proves nothing. `witness.ReadLog` and Python's `read_log` read the file
+record, which proves nothing. An output held up that long by a busy machine reads
+the same way, on this path and the eBPF one, so a healthy capture can come back
+Inconclusive. `witness.ReadLog` and Python's `read_log` read the file
 (`docs/ports.md`, W7). A file name that is not UTF-8 cannot be carried in JSON, so
 a capture holding one is written as unhealthy.
 
