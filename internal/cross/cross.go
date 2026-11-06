@@ -43,6 +43,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path"
@@ -1099,12 +1100,69 @@ type eventKey [2]string
 // ending is what a test's events say happened to it. Any of it can be printed text.
 // lateFail is a fail event after a pass with another test started in between, a
 // subtest of its own aside.
-type ending struct{ ran, passed, skipped, failed, lateFail, saidPass bool }
+// from and to are where it first continued after a pause and where it last ended,
+// as positions in the run, 0 if it did neither: from is what makes it parallel.
+type ending struct {
+	ran, passed, skipped, failed, lateFail, saidPass bool
+	from, to                                         int
+}
 
 // cleanPass reports whether the test passed and nothing says otherwise. A pass with
 // a fail beside it can be printed, ahead of the real fail or after it, so that is not
 // a test to take at its word: a line in it can be what it seems.
 func (e ending) cleanPass() bool { return e.passed && !e.failed }
+
+// beside reports whether the two tests were running at once. A test with no end was
+// still running. go test gives a subtest's end with its parent's, so this can say yes
+// to subtests that took turns under -parallel 1, which costs a kill and makes none.
+func (e ending) beside(o ending) bool {
+	last := func(x ending) int {
+		if x.to == 0 {
+			return math.MaxInt
+		}
+		return x.to
+	}
+	return e.from > 0 && o.from > 0 && e.from < last(o) && o.from < last(e)
+}
+
+// besideFailure reports whether a test that did not pass ran beside k. Package
+// testing's own frames carry a line printed with no frame to whichever test printed
+// last, so a parallel test's panic line can land on a test that passed, and no reading
+// of that line tells it from a log line. Where the two tests' names part, both
+// branches must have paused and continued: subtests in turn inside one parallel test
+// did not run beside each other, and a test does not run beside its own subtests.
+//
+//subpoena:enforcement_point
+func besideFailure(ends map[eventKey]ending, k eventKey) bool {
+	for o, e := range ends {
+		if o[0] != k[0] || o[1] == "" || !e.failed {
+			continue
+		}
+		a, b, ok := branches(k[1], o[1])
+		if ok && ends[eventKey{k[0], a}].beside(ends[eventKey{k[0], b}]) {
+			return true //subpoena:enforcement
+		}
+	}
+	return false
+}
+
+// branches gives the names of two tests cut to where they part, as the tests that
+// hold them. ok is false for a test and its own subtest, which do not part.
+func branches(a, b string) (string, string, bool) {
+	x, y := strings.Split(a, "/"), strings.Split(b, "/")
+	for i := range min(len(x), len(y)) {
+		if x[i] != y[i] {
+			return strings.Join(x[:i+1], "/"), strings.Join(y[:i+1], "/"), true
+		}
+	}
+	return "", "", false
+}
+
+// crashStands reports whether a crash line on k is a crash: on a test that passed
+// with nothing beside it to have put it there, it is a log line.
+func crashStands(ends map[eventKey]ending, k eventKey) bool {
+	return !ends[k].cleanPass() || besideFailure(ends, k)
+}
 
 // endings reads the events of each test in raw, and of each package under an empty
 // test name. It is the one reading of how a test
@@ -1113,7 +1171,7 @@ func (e ending) cleanPass() bool { return e.passed && !e.failed }
 //subpoena:enforcement_point
 func endings(raw string) map[eventKey]ending {
 	all, ended := map[eventKey]ending{}, map[eventKey]bool{}
-	for _, line := range strings.Split(raw, "\n") {
+	for i, line := range strings.Split(raw, "\n") {
 		var e struct{ Action, Package, Test, Output string }
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
 			continue
@@ -1130,12 +1188,16 @@ func endings(raw string) map[eventKey]ending {
 					delete(ended, p) //subpoena:enforcement
 				}
 			}
+		case "cont":
+			if end.from == 0 {
+				end.from = i + 1
+			}
 		case "pass":
-			end.passed, ended[k] = true, true
+			end.passed, ended[k], end.to = true, true, i+1
 		case "skip":
-			end.skipped, ended[k] = true, true
+			end.skipped, ended[k], end.to = true, true, i+1
 		case "fail":
-			end.failed = true
+			end.failed, end.to = true, i+1
 			end.lateFail = end.lateFail || (end.passed || end.skipped) && !ended[k]
 		}
 		all[k] = end
@@ -1480,7 +1542,7 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 	}
 	ends := endings(raw)
 	for k := range crash {
-		if !ends[k].cleanPass() {
+		if crashStands(ends, k) {
 			dead[k[0]] = true //subpoena:enforcement
 		}
 	}
@@ -1748,7 +1810,7 @@ func crashOutput(raw string, n int) string {
 	}
 	ends := endings(raw)
 	for _, k := range crashes {
-		if !ends[k].cleanPass() {
+		if crashStands(ends, k) {
 			out := lines[k[0]][crashAt[k]:]
 			return "package " + k[0] + ":\n" + strings.Join(out[:min(n, len(out))], "\n")
 		}

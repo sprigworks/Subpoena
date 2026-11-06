@@ -197,7 +197,12 @@ overrides the wrapper's own flag, so on a single-package target every kill is a
 crash: unset it for a cross run. A `panic:` line also voids a package's kills when it
 sits in a test that did not pass, so a panic something recovered, with the
 binary exiting 1, stays a crash. In a test that passed it is a log line, and
-order does not matter: the binary lived. Under `--require-witness` it is a crash there too (see
+order does not matter: the binary lived. The exception is a test that passed beside one that did
+not, read from `pause` and `cont` events: package testing's frames carry a line printed with no
+frame to whichever test printed last, so a parallel test's `panic:` line can land on its neighbour.
+There it is a crash. The cost is a passing parallel test that logs such a line at the start of a
+line beside a real failure: that kill reads crashed, and the run fails. Sequential tests keep the
+rule, and so do subtests in turn inside one parallel test. Under `--require-witness` it is a crash there too (see
 What forged output can do). A test with a `fail` event has not passed here,
 whatever `pass` sits beside it, so a printed pass does not make a crash a log line. Ginkgo reports a recovered panic as `[PANICKED]`,
 which counts as a crash wherever it falls in the suite, since Ginkgo runs a suite

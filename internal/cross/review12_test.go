@@ -250,3 +250,110 @@ func TestMain(m *testing.M) {
 		})
 	}
 }
+
+// Review 12, H3. Package testing's own frames carry a line printed with no frame to
+// whichever test printed last, so two parallel tests can put one's panic line on the
+// other. Beside a test that did not pass, a crash line on a passing test is a crash.
+// Where nothing ran beside anything the line stays a log line.
+func TestACrashLineOnATestBesideAFailureIsACrash(t *testing.T) {
+	t.Parallel()
+	const refused = `func TestRefused(t *testing.T) {
+	PAR
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("panic: %v\n", r)
+			t.Fatal("handler died")
+		}
+	}()
+	time.Sleep(200 * time.Millisecond)
+	if Check("mallory") == nil { var m map[string]int; m["x"] = 1 }
+}
+
+func TestAdmin(t *testing.T) {
+	PAR
+	if Check("admin") != nil { t.Fatal("admin refused") }
+	time.Sleep(600 * time.Millisecond)
+}
+`
+	const logs = `func TestLogs(t *testing.T) { fmt.Println("panic: recovered and logged") }
+
+func TestRefused(t *testing.T) { if Check("mallory") == nil { t.Fatal("mallory let in") } }
+`
+	const table = `func TestCheck(t *testing.T) {
+	for _, user := range []string{"mallory", "admin"} {
+		t.Run(user, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("panic: %v\n", r)
+					t.Fatal("handler died")
+				}
+			}()
+			if user == "admin" { time.Sleep(600 * time.Millisecond); return }
+			time.Sleep(200 * time.Millisecond)
+			if Check("mallory") == nil { var m map[string]int; m["x"] = 1 }
+		})
+	}
+}
+`
+	// Two subtests in turn inside a parallel test ran one after the other.
+	const inTurn = `func TestOuter(t *testing.T) {
+	t.Parallel()
+	t.Run("logs", func(t *testing.T) { fmt.Println("panic: recovered and logged") })
+	t.Run("refused", func(t *testing.T) { if Check("mallory") == nil { t.Fatal("mallory let in") } })
+}
+
+func TestOther(t *testing.T) { t.Parallel() }
+`
+	// Each pair of parallel subtests waits for its parent, so these two groups never meet.
+	const apart = `func TestFirst(t *testing.T) {
+	t.Run("logs", func(t *testing.T) { t.Parallel(); fmt.Println("panic: recovered and logged") })
+}
+
+func TestSecond(t *testing.T) {
+	t.Run("refused", func(t *testing.T) { t.Parallel(); if Check("mallory") == nil { t.Fatal("mallory let in") } })
+}
+`
+	for name, tc := range map[string]struct {
+		tests string
+		want  Outcome
+	}{
+		"parallel":               {strings.ReplaceAll(refused, "PAR", "t.Parallel()"), Crashed},
+		"parallel subtests":      {table, Crashed},
+		"not parallel":           {strings.ReplaceAll(refused, "PAR", ""), Crashed},
+		"sequential log line":    {logs, Killed},
+		"subtests in turn":       {inTurn, Killed},
+		"groups that never meet": {apart, Killed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import ("fmt"; "testing"; "time")
+
+var _ = time.Now
+
+` + tc.tests})
+			if r := killOf(t, Options{Target: dir}); r.Outcome != tc.want {
+				t.Fatalf("got %+v", r)
+			}
+		})
+	}
+}
+
+// -parallel 1: both tests pause and continue, one after the other. Nothing ran beside.
+func TestParallelTestsThatTookTurnsWereNotBeside(t *testing.T) {
+	t.Parallel()
+	turn := func(k eventKey, end string, more ...string) string {
+		return event("cont", k[0], k[1], "") + strings.Join(more, "") + event(end, k[0], k[1], "")
+	}
+	a, b := eventKey{"p", "TestA"}, eventKey{"p", "TestB"}
+	apart := endings(turn(a, "pass") + turn(b, "fail"))
+	if besideFailure(apart, a) {
+		t.Fatal("in turn: beside")
+	}
+	together := endings(event("cont", "p", "TestA", "") + turn(b, "fail") + event("pass", "p", "TestA", ""))
+	if !besideFailure(together, a) {
+		t.Fatal("overlapping: not beside")
+	}
+}
