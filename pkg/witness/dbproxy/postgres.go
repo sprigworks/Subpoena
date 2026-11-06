@@ -88,6 +88,19 @@ func (s *pgSession) unreadableLocked(format string, a ...any) error {
 	return errBlind
 }
 
+// guard runs a step of the parser. A frame that breaks it is an unreadable frame:
+// a panic here would take the test binary with it, and lose the capture.
+//
+//subpoena:enforcement_point
+func (s *pgSession) guard(step func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = s.unreadableLocked("a frame broke the parser: %v", r) //subpoena:enforcement
+		}
+	}()
+	return step()
+}
+
 func (s *pgSession) stepState() (blind, inStartup bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,9 +131,11 @@ func (s *pgSession) client(r *bufio.Reader, up, back io.Writer) error {
 	case strings.IndexByte("QPBECF", typ) < 0:
 		// Nothing to read in it: forward it whole, however long.
 		s.mu.Lock()
-		s.onClient(typ, nil)
+		err := s.guard(func() error { return s.onClient(typ, nil) })
 		s.mu.Unlock()
-		_, err := io.CopyN(up, r, n+1)
+		if _, werr := io.CopyN(up, r, n+1); werr != nil {
+			return werr
+		}
 		return err
 	case n-4 > maxFrame:
 		return s.unreadable("client message %q of %d bytes", typ, n) //subpoena:enforcement
@@ -130,7 +145,7 @@ func (s *pgSession) client(r *bufio.Reader, up, back io.Writer) error {
 		return err
 	}
 	s.mu.Lock()
-	stepErr := s.onClient(typ, buf[5:])
+	stepErr := s.guard(func() error { return s.onClient(typ, buf[5:]) })
 	s.mu.Unlock()
 	if _, err := up.Write(buf); err != nil {
 		return err
@@ -161,6 +176,9 @@ func (s *pgSession) startup(r *bufio.Reader, up, back io.Writer) error {
 	if n < 8 || n > pgMaxStartup {
 		return s.unreadable("startup packet of length %d", n) //subpoena:enforcement
 	}
+	if code != pgSSLRequest && code != pgGSSENCRequest && code != pgCancelRequest && code>>16 != 3 {
+		return s.unreadable("startup code %d", code) //subpoena:enforcement
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if code != pgCancelRequest && !s.counted {
@@ -179,15 +197,13 @@ func (s *pgSession) startup(r *bufio.Reader, up, back io.Writer) error {
 			return err
 		}
 		return errClose
-	case code>>16 == 3:
-		s.inStartup = false
-		if !s.tlsAsked {
-			s.cap.notePlainStart()
-		}
-		_, err := io.CopyN(up, r, n)
-		return err
 	}
-	return s.unreadableLocked("startup code %d", code) //subpoena:enforcement
+	s.inStartup = false
+	if !s.tlsAsked {
+		s.cap.notePlainStart()
+	}
+	_, err = io.CopyN(up, r, n)
+	return err
 }
 
 func cstring(b []byte) (string, []byte, bool) {
@@ -296,7 +312,7 @@ func (s *pgSession) server(r *bufio.Reader, back io.Writer) error {
 		return s.unreadable("server message type %q", typ) //subpoena:enforcement
 	case strings.IndexByte("CZ", typ) < 0:
 		s.mu.Lock()
-		err := s.onServer(typ, nil)
+		err := s.guard(func() error { return s.onServer(typ, nil) })
 		s.mu.Unlock()
 		if _, werr := io.CopyN(back, r, n+1); werr != nil {
 			return werr
@@ -310,7 +326,7 @@ func (s *pgSession) server(r *bufio.Reader, back io.Writer) error {
 		return err
 	}
 	s.mu.Lock()
-	stepErr := s.onServer(typ, buf[5:])
+	stepErr := s.guard(func() error { return s.onServer(typ, buf[5:]) })
 	s.mu.Unlock()
 	if _, err := back.Write(buf); err != nil {
 		return err
@@ -420,7 +436,9 @@ func (s *pgSession) serverError() {
 
 // readyForQuery ends a cycle. Status 'I' after a cycle means any write still
 // pending has ended with the implicit or explicit transaction it was in, and an
-// error in the cycle means that ending was a rollback.
+// error in the cycle means that ending was a rollback. PREPARE TRANSACTION ends
+// this way too, and counts as committed: it is durable now, and decided later,
+// maybe on another connection.
 //
 //subpoena:enforcement_point
 func (s *pgSession) readyForQuery(status byte) error {
@@ -487,17 +505,13 @@ func (s *pgSession) complete(st *statement, tag string) {
 		s.tx.savepoint(st.savepoint)
 	case "RELEASE":
 		s.tx.release(st.savepoint)
-	case "PREPARE TRANSACTION":
-		// Durable now, and decided later, maybe on another connection.
-		s.tx.commit() //subpoena:enforcement
 	}
 	switch {
 	case st.class == classOpaque:
 		s.tx.add(st, witness.RowsUnknown)
 	case pgWriteTags[verb] && st.class != classWrite && st.verb != "COPY",
 		st.class == classWrite && pgWriteTags[st.verb] && verb != st.verb:
-		o := opaqueStatement(st.text, st.verb, "answered %q", tag)
-		s.tx.add(&o, witness.RowsUnknown) //subpoena:enforcement
+		s.tx.add(st.opaqued("answered %q", tag), witness.RowsUnknown) //subpoena:enforcement
 	case st.class == classWrite:
 		if st.noCount {
 			rows = witness.RowsUnknown

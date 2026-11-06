@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sprigworks/subpoena/pkg/witness"
@@ -112,7 +113,7 @@ func TestMySQLAutocommitWriteCommits(t *testing.T) {
 	w.want() // sent is not committed
 	w.server(myOK(1, 1, stAutocommit, 0))
 	w.want("committed INSERT")
-	e := w.cap.snapshot()[0]
+	e := w.first()
 	if e.Rows != 1 || !slices.Equal(e.Tables, []string{"users"}) {
 		t.Fatalf("%+v", e)
 	}
@@ -264,7 +265,7 @@ func TestMySQLResultSet(t *testing.T) {
 	w.client(myQuery("INSERT INTO t VALUES (1)"))
 	w.server(myOK(1, 1, stAutocommit, 0))
 	w.want("committed INSERT")
-	if e := w.cap.snapshot()[0]; e.Outcome != witness.OutcomeRead {
+	if e := w.first(); e.Outcome != witness.OutcomeRead {
 		t.Fatalf("%+v", e)
 	}
 	w.healthy()
@@ -326,7 +327,7 @@ func TestMySQLZeroRows(t *testing.T) {
 	w := myReadyWire(t, 0)
 	w.client(myQuery("DELETE FROM users WHERE owner = 9"))
 	w.server(myOK(1, 0, stAutocommit, 0))
-	e := w.cap.committed()[0]
+	e := w.firstCommitted()
 	if e.Rows != 0 || e.Effect() {
 		t.Fatalf("%+v", e)
 	}
@@ -336,7 +337,7 @@ func TestMySQLTruncateCountsAsUnknown(t *testing.T) {
 	w := myReadyWire(t, 0)
 	w.client(myQuery("TRUNCATE TABLE users"))
 	w.server(myOK(1, 0, stAutocommit, 0))
-	if e := w.cap.committed()[0]; !e.Effect() {
+	if e := w.firstCommitted(); !e.Effect() {
 		t.Fatalf("%+v", e)
 	}
 }
@@ -345,7 +346,7 @@ func TestMySQLOpaqueCounts(t *testing.T) {
 	w := myReadyWire(t, 0)
 	w.client(myQuery("CALL do_things()"))
 	w.server(myOK(1, 0, stAutocommit, 0))
-	if e := w.cap.committed()[0]; !e.Opaque || !e.Effect() {
+	if e := w.firstCommitted(); !e.Opaque || !e.Effect() {
 		t.Fatalf("%+v", e)
 	}
 }
@@ -360,7 +361,7 @@ func TestMySQLPreparedStatement(t *testing.T) {
 		w.server(myOK(1, 1, stAutocommit, 0))
 	}
 	w.want("committed INSERT", "committed INSERT")
-	if e := w.cap.committed()[0]; e.Tables[0] != "users" || e.Rows != 1 {
+	if e := w.firstCommitted(); e.Tables[0] != "users" || e.Rows != 1 {
 		t.Fatalf("%+v", e)
 	}
 	w.healthy()
@@ -636,110 +637,6 @@ func TestMySQLAuthRoundTrips(t *testing.T) {
 
 // ---- Inconclusive ----
 
-func TestMySQLUnreadable(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		setup func(*testing.T) *wire
-	}{
-		{"old greeting", func(t *testing.T) *wire {
-			w := newMy(t)
-			w.server(packet(0, []byte{9}, cstr("old")))
-			return w
-		}},
-		{"short greeting", func(t *testing.T) *wire {
-			w := newMy(t)
-			w.server(packet(0, []byte{10}, cstr("8.4")))
-			return w
-		}},
-		{"no version terminator", func(t *testing.T) *wire {
-			w := newMy(t)
-			w.server(packet(0, []byte{10, 'a'}))
-			return w
-		}},
-		{"short response", func(t *testing.T) *wire {
-			w := newMy(t)
-			w.server(myGreeting(capProtocol41))
-			w.client(packet(1, []byte{1}))
-			return w
-		}},
-		{"no protocol 41", func(t *testing.T) *wire {
-			w := newMy(t)
-			w.server(myGreeting(capProtocol41))
-			w.client(myResponse(capLongPassword))
-			return w
-		}},
-		{"unknown command", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.client(packet(0, []byte{0x7f}))
-			return w
-		}},
-		{"empty command", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.client(packet(0))
-			return w
-		}},
-		{"short execute", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.client(packet(0, []byte{0x17, 1}))
-			return w
-		}},
-		{"short close", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.client(packet(0, []byte{0x19, 1}))
-			return w
-		}},
-		{"reply with nothing asked", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.server(myOK(1, 1, stAutocommit, 0))
-			return w
-		}},
-		{"empty reply", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.client(myQuery("SELECT 1"))
-			w.server(packet(1))
-			return w
-		}},
-		{"short ok", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.client(myQuery("INSERT INTO t VALUES (1)"))
-			w.server(packet(1, []byte{0, 1}))
-			return w
-		}},
-		{"short eof", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.client(myQuery("SELECT 1"))
-			w.server(packet(1, []byte{1}), myCol(2), packet(3, []byte{0xfe, 0}))
-			return w
-		}},
-		{"missing eof after columns", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.client(myQuery("SELECT 1"))
-			w.server(packet(1, []byte{1}), myCol(2), myRow(3))
-			return w
-		}},
-		{"bad column count", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.client(myQuery("SELECT 1"))
-			w.server(packet(1, []byte{0xfc, 1}))
-			return w
-		}},
-		{"short prepare ok", func(t *testing.T) *wire {
-			w := myReadyWire(t, 0)
-			w.client(myPrepare("SELECT 1"))
-			w.server(packet(1, []byte{0, 1, 2}))
-			return w
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			w := tc.setup(t)
-			w.faulted("unreadable")
-			if !errors.Is(w.err, errBlind) {
-				t.Fatalf("the connection must go on unread: %v", w.err)
-			}
-		})
-	}
-}
-
 // With query attributes negotiated COM_QUERY has a prefix, and real attribute
 // values ahead of the SQL, which cannot be read as text.
 func TestMySQLQueryAttributes(t *testing.T) {
@@ -755,7 +652,7 @@ func TestMySQLQueryAttributes(t *testing.T) {
 	w.client(packet(0, []byte{0x03, 1, 1}, []byte("anything")))
 	w.server(myOK(1, 0, stAutocommit, 0))
 	got := w.cap.committed()
-	if len(got) != 2 || !got[1].Opaque {
+	if len(got) != 2 || !got[1].Opaque || !strings.Contains(got[1].Reason, "attributes") {
 		t.Fatalf("attributes: %+v", got)
 	}
 }

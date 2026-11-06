@@ -67,6 +67,12 @@ func opaqueStatement(text, verb, format string, a ...any) statement {
 	return statement{text: text, verb: verb, class: classOpaque, reason: fmt.Sprintf(format, a...)}
 }
 
+// opaqued is st as a statement that counts against every table.
+func (st *statement) opaqued(format string, a ...any) *statement {
+	o := opaqueStatement(st.text, st.verb, format, a...)
+	return &o
+}
+
 type tokenKind int
 
 const (
@@ -156,11 +162,13 @@ func isSpace(c byte) bool {
 
 // tokenize reads text into tokens, dropping comments. An error means the text
 // ends inside a comment or quote, or holds something that only looks like a
-// comment: MySQL runs what is inside /*! ... */.
+// comment: MySQL runs what is inside /*! ... */. Each helper leaves the end of
+// the text as its position on failure, so the loop always ends.
 //
 //subpoena:enforcement_point
 func tokenize(d dialect, s string) ([]token, error) {
 	var out []token
+	var bad error
 	for i := 0; i < len(s); {
 		c := s[i]
 		switch {
@@ -172,42 +180,43 @@ func tokenize(d dialect, s string) ([]token, error) {
 			i = lineEnd(s, i)
 		case c == '/' && i+1 < len(s) && s[i+1] == '*':
 			if d == dialectMySQL && (strings.HasPrefix(s[i:], "/*!") || strings.HasPrefix(s[i:], "/*M!")) {
-				return nil, fmt.Errorf("a comment MySQL executes at %d", i) //subpoena:enforcement
+				bad = fmt.Errorf("a comment MySQL executes at %d", i) //subpoena:enforcement
 			}
 			end, err := commentEnd(d, s, i)
 			if err != nil {
-				return nil, err //subpoena:enforcement
+				bad = err //subpoena:enforcement
 			}
 			i = end
 		case c == '\'':
 			end, err := quoteEnd(s, i, '\'', d == dialectMySQL || escapePrefix(s, i))
 			if err != nil {
-				return nil, err //subpoena:enforcement
+				bad = err //subpoena:enforcement
 			}
 			out = append(out, token{kind: tokString, text: s[i:end], pos: i})
 			i = end
 		case c == '"' && d == dialectMySQL:
 			end, err := quoteEnd(s, i, '"', true)
 			if err != nil {
-				return nil, err //subpoena:enforcement
+				bad = err //subpoena:enforcement
 			}
 			out = append(out, token{kind: tokString, text: s[i:end], pos: i})
 			i = end
 		case c == '"' || (c == '`' && d == dialectMySQL):
 			end, err := quoteEnd(s, i, c, false)
 			if err != nil {
-				return nil, err //subpoena:enforcement
+				bad = err //subpoena:enforcement
 			}
-			name := strings.ReplaceAll(s[i+1:end-1], string([]byte{c, c}), string(c))
+			name := strings.ReplaceAll(s[i+1:max(end-1, i+1)], string([]byte{c, c}), string(c))
 			out = append(out, token{kind: tokQuoted, text: name, pos: i})
 			i = end
 		case c == '$' && d == dialectPostgres && dollarTag(s, i) != "":
 			tag := dollarTag(s, i)
-			end := strings.Index(s[i+len(tag):], tag)
-			if end < 0 {
-				return nil, fmt.Errorf("unterminated dollar quote at %d", i) //subpoena:enforcement
+			next := len(s)
+			if end := strings.Index(s[i+len(tag):], tag); end >= 0 {
+				next = i + len(tag) + end + len(tag)
+			} else {
+				bad = fmt.Errorf("unterminated dollar quote at %d", i) //subpoena:enforcement
 			}
-			next := i + len(tag) + end + len(tag)
 			out = append(out, token{kind: tokString, text: s[i:next], pos: i})
 			i = next
 		case isWordStart(c):
@@ -229,7 +238,7 @@ func tokenize(d dialect, s string) ([]token, error) {
 			i++
 		}
 	}
-	return out, nil
+	return out, bad
 }
 
 func lineEnd(s string, i int) int {
@@ -257,7 +266,7 @@ func commentEnd(d dialect, s string, i int) (int, error) {
 			j++
 		}
 	}
-	return 0, fmt.Errorf("unterminated comment at %d", i)
+	return len(s), fmt.Errorf("unterminated comment at %d", i)
 }
 
 // quoteEnd finds the end of the quoted text at i, past a doubled quote and, if
@@ -273,7 +282,7 @@ func quoteEnd(s string, i int, q byte, escapes bool) (int, error) {
 			return j + 1, nil
 		}
 	}
-	return 0, fmt.Errorf("unterminated quote at %d", i)
+	return len(s), fmt.Errorf("unterminated quote at %d", i)
 }
 
 // escapePrefix reports whether the quote at i opens a PostgreSQL E” string.
@@ -351,7 +360,8 @@ func classify(d dialect, text string, toks []token) statement {
 	case "CREATE", "DROP", "ALTER":
 		return ddl(st, rest)
 	}
-	return opaqueStatement(st.text, st.verb, "unrecognised statement") //subpoena:enforcement
+	st = opaqueStatement(st.text, st.verb, "unrecognised statement") //subpoena:enforcement
+	return st
 }
 
 func stmtText(text string, toks []token) string {
@@ -659,7 +669,8 @@ func copyStmt(st statement, rest []token) statement {
 	case ok && next < len(rest) && rest[next].is("TO"):
 		return st
 	}
-	return opaqueStatement(st.text, st.verb, "cannot read COPY's direction") //subpoena:enforcement
+	st = opaqueStatement(st.text, st.verb, "cannot read COPY's direction") //subpoena:enforcement
+	return st
 }
 
 // loadData reads LOAD DATA ... INTO TABLE name.
@@ -675,7 +686,8 @@ func loadData(st statement, rest []token) statement {
 			}
 		}
 	}
-	return opaqueStatement(st.text, st.verb, "not LOAD DATA INTO TABLE") //subpoena:enforcement
+	st = opaqueStatement(st.text, st.verb, "not LOAD DATA INTO TABLE") //subpoena:enforcement
+	return st
 }
 
 // ddl reads CREATE, DROP and ALTER of a table. Of anything else it is opaque: a
@@ -692,7 +704,7 @@ func ddl(st statement, rest []token) statement {
 	if !ok {
 		return opaqueStatement(st.text, st.verb, "no table name") //subpoena:enforcement
 	}
-	if st.verb != "DROP" {
+	if st.verb != "DROP" && len(names) > 1 {
 		names = names[:1]
 	}
 	st.noCount = true

@@ -370,6 +370,46 @@ func TestConnectionQueuedAtStopIsInconclusive(t *testing.T) {
 	}
 }
 
+func TestAcceptFailureIsInconclusive(t *testing.T) {
+	p := start(t, Config{Engine: Postgres, Upstream: "127.0.0.1:1"})
+	p.ln.SetDeadline(time.Now().Add(-time.Second))
+	<-p.done
+	if err := p.Stop(); err == nil || !strings.Contains(err.Error(), "accept") {
+		t.Fatalf("%v", err)
+	}
+}
+
+// A connection accepted before Stop that finishes dialing after it must not leave
+// Stop waiting on a client that never hangs up.
+func TestConnectionDialingThroughStop(t *testing.T) {
+	p := start(t, Config{Engine: Postgres, Upstream: upstream(t, func(c net.Conn, r *bufio.Reader) { io.Copy(io.Discard, r) })})
+	if err := p.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in, err := ln.AcceptTCP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.conns.Add(1)
+	done := make(chan struct{})
+	go func() { p.serve(in, 99); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve outlived Stop")
+	}
+}
+
 func TestWitnessFile(t *testing.T) {
 	var out bytes.Buffer
 	p := start(t, Config{Engine: Postgres, Upstream: upstream(t, pgEcho("INSERT 0 1")), Output: &out})
@@ -412,26 +452,31 @@ func TestWitnessFileCarriesFaults(t *testing.T) {
 	}
 }
 
-type limitWriter struct {
-	left int
-	out  bytes.Buffer
+// failOnce fails exactly its nth write.
+type failOnce struct {
+	n   int
+	out bytes.Buffer
 }
 
-func (w *limitWriter) Write(b []byte) (int, error) {
-	if w.left == 0 {
+func (w *failOnce) Write(b []byte) (int, error) {
+	if w.n--; w.n == 0 {
 		return 0, errors.New("disk full")
 	}
-	w.left--
 	return w.out.Write(b)
 }
 
 func TestWitnessFileWriteFailureIsInconclusive(t *testing.T) {
-	for _, left := range []int{1, 2} { // the row line fails; the stop record fails
-		p := start(t, Config{Engine: Postgres, Upstream: upstream(t, pgEcho("INSERT 0 1")), Output: &limitWriter{left: left}})
+	// The row line fails, and json.Encoder then fails every later line, so two
+	// faults; or only the stop record fails, so one.
+	for n, faults := range map[int]int{2: 2, 3: 1} {
+		p := start(t, Config{Engine: Postgres, Upstream: upstream(t, pgEcho("INSERT 0 1")), Output: &failOnce{n: n}})
 		c, r := pgClient(t, p)
 		query(t, c, r, "INSERT INTO users VALUES (1)")
 		if err := p.Stop(); err == nil || !strings.Contains(err.Error(), "witness file") {
-			t.Fatalf("left %d: %v", left, err)
+			t.Fatalf("write %d: %v", n, err)
+		}
+		if got := p.Coverage().Faults; len(got) != faults {
+			t.Fatalf("write %d: %q", n, got)
 		}
 	}
 }

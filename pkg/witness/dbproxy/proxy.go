@@ -94,10 +94,11 @@ type Proxy struct {
 	done chan struct{}
 	stop sync.Once
 
-	mu     sync.Mutex
-	nextID int
-	open   map[int]*link
-	conns  sync.WaitGroup
+	mu      sync.Mutex
+	nextID  int
+	open    map[int]*link
+	closing bool // Stop has closed what is open; nothing more may stay
+	conns   sync.WaitGroup
 }
 
 // link is one proxied connection.
@@ -192,6 +193,10 @@ func (p *Proxy) serve(client *net.TCPConn, id int) {
 	s := p.newSession(id)
 	p.mu.Lock()
 	p.open[id] = &link{client, up, s}
+	if p.closing { // accepted before Stop, and still dialing when it swept
+		client.Close()
+		up.Close()
+	}
 	p.mu.Unlock()
 
 	served := make(chan struct{})
@@ -265,6 +270,7 @@ func (p *Proxy) Stop() error {
 		<-p.done
 		p.settle()
 		p.mu.Lock()
+		p.closing = true
 		for _, l := range p.open {
 			l.client.Close()
 			l.up.Close()

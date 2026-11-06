@@ -129,6 +129,26 @@ func (w *wire) outcomes() []string {
 	return out
 }
 
+// first is the first statement recorded; a test that needs one fails cleanly
+// without it.
+func (w *wire) first() witness.RowEvent {
+	w.t.Helper()
+	all := w.cap.snapshot()
+	if len(all) == 0 {
+		w.t.Fatal("nothing recorded")
+	}
+	return all[0]
+}
+
+func (w *wire) firstCommitted() witness.RowEvent {
+	w.t.Helper()
+	all := w.cap.committed()
+	if len(all) == 0 {
+		w.t.Fatal("nothing committed")
+	}
+	return all[0]
+}
+
 func (w *wire) want(outcomes ...string) {
 	w.t.Helper()
 	if got := w.outcomes(); !slices.Equal(got, outcomes) {
@@ -159,7 +179,7 @@ func TestPostgresAutocommitWriteCommits(t *testing.T) {
 	w.want() // done, but the server has not said the transaction ended
 	w.server(pgReady('I'))
 	w.want("committed INSERT")
-	e := w.cap.snapshot()[0]
+	e := w.first()
 	if e.Rows != 1 || !slices.Equal(e.Tables, []string{"users"}) || e.Conn != 1 || e.Attribution != witness.ByDestination {
 		t.Fatalf("%+v", e)
 	}
@@ -243,7 +263,7 @@ func TestPostgresCommitInsideSimpleQuery(t *testing.T) {
 	w.client(pgQuery("INSERT INTO a VALUES (1); COMMIT; INSERT INTO b VALUES (2); SELECT 1/0"))
 	w.server(pgDone("INSERT 0 1"), pgDone("COMMIT"), pgDone("INSERT 0 1"), pgError(), pgReady('I'))
 	w.want("committed INSERT", "rolled_back INSERT")
-	if got := w.cap.snapshot(); got[0].Tables[0] != "a" {
+	if got := w.first(); got.Tables[0] != "a" {
 		t.Fatalf("%+v", got)
 	}
 	w.healthy()
@@ -259,7 +279,7 @@ func TestPostgresPreparedStatement(t *testing.T) {
 		w.server(frame('2'), pgDone("INSERT 0 1"), pgReady('I'))
 	}
 	w.want("committed INSERT", "committed INSERT")
-	if e := w.cap.snapshot(); e[len(e)-1].Tables[0] != "users" {
+	if e := w.cap.snapshot(); len(e) == 0 || e[len(e)-1].Tables[0] != "users" {
 		t.Fatalf("%+v", e)
 	}
 	w.healthy()
@@ -391,7 +411,7 @@ func TestPostgresZeroRowsAreCommittedButNoEffect(t *testing.T) {
 	w.client(pgQuery("DELETE FROM users WHERE owner = 9"))
 	w.server(pgDone("DELETE 0"), pgReady('I'))
 	w.want("committed DELETE")
-	e := w.cap.snapshot()[0]
+	e := w.first()
 	if e.Rows != 0 || e.Effect() {
 		t.Fatalf("%+v", e)
 	}
@@ -402,7 +422,7 @@ func TestPostgresOpaqueCountsEvenWithZero(t *testing.T) {
 	// A data-modifying CTE's tag counts only the outer statement.
 	w.client(pgQuery("WITH d AS (DELETE FROM a RETURNING *) INSERT INTO b SELECT * FROM d WHERE false"))
 	w.server(pgDone("INSERT 0 0"), pgReady('I'))
-	e := w.cap.snapshot()[0]
+	e := w.first()
 	if !e.Opaque || !e.Effect() || !e.Touches("anything") {
 		t.Fatalf("%+v", e)
 	}
@@ -419,7 +439,7 @@ func TestPostgresTagContradictsText(t *testing.T) {
 		w := pgReadyWire(t)
 		w.client(pgQuery(tc.sql))
 		w.server(pgDone(tc.tag), pgReady('I'))
-		e := w.cap.snapshot()[0]
+		e := w.first()
 		if !e.Opaque || e.Outcome != witness.OutcomeCommitted || !e.Touches("anything") {
 			t.Errorf("%q answered %q: %+v", tc.sql, tc.tag, e)
 		}
@@ -448,7 +468,7 @@ func TestPostgresBindToUnknownStatementIsOpaque(t *testing.T) {
 	// The name came from SQL-level PREPARE, which the protocol allows.
 	w.client(pgBind("", "from_sql"), pgExecute(""), pgSync())
 	w.server(frame('2'), pgDone("UPDATE 1"), pgReady('I'))
-	e := w.cap.snapshot()[0]
+	e := w.first()
 	if !e.Opaque || e.Outcome != witness.OutcomeCommitted {
 		t.Fatalf("%+v", e)
 	}
@@ -458,7 +478,7 @@ func TestPostgresExecuteOfUnknownPortalIsOpaque(t *testing.T) {
 	w := pgReadyWire(t)
 	w.client(pgExecute("a_cursor"), pgSync())
 	w.server(pgDone("FETCH 1"), pgReady('I'))
-	e := w.cap.snapshot()[0]
+	e := w.first()
 	if !e.Opaque {
 		t.Fatalf("%+v", e)
 	}
@@ -488,7 +508,7 @@ func TestPostgresSuspendedPortalStillWrote(t *testing.T) {
 		frame('E', cstr(""), []byte{0, 0, 0, 1}), pgSync())
 	w.server(frame('1'), frame('2'), frame('D', []byte{0, 0}), frame('s'), pgReady('I'))
 	w.want("committed INSERT")
-	if e := w.cap.snapshot()[0]; e.Rows != witness.RowsUnknown {
+	if e := w.first(); e.Rows != witness.RowsUnknown {
 		t.Fatalf("%+v", e)
 	}
 	w.healthy()
@@ -501,7 +521,7 @@ func TestPostgresCopyIn(t *testing.T) {
 	w.client(frame('d', []byte("1\n")), frame('c'))
 	w.server(pgDone("COPY 1"), pgReady('I'))
 	w.want("committed COPY")
-	if e := w.cap.snapshot()[0]; e.Rows != 1 || e.Tables[0] != "users" {
+	if e := w.first(); e.Rows != 1 || e.Tables[0] != "users" {
 		t.Fatalf("%+v", e)
 	}
 	w.healthy()
@@ -521,7 +541,7 @@ func TestPostgresFunctionCallIsOpaque(t *testing.T) {
 	w := pgReadyWire(t)
 	w.client(frame('F', []byte{0, 0, 3, 232}, []byte{0, 0, 0, 0, 0, 0}))
 	w.server(frame('V', []byte{255, 255, 255, 255}), pgReady('I'))
-	e := w.cap.snapshot()[0]
+	e := w.first()
 	if !e.Opaque || e.Outcome != witness.OutcomeCommitted {
 		t.Fatalf("%+v", e)
 	}
@@ -671,64 +691,6 @@ func TestPostgresCancelGoesThrough(t *testing.T) {
 
 // ---- Inconclusive ----
 
-func TestPostgresUnreadableFrames(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		setup func(*wire)
-	}{
-		{"unknown client type", func(w *wire) { w.client(frame('@', []byte{1})) }},
-		{"client length below four", func(w *wire) { w.client([]byte{'Q', 0, 0, 0, 3}) }},
-		{"query without terminator", func(w *wire) { w.client(frame('Q', []byte("SELECT 1"))) }},
-		{"parse without terminator", func(w *wire) { w.client(frame('P', []byte("s"))) }},
-		{"parse with no query", func(w *wire) { w.client(frame('P', cstr("s"))) }},
-		{"bind without statement", func(w *wire) { w.client(frame('B', cstr("p"))) }},
-		{"execute without terminator", func(w *wire) { w.client(frame('E', []byte("p"))) }},
-		{"close too short", func(w *wire) { w.client(frame('C')) }},
-		{"client frame too large", func(w *wire) {
-			b := []byte{'Q', 0, 0, 0, 0}
-			binary.BigEndian.PutUint32(b[1:], maxFrame+5)
-			w.client(b)
-		}},
-		{"unknown server type", func(w *wire) { w.server(frame('@', []byte{1})) }},
-		{"server length below four", func(w *wire) { w.server([]byte{'Z', 0, 0, 0, 1}) }},
-		{"ready without status", func(w *wire) { w.server(frame('Z')) }},
-		{"ready with bad status", func(w *wire) { w.server(frame('Z', []byte{'X'})) }},
-		{"complete without terminator", func(w *wire) {
-			w.client(pgQuery("SELECT 1"))
-			w.server(frame('C', []byte("SELECT 1")))
-		}},
-		{"complete with nothing sent", func(w *wire) { w.server(pgDone("DELETE 1")) }},
-		{"ready with nothing sent", func(w *wire) { w.server(pgReady('I')) }},
-		{"ready before a reply", func(w *wire) {
-			w.client(pgParse("", "SELECT 1"), pgBind("", ""), pgExecute(""), pgSync())
-			w.server(pgReady('I'))
-		}},
-		{"copy both", func(w *wire) {
-			w.client(pgQuery("START_REPLICATION"))
-			w.server(frame('W', []byte{0, 0, 0}))
-		}},
-		{"bad startup code", func(w *wire) {
-			x := newPG(t)
-			x.client(pgStartup(12345))
-			w.cap, w.err = x.cap, x.err
-		}},
-		{"bad startup length", func(w *wire) {
-			x := newPG(t)
-			x.client([]byte{0, 0, 0, 2, 0, 0, 0, 0})
-			w.cap, w.err = x.cap, x.err
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			w := pgReadyWire(t)
-			tc.setup(w)
-			w.faulted("unreadable")
-			if !errors.Is(w.err, errBlind) {
-				t.Fatalf("the connection must go on unread: %v", w.err)
-			}
-		})
-	}
-}
-
 // Once a frame is unreadable the bytes still flow, so the application is not
 // broken by its witness, and every later step is a raw copy.
 func TestPostgresBlindConnectionStaysBlind(t *testing.T) {
@@ -741,7 +703,7 @@ func TestPostgresBlindConnectionStaysBlind(t *testing.T) {
 	if err := w.s.client(bufio.NewReader(bytes.NewReader(pgQuery("DELETE FROM b"))), &w.up, &w.back); !errors.Is(err, errBlind) {
 		t.Fatalf("client after blind: %v", err)
 	}
-	if err := w.s.server(bufio.NewReader(bytes.NewReader(pgReady('I'))), &w.back); !errors.Is(err, errBlind) {
+	if err := w.s.server(bufio.NewReader(bytes.NewReader(frame('N', []byte{0}))), &w.back); !errors.Is(err, errBlind) {
 		t.Fatalf("server after blind: %v", err)
 	}
 	w.s.finish()

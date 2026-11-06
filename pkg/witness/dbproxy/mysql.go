@@ -31,6 +31,9 @@ const (
 	myMaxPacket = 0xffffff
 )
 
+// maxCommand is the most of one command it keeps to read. A longer one is opaque.
+var maxCommand = maxFrame
+
 // Commands.
 const (
 	comQuit        = 0x01
@@ -131,6 +134,18 @@ func (s *mySession) unreadableLocked(format string, a ...any) error {
 	return errBlind
 }
 
+// guard runs a step of the parser, as pgSession's does.
+//
+//subpoena:enforcement_point
+func (s *mySession) guard(step func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = s.unreadableLocked("a packet broke the parser: %v", r) //subpoena:enforcement
+		}
+	}()
+	return step()
+}
+
 func (s *mySession) isBlind() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -163,7 +178,7 @@ func (s *mySession) client(r *bufio.Reader, up, back io.Writer) error {
 		return err
 	}
 	s.mu.Lock()
-	stepErr := s.onClient(buf[4:])
+	stepErr := s.guard(func() error { return s.onClient(buf[4:]) })
 	s.mu.Unlock()
 	if stepErr == errClose {
 		return stepErr //subpoena:enforcement
@@ -224,11 +239,9 @@ func (s *mySession) commandPacket(p []byte) error {
 	if !s.clientCont && len(p) < myMaxPacket {
 		return s.command(p, false)
 	}
-	if len(s.big)+len(p) <= maxFrame {
-		s.big = append(s.big, p...)
-	} else {
-		s.bigCut = true
-	}
+	room := min(maxCommand-len(s.big), len(p))
+	s.big = append(s.big, p[:room]...)
+	s.bigCut = s.bigCut || room < len(p)
 	s.clientCont = len(p) == myMaxPacket
 	if s.clientCont {
 		return nil
@@ -279,16 +292,14 @@ func (s *mySession) command(p []byte, cut bool) error {
 	case comStmtLong:
 	case comQuery:
 		sql, ok := s.queryText(body)
-		switch {
-		case cut:
-			o := opaqueStatement(string(body[:64]), "QUERY", "too long to read") //subpoena:enforcement
-			s.push(&myItem{stmts: []statement{o}})
-		case !ok:
-			o := opaqueStatement("", "QUERY", "query attributes ahead of the text") //subpoena:enforcement
-			s.push(&myItem{stmts: []statement{o}})
-		default:
-			s.push(&myItem{stmts: parseSQL(dialectMySQL, sql), text: sql})
+		stmts := parseSQL(dialectMySQL, sql)
+		if cut {
+			stmts = []statement{opaqueStatement(sql, "QUERY", "too long to read")} //subpoena:enforcement
 		}
+		if !ok {
+			stmts = []statement{opaqueStatement("", "QUERY", "query attributes ahead of the text")} //subpoena:enforcement
+		}
+		s.push(&myItem{stmts: stmts, text: sql})
 	case comStmtPrepare:
 		s.push(&myItem{kind: kindPrepare, text: string(body), cut: cut})
 	case comStmtExecute:
@@ -329,7 +340,7 @@ func (s *mySession) server(r *bufio.Reader, back io.Writer) error {
 		return err
 	}
 	s.mu.Lock()
-	stepErr := s.onServer(buf[4:])
+	stepErr := s.guard(func() error { return s.onServer(buf[4:]) })
 	s.mu.Unlock()
 	if _, err := back.Write(buf); err != nil {
 		return err
@@ -383,7 +394,8 @@ func (s *mySession) greeting(p []byte) error {
 	if s.serverCaps&myCapSSL != 0 {
 		s.cap.noteTLSRefused()
 	}
-	offered := s.serverCaps &^ myCapsCleared //subpoena:enforcement
+	offered := s.serverCaps
+	offered &^= myCapsCleared //subpoena:enforcement
 	binary.LittleEndian.PutUint16(p[low:], uint16(offered))
 	binary.LittleEndian.PutUint16(p[high:], uint16(offered>>16))
 	s.phase = phaseResponse
@@ -573,8 +585,7 @@ func (s *mySession) prepareReply(it *myItem, p []byte) error {
 	params := uint64(binary.LittleEndian.Uint16(p[7:]))
 	st := onePrepared(dialectMySQL, it.text)
 	if it.cut {
-		o := opaqueStatement(it.text[:64], "PREPARE", "too long to read") //subpoena:enforcement
-		st = &o
+		st = st.opaqued("too long to read") //subpoena:enforcement
 	}
 	s.prepared[id] = st
 	it.n = columns + params
@@ -730,8 +741,7 @@ func (s *mySession) apply(st *statement, ok myOKPacket, hasCount bool) {
 		}
 		s.tx.add(st, rows)
 	case ok.affected != 0:
-		o := opaqueStatement(st.text, st.verb, "changed %d rows", ok.affected)
-		s.tx.add(&o, witness.RowsUnknown) //subpoena:enforcement
+		s.tx.add(st.opaqued("changed %d rows", ok.affected), witness.RowsUnknown) //subpoena:enforcement
 	default:
 		s.tx.done(st, witness.RowsUnknown, witness.OutcomeRead)
 	}
