@@ -649,8 +649,10 @@ Read a Pass with these in mind:
 - **A source route goes elsewhere first.** IP options, which need no privilege, send
   a packet to a first hop and name the peer only as the last. A route set on the
   socket reports that hop as well, on port 0, so a rule on that address matches on
-  any port. One given with the send (`IP_RETOPTS`), and an IPv6 routing header either
-  way, are not read: such a send also has an unknown peer, which every rule matches.
+  any port. One given with the send (`IP_RETOPTS`), and an IPv6 routing header on the
+  socket, with the send, or on a flow label the socket holds (`IPV6_FLOWLABEL_MGR`), are
+  not read: such a send also has an unknown peer, which every rule matches. Holding such
+  a label is enough, whether or not a send names it, so that over-reports.
   Later hops are not reported. Stream sockets ignore such a control message.
   `Dialed` reports the name only.
 - **A raw socket can write its own header.** With `IP_HDRINCL`, which needs

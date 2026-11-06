@@ -8,6 +8,7 @@
 package netbpf
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/netip"
@@ -26,9 +27,12 @@ import (
 )
 
 const (
-	ipRetopts = 7   // IP_RETOPTS
-	ipv6Rthdr = 57  // IPV6_RTHDR
-	optLSRR   = 131 // IPOPT_LSRR
+	ipRetopts        = 7   // IP_RETOPTS
+	ipv6Rthdr        = 57  // IPV6_RTHDR
+	ipv6Flowinfo     = 11  // IPV6_FLOWINFO
+	ipv6FlowlabelMgr = 32  // IPV6_FLOWLABEL_MGR
+	ipv6FlowinfoSend = 33  // IPV6_FLOWINFO_SEND
+	optLSRR          = 131 // IPOPT_LSRR
 )
 
 // lsrr is IP options routing a send through hop first.
@@ -169,6 +173,105 @@ func rthdrSend(to string) error {
 	}
 	a := netip.MustParseAddrPort(to)
 	return syscall.Sendto(fd, []byte("x"), 0, &syscall.SockaddrInet6{Port: int(a.Port()), Addr: a.Addr().As16()})
+}
+
+// flowLabel is the helper's "flowlabel" form:
+//
+//	flowlabel <how> <hop> <to>   how: flowinfo, control, connected, plain, noroute
+//
+// It takes a label holding a routing header to hop, as an unprivileged socket may,
+// and names the label in a send to to. plain sends with no label named, on a socket
+// holding it; noroute holds a label with no options.
+func flowLabel(how, hop, to string) error {
+	fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	// An exclusive label outlives its socket by its linger, so each run needs its own.
+	label := 0x00010000 | uint32(os.Getpid())&0xffff
+	dst := netip.MustParseAddrPort(to)
+	req := make([]byte, 32) // struct in6_flowlabel_req
+	a := dst.Addr().As16()
+	copy(req, a[:])
+	binary.BigEndian.PutUint32(req[16:], label)
+	req[21] = 1                                // IPV6_FL_S_EXCL
+	binary.NativeEndian.PutUint16(req[22:], 1) // IPV6_FL_F_CREATE
+	binary.NativeEndian.PutUint16(req[24:], 60)
+	binary.NativeEndian.PutUint16(req[26:], 60)
+	if how != "noroute" {
+		h := netip.MustParseAddr(hop).As16()
+		req = append(req, cmsg(syscall.IPPROTO_IPV6, ipv6Rthdr, append([]byte{0, 2, 2, 1, 0, 0, 0, 0}, h[:]...))...)
+	}
+	if err := syscall.SetsockoptString(fd, syscall.IPPROTO_IPV6, ipv6FlowlabelMgr, string(req)); err != nil {
+		return fmt.Errorf("IPV6_FLOWLABEL_MGR: %w", err)
+	}
+	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IPV6, ipv6FlowinfoSend, 1); err != nil {
+		return fmt.Errorf("IPV6_FLOWINFO_SEND: %w", err)
+	}
+	// sin6_flowinfo has no field in syscall.SockaddrInet6.
+	sa := syscall.RawSockaddrInet6{Family: syscall.AF_INET6, Addr: a}
+	binary.BigEndian.PutUint16((*[2]byte)(unsafe.Pointer(&sa.Port))[:], dst.Port())
+	if how != "plain" && how != "control" {
+		binary.BigEndian.PutUint32((*[4]byte)(unsafe.Pointer(&sa.Flowinfo))[:], label)
+	}
+	b := []byte("x")
+	switch how {
+	case "connected":
+		if _, _, e := syscall.Syscall(syscall.SYS_CONNECT, uintptr(fd), uintptr(unsafe.Pointer(&sa)), unsafe.Sizeof(sa)); e != 0 {
+			return fmt.Errorf("connect: %w", e)
+		}
+		_, err = syscall.Write(fd, b)
+		return err
+	case "control":
+		var flow [4]byte
+		binary.BigEndian.PutUint32(flow[:], label)
+		_, err = syscall.SendmsgN(fd, b, cmsg(syscall.IPPROTO_IPV6, ipv6Flowinfo, flow[:]), &syscall.SockaddrInet6{Port: int(dst.Port()), Addr: a}, 0)
+		return err
+	}
+	if _, _, e := syscall.Syscall6(syscall.SYS_SENDTO, uintptr(fd), uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)), 0, uintptr(unsafe.Pointer(&sa)), unsafe.Sizeof(sa)); e != 0 {
+		return fmt.Errorf("sendto: %w", e)
+	}
+	return nil
+}
+
+// A flow label can hold its own routing header, which is on neither the send nor
+// the socket's options. Every way of naming the label must give an unknown peer.
+func TestKernelReportsARoutingHeaderOnAFlowLabel(t *testing.T) {
+	for _, tc := range []struct {
+		how     string
+		unknown bool
+	}{
+		{"flowinfo", true},
+		{"control", true},
+		{"connected", true},
+		{"plain", true}, // over-reports: the socket could have named it
+		{"noroute", false},
+	} {
+		t.Run(tc.how, func(t *testing.T) {
+			g, root := sessionGroup(t, tidB)
+			w := start(t, Config{CgroupRoot: root})
+			dial(t, g, "flowlabel "+tc.how+" ::1 [::1]:41940")
+			if err := w.Stop(); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+			got := w.Delivered(tidB)
+			if len(got) == 0 {
+				t.Fatal("no send seen")
+			}
+			if u := slices.ContainsFunc(got, witness.DeliveryEvent.PeerUnknown); u != tc.unknown {
+				t.Fatalf("unknown peer %v, want %v: %+v", u, tc.unknown, got)
+			}
+			want := harness.Pass
+			if tc.unknown {
+				want = harness.Fail
+			}
+			rule := netip.MustParseAddrPort("[fd00:77::2]:41940") // no send names it
+			if v, err := harness.NoDelivery(w, tidB, harness.DeliveryTo(rule)); v != want {
+				t.Fatalf("NoDelivery(%v) = %v (%v), want %v", rule, v, err, want)
+			}
+		})
+	}
 }
 
 // A subnet's broadcast address looks like any other, so the socket option must

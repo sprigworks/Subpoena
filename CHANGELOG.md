@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A routing header on an IPv6 flow label gives an unknown peer.** It was on neither the send
+  nor the socket's options, so a packet could reach a hop no rule saw. The delivery hook now
+  walks the flow labels the socket holds, however a send names one.
 - **A broadcast on a connected socket is read from its route.** The kernel checks `SO_BROADCAST`
   when it finds a route, and a connected UDP socket keeps it, so an app could set the option,
   connect to a broadcast address, clear it and send, with `NoDelivery` Pass. The delivery hook

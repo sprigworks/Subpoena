@@ -152,8 +152,18 @@ struct ipv6_txoptions {
 	void *srcrt;
 } __attribute__((preserve_access_index));
 
+struct ip6_flowlabel {
+	struct ipv6_txoptions *opt;
+} __attribute__((preserve_access_index));
+
+struct ipv6_fl_socklist {
+	struct ipv6_fl_socklist *next;
+	struct ip6_flowlabel *fl;
+} __attribute__((preserve_access_index));
+
 struct ipv6_pinfo {
 	struct ipv6_txoptions *opt;
+	struct ipv6_fl_socklist *ipv6_fl_list;
 } __attribute__((preserve_access_index));
 
 struct inet_sock {
@@ -173,6 +183,7 @@ struct inet_sock {
 #define IPV6_2292RTHDR 5
 #define IPV6_RTHDR 57
 #define CMSG_WALK 16 // control messages read before a send counts as unreadable
+#define LABEL_WALK 32 // flow labels read before a socket counts as routed: the unprivileged limit
 
 #define IPPROTO_UDP 17
 #define IPPROTO_UDPLITE 136
@@ -584,6 +595,25 @@ static __always_inline int control_reroutes(struct socket *sock, struct msghdr *
 	return 1;
 }
 
+// label_reroutes reports whether a socket holds a flow label with a routing header.
+// A send can name such a label three ways: sin6_flowinfo, a control message, or the
+// label connect kept, and the kernel merges its options into the send. A label is
+// looked up only among those the socket holds, so holding one is what can be read,
+// whichever way a send names it. A list too long to walk counts.
+static __always_inline int label_reroutes(struct ipv6_pinfo *np)
+{
+	struct ipv6_fl_socklist *at = BPF_CORE_READ(np, ipv6_fl_list);
+	for (int i = 0; i < LABEL_WALK; i++) {
+		if (!at)
+			return 0;
+		struct ipv6_txoptions *o = BPF_CORE_READ(at, fl, opt);
+		if (o && BPF_CORE_READ(o, srcrt))
+			return 1;
+		at = BPF_CORE_READ(at, next);
+	}
+	return at != 0;
+}
+
 // A detour is where a send leaves for instead of the peer or name it carries.
 struct detour {
 	__be32 hop; // 0: the witness cannot say where
@@ -593,7 +623,8 @@ struct detour {
 // detour_of reads a socket's and a send's source route. IPv4 options hold the first
 // hop, and udp_sendmsg, raw_sendmsg and tcp_v4_connect all route to it, whatever
 // peer or name the send carries. No privilege is needed to set one. An IPv6 routing
-// header is reported as a detour to an unread address.
+// header, on the socket, with the send or on a flow label the socket holds, is
+// reported as a detour to an unread address.
 static __always_inline void detour_of(struct socket *sock, struct msghdr *msg, struct detour *d)
 {
 	struct inet_sock *inet = (struct inet_sock *)BPF_CORE_READ(sock, sk);
@@ -607,7 +638,7 @@ static __always_inline void detour_of(struct socket *sock, struct msghdr *msg, s
 	if (bpf_core_field_exists(inet->pinet6)) {
 		struct ipv6_pinfo *np = BPF_CORE_READ(inet, pinet6);
 		struct ipv6_txoptions *o6 = np ? BPF_CORE_READ(np, opt) : 0;
-		if (o6 && BPF_CORE_READ(o6, srcrt))
+		if ((o6 && BPF_CORE_READ(o6, srcrt)) || (np && label_reroutes(np)))
 			d->taken = 1;
 	}
 }

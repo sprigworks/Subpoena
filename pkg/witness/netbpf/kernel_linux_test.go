@@ -177,6 +177,11 @@ func helper(spec string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
+	case "flowlabel": // see route_linux_test.go
+		if err := flowLabel(f[1], f[2], f[3]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 	case "route", "bcast": // see route_linux_test.go
 		if err := routedSend(f); err != nil {
 			fmt.Fprintln(os.Stderr, err)
