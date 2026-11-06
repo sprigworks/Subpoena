@@ -144,7 +144,11 @@ func parseSQL(d dialect, text string) []statement {
 	depth, start := 0, 0
 	flush := func(end int) {
 		if end > start {
-			out = append(out, classify(d, text, toks[start:end]))
+			st := classify(d, text, toks[start:end])
+			if st.taint == "" && d == dialectPostgres {
+				st.taint = pgConfigTaint(toks[start:end])
+			}
+			out = append(out, st)
 		}
 		start = end + 1
 	}
@@ -192,15 +196,21 @@ func isWordByte(c byte) bool {
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
-// tokenizeTaint is the taint of text that did not tokenize: it may still have
-// changed how the session reads what comes next.
+// tokenizeTaint is the taint of text the witness could not read: it may still
+// have changed how the session reads what comes next. A SET in it counts whatever
+// it names, since the name may be the part that could not be read: U&"search\005fpath".
 //
 //subpoena:enforcement_point
 func tokenizeTaint(text string) string {
 	up := strings.ToUpper(text)
-	for _, w := range []string{"STANDARD_CONFORMING_STRINGS", "CLIENT_ENCODING", "SEARCH_PATH", "SQL_MODE", "NAMES", "CHARSET", "CHARACTER"} {
+	for _, w := range []string{"STANDARD_CONFORMING_STRINGS", "CLIENT_ENCODING", "SEARCH_PATH", "SQL_MODE", "NAMES", "CHARSET", "CHARACTER", "SET_CONFIG"} {
 		if strings.Contains(up, w) {
 			return "text that did not tokenize mentions " + strings.ToLower(w) //subpoena:enforcement
+		}
+	}
+	for _, w := range strings.FieldsFunc(up, func(r rune) bool { return r >= 0x80 || !isWordByte(byte(r)) }) {
+		if w == "SET" {
+			return "text that did not tokenize holds a SET" //subpoena:enforcement
 		}
 	}
 	return ""
@@ -413,7 +423,9 @@ func classify(d dialect, text string, toks []token) statement {
 	if d == dialectPostgres {
 		var bad bool
 		if toks, bad = clipNames(toks); bad {
-			return opaqueStatement(st.text, firstWord(st.text), "a long name the server's encoding decides how to cut") //subpoena:enforcement
+			o := opaqueStatement(st.text, firstWord(st.text), "a long name the server's encoding decides how to cut")
+			o.taint = tokenizeTaint(st.text)
+			return o //subpoena:enforcement
 		}
 	}
 	first := 0
@@ -668,7 +680,8 @@ func safeCall(d dialect, toks []token, i int) bool {
 
 // notCall reports whether the word at i, followed by a parenthesis, cannot be a
 // call: the server's grammar does not let that word name a function, or the words
-// around it make it the keyword. Any other word is a name, whatever it looks like.
+// around it put it where no expression can start. Any other word is a name,
+// whatever it looks like, so each excuse below is one exact position.
 func notCall(d dialect, toks []token, i int) bool {
 	t := toks[i]
 	if (d == dialectPostgres && pgReserved[t.up]) || (d == dialectMySQL && myReserved[t.up]) {
@@ -678,14 +691,26 @@ func notCall(d dialect, toks []token, i int) bool {
 		return t.is("SET", "VALUE") // the head of what follows an UPDATE or INSERT target
 	}
 	prev := toks[i-1]
-	if d == dialectMySQL {
-		return t.is("ANY", "SOME") && prev.kind == tokPunct && strings.Contains("=<>!", prev.text)
-	}
 	switch {
-	case t.is("OVER", "FILTER", "OVERLAPS"):
-		return prev.punct(")")
+	case prev.is("AS", "REFERENCES"), cteColumns(toks, i):
+		return true // an alias's column list, a table's columns, a WITH item's columns
+	case d == dialectMySQL:
+		return prev.punct(")") || (t.is("ANY", "SOME") && prev.kind == tokPunct && strings.Contains("=<>!", prev.text))
+	case t.is("OPERATOR"):
+		return pgCatalogOperator(toks, i) // written after an operand, and it runs a routine
+	case pgAfterOperand(toks, i):
+		return true // two operands in a row: this is a keyword, or the parser refuses it
 	case t.is("LIKE", "ILIKE"):
-		return prev.punct(")") || prev.kind == tokQuoted || prev.kind == tokString || prev.kind == tokNumber
+		return prev.is("NOT") && pgAfterOperand(toks, i-1)
+	case t.is("CUBE", "ROLLUP"):
+		return prev.is("BY") && i >= 2 && toks[i-2].is("GROUP")
+	case t.is("CONFLICT"):
+		j := pastParens(toks, i+1)
+		return prev.is("ON") && j < len(toks) && toks[j].is("DO")
+	case t.is("INSERT"):
+		return prev.is("THEN") && !inCase(toks, i-1) // MERGE's action
+	case t.is("MATERIALIZED"):
+		return prev.is("NOT") && i >= 2 && toks[i-2].is("AS")
 	}
 	for _, w := range pgAfter[t.up] {
 		if prev.is(w) {
@@ -696,19 +721,102 @@ func notCall(d dialect, toks []token, i int) bool {
 }
 
 // pgAfter are PostgreSQL words a function may be named, that are keywords when
-// they follow one of these.
+// they follow one of these, and no expression can start after those.
 var pgAfter = map[string][]string{
-	"BY":       {"GROUP", "ORDER", "PARTITION"},
-	"CONFLICT": {"ON"},
-	"CUBE":     {"BY"},
-	"GROUP":    {"WITHIN"},
-	"INSERT":   {"THEN"},
-	"JOIN":     {"INNER", "LEFT", "RIGHT", "OUTER", "FULL", "CROSS"},
-	"KEY":      {"PRIMARY", "FOREIGN"},
-	"ROLLUP":   {"BY"},
-	"SET":      {"UPDATE"},
-	"SETS":     {"GROUPING"},
-	"VARYING":  {"CHARACTER", "CHAR", "BIT"},
+	"BY":      {"GROUP", "ORDER", "PARTITION"},
+	"GROUP":   {"WITHIN"},
+	"JOIN":    {"INNER", "LEFT", "RIGHT", "OUTER", "FULL", "CROSS", "NATURAL"},
+	"KEY":     {"PRIMARY", "FOREIGN"},
+	"SET":     {"UPDATE"},
+	"SETS":    {"GROUPING"},
+	"VARYING": {"CHARACTER", "CHAR", "BIT"},
+	"ZONE":    {"TIME"},
+}
+
+// cteColumns reports whether the name at i opens a WITH item's column list:
+// name (a, b) AS [[NOT] MATERIALIZED] (.
+func cteColumns(toks []token, i int) bool {
+	if p := toks[i-1]; !p.is("WITH", "RECURSIVE") && !p.punct(",") {
+		return false
+	}
+	j := pastParens(toks, i+1)
+	if j >= len(toks) || !toks[j].is("AS") {
+		return false
+	}
+	j = skip(toks, j+1, "NOT", "MATERIALIZED")
+	return j < len(toks) && toks[j].punct("(")
+}
+
+// pgAfterOperand reports whether what comes before i ends an operand or a table
+// reference. No expression can start there, so name( at i is a keyword, an alias's
+// column list, or a syntax error. A word only counts if it can't be a keyword that
+// takes an expression after it, and pgKeywords is every keyword the server has.
+func pgAfterOperand(toks []token, i int) bool {
+	if i == 0 {
+		return false
+	}
+	p := toks[i-1]
+	switch {
+	case p.kind == tokString, p.kind == tokNumber, p.kind == tokQuoted, p.punct("]"):
+		return true
+	case p.punct(")"):
+		o := openOf(toks, i-1)
+		return !(o >= 2 && toks[o-1].is("ON") && toks[o-2].is("DISTINCT")) // a select list starts after DISTINCT ON (a)
+	case p.kind == tokWord:
+		if i >= 2 && (toks[i-2].punct(".") || toks[i-2].is("AS")) {
+			return true // a column or an alias, whatever it spells
+		}
+		return !pgKeywords[p.up] || pgOperandWords[p.up]
+	}
+	return false
+}
+
+// openOf returns the index of the parenthesis that the one at i closes, or -1.
+func openOf(toks []token, i int) int {
+	depth := 0
+	for ; i >= 0; i-- {
+		switch {
+		case toks[i].punct(")"):
+			depth++
+		case toks[i].punct("("):
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// inCase reports whether the word at i is inside a CASE at its own depth: a THEN
+// there is the expression's, and what follows it is an expression.
+func inCase(toks []token, i int) bool {
+	open := 0
+	for j := i; j >= 0; j-- {
+		switch {
+		case toks[j].punct(")"):
+			if j = openOf(toks, j); j < 0 {
+				return true
+			}
+		case toks[j].punct("("):
+			return open > 0
+		case toks[j].is("END"):
+			open--
+		case toks[j].is("CASE"):
+			open++
+		}
+	}
+	return open > 0
+}
+
+// pgCatalogOperator reports whether OPERATOR at i is a listed operator, spelled
+// OPERATOR(pg_catalog.op), as psql writes them.
+func pgCatalogOperator(toks []token, i int) bool {
+	if i+4 >= len(toks) || !toks[i+2].is("PG_CATALOG") || !toks[i+3].punct(".") {
+		return false
+	}
+	op, n := operatorAt(toks, i+4)
+	return pgOperators[op] && i+4+n < len(toks) && toks[i+4+n].punct(")")
 }
 
 // pgReserved cannot name a function in PostgreSQL: its reserved words and the
@@ -725,6 +833,56 @@ var myReserved = wordSet(`ALL AND AS BETWEEN BINARY BY CASE CHAR CHARACTER CONVE
 	NOT NUMERIC ON OR OVER PARTITION REGEXP RLIKE ROW SELECT SET TABLE THEN UNION USING VALUES VARCHAR VARYING
 	WHEN WHERE WITH XOR`)
 
+// pgKeywords is every keyword of PostgreSQL 17, from pg_get_keywords(), which
+// testdata/pg-keywords.txt holds and the live tests compare with a real server.
+// Most can take an expression after them, or might one day: only pgOperandWords
+// are shown not to.
+var pgKeywords = wordSet(`ABORT ABSENT ABSOLUTE ACCESS ACTION ADD ADMIN AFTER AGGREGATE ALL ALSO ALTER ALWAYS ANALYSE
+	ANALYZE AND ANY ARRAY AS ASC ASENSITIVE ASSERTION ASSIGNMENT ASYMMETRIC AT ATOMIC ATTACH ATTRIBUTE
+	AUTHORIZATION BACKWARD BEFORE BEGIN BETWEEN BIGINT BINARY BIT BOOLEAN BOTH BREADTH BY CACHE CALL
+	CALLED CASCADE CASCADED CASE CAST CATALOG CHAIN CHAR CHARACTER CHARACTERISTICS CHECK CHECKPOINT
+	CLASS CLOSE CLUSTER COALESCE COLLATE COLLATION COLUMN COLUMNS COMMENT COMMENTS COMMIT COMMITTED
+	COMPRESSION CONCURRENTLY CONDITIONAL CONFIGURATION CONFLICT CONNECTION CONSTRAINT CONSTRAINTS
+	CONTENT CONTINUE CONVERSION COPY COST CREATE CROSS CSV CUBE CURRENT CURRENT_CATALOG CURRENT_DATE
+	CURRENT_ROLE CURRENT_SCHEMA CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER CURSOR CYCLE DATA DATABASE
+	DAY DEALLOCATE DEC DECIMAL DECLARE DEFAULT DEFAULTS DEFERRABLE DEFERRED DEFINER DELETE DELIMITER
+	DELIMITERS DEPENDS DEPTH DESC DETACH DICTIONARY DISABLE DISCARD DISTINCT DO DOCUMENT DOMAIN DOUBLE
+	DROP EACH ELSE EMPTY ENABLE ENCODING ENCRYPTED END ENUM ERROR ESCAPE EVENT EXCEPT EXCLUDE
+	EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN EXPRESSION EXTENSION EXTERNAL EXTRACT FALSE FAMILY
+	FETCH FILTER FINALIZE FIRST FLOAT FOLLOWING FOR FORCE FOREIGN FORMAT FORWARD FREEZE FROM FULL
+	FUNCTION FUNCTIONS GENERATED GLOBAL GRANT GRANTED GREATEST GROUP GROUPING GROUPS HANDLER HAVING
+	HEADER HOLD HOUR IDENTITY IF ILIKE IMMEDIATE IMMUTABLE IMPLICIT IMPORT IN INCLUDE INCLUDING
+	INCREMENT INDENT INDEX INDEXES INHERIT INHERITS INITIALLY INLINE INNER INOUT INPUT INSENSITIVE
+	INSERT INSTEAD INT INTEGER INTERSECT INTERVAL INTO INVOKER IS ISNULL ISOLATION JOIN JSON
+	JSON_ARRAY JSON_ARRAYAGG JSON_EXISTS JSON_OBJECT JSON_OBJECTAGG JSON_QUERY JSON_SCALAR
+	JSON_SERIALIZE JSON_TABLE JSON_VALUE KEEP KEY KEYS LABEL LANGUAGE LARGE LAST LATERAL LEADING
+	LEAKPROOF LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL LOCALTIME LOCALTIMESTAMP LOCATION LOCK
+	LOCKED LOGGED MAPPING MATCH MATCHED MATERIALIZED MAXVALUE MERGE MERGE_ACTION METHOD MINUTE
+	MINVALUE MODE MONTH MOVE NAME NAMES NATIONAL NATURAL NCHAR NESTED NEW NEXT NFC NFD NFKC NFKD NO
+	NONE NORMALIZE NORMALIZED NOT NOTHING NOTIFY NOTNULL NOWAIT NULL NULLIF NULLS NUMERIC OBJECT OF
+	OFF OFFSET OIDS OLD OMIT ON ONLY OPERATOR OPTION OPTIONS OR ORDER ORDINALITY OTHERS OUT OUTER OVER
+	OVERLAPS OVERLAY OVERRIDING OWNED OWNER PARALLEL PARAMETER PARSER PARTIAL PARTITION PASSING
+	PASSWORD PATH PLACING PLAN PLANS POLICY POSITION PRECEDING PRECISION PREPARE PREPARED PRESERVE
+	PRIMARY PRIOR PRIVILEGES PROCEDURAL PROCEDURE PROCEDURES PROGRAM PUBLICATION QUOTE QUOTES RANGE
+	READ REAL REASSIGN RECHECK RECURSIVE REF REFERENCES REFERENCING REFRESH REINDEX RELATIVE RELEASE
+	RENAME REPEATABLE REPLACE REPLICA RESET RESTART RESTRICT RETURN RETURNING RETURNS REVOKE RIGHT
+	ROLE ROLLBACK ROLLUP ROUTINE ROUTINES ROW ROWS RULE SAVEPOINT SCALAR SCHEMA SCHEMAS SCROLL SEARCH
+	SECOND SECURITY SELECT SEQUENCE SEQUENCES SERIALIZABLE SERVER SESSION SESSION_USER SET SETOF SETS
+	SHARE SHOW SIMILAR SIMPLE SKIP SMALLINT SNAPSHOT SOME SOURCE SQL STABLE STANDALONE START STATEMENT
+	STATISTICS STDIN STDOUT STORAGE STORED STRICT STRING STRIP SUBSCRIPTION SUBSTRING SUPPORT
+	SYMMETRIC SYSID SYSTEM SYSTEM_USER TABLE TABLES TABLESAMPLE TABLESPACE TARGET TEMP TEMPLATE
+	TEMPORARY TEXT THEN TIES TIME TIMESTAMP TO TRAILING TRANSACTION TRANSFORM TREAT TRIGGER TRIM TRUE
+	TRUNCATE TRUSTED TYPE TYPES UESCAPE UNBOUNDED UNCOMMITTED UNCONDITIONAL UNENCRYPTED UNION UNIQUE
+	UNKNOWN UNLISTEN UNLOGGED UNTIL UPDATE USER USING VACUUM VALID VALIDATE VALIDATOR VALUE VALUES
+	VARCHAR VARIADIC VARYING VERBOSE VERSION VIEW VIEWS VOLATILE WHEN WHERE WHITESPACE WINDOW WITH
+	WITHIN WITHOUT WORK WRAPPER WRITE XML XMLATTRIBUTES XMLCONCAT XMLELEMENT XMLEXISTS XMLFOREST
+	XMLNAMESPACES XMLPARSE XMLPI XMLROOT XMLSERIALIZE XMLTABLE YEAR YES ZONE`)
+
+// pgOperandWords are keywords that end an operand or are ordinary column names:
+// no expression can start right after one.
+var pgOperandWords = wordSet(`CURRENT_CATALOG CURRENT_DATE CURRENT_ROLE CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER
+	DATA END FALSE LOCALTIME LOCALTIMESTAMP NAME NULL ORDINALITY ROLE SESSION_USER SYSTEM_USER TRUE USER`)
+
 // pgSafeFuncs are PostgreSQL built-ins that do not change rows, exact names only.
 // Nothing here runs SQL handed to it or changes how the session reads text:
 // set_config is out for that reason. An unqualified call also needs pg_catalog
@@ -735,7 +893,14 @@ var pgSafeFuncs = wordSet(`ABS ARRAY_AGG ARRAY_LENGTH AVG BOOL_AND BOOL_OR CEIL 
 	LAG LASTVAL LEAD LEFT LENGTH LOWER LPAD LTRIM MAX MD5 MIN MOD NEXTVAL NOW OCTET_LENGTH PG_ADVISORY_LOCK
 	PG_ADVISORY_UNLOCK PG_ADVISORY_XACT_LOCK PG_BACKEND_PID PG_SLEEP PG_TRY_ADVISORY_LOCK POWER RANDOM RANK
 	REPEAT REPLACE REVERSE RIGHT ROUND ROW_NUMBER RPAD RTRIM SIGN SPLIT_PART SQRT STDDEV STRING_AGG SUBSTR SUM
-	TO_CHAR TRUNC UNNEST UPPER VARIANCE VERSION`)
+	TO_CHAR TRUNC UNNEST UPPER VARIANCE VERSION
+	ARRAY_TO_STRING ARRAY_UPPER COL_DESCRIPTION CURRENT_SCHEMAS FORMAT_TYPE HAS_SCHEMA_PRIVILEGE HAS_TABLE_PRIVILEGE
+	JSON_BUILD_OBJECT JSONB_BUILD_OBJECT OBJ_DESCRIPTION PG_ENCODING_TO_CHAR PG_FUNCTION_IS_VISIBLE
+	PG_GET_CONSTRAINTDEF PG_GET_EXPR PG_GET_FUNCTION_ARGUMENTS PG_GET_FUNCTION_RESULT PG_GET_INDEXDEF
+	PG_GET_PARTKEYDEF PG_GET_RULEDEF PG_GET_SERIAL_SEQUENCE PG_GET_STATISTICSOBJDEF_COLUMNS PG_GET_TRIGGERDEF
+	PG_GET_USERBYID PG_GET_VIEWDEF PG_HAS_ROLE PG_RELATION_IS_PUBLISHABLE PG_TABLE_IS_VISIBLE
+	PG_TABLESPACE_LOCATION PG_TYPE_IS_VISIBLE QUOTE_IDENT QUOTE_LITERAL SHOBJ_DESCRIPTION TO_JSON TO_JSONB
+	TO_REGCLASS TO_REGTYPE`)
 
 // mySafeFuncs are MySQL built-ins that do not change rows, exact names only.
 var mySafeFuncs = wordSet(`ABS ANY_VALUE AVG CAST CEIL CEILING CHAR_LENGTH CHARACTER_LENGTH COALESCE CONCAT
@@ -744,25 +909,75 @@ var mySafeFuncs = wordSet(`ABS ANY_VALUE AVG CAST CEIL CEILING CHAR_LENGTH CHARA
 	JSON_EXTRACT LAG LAST_INSERT_ID LEAD LEAST LEFT LENGTH LOCATE LOWER LPAD LTRIM MAX MD5 MIN MINUTE MOD MONTH
 	NOW NULLIF OCTET_LENGTH POSITION POWER RAND RANK RELEASE_LOCK REPEAT REPLACE REVERSE RIGHT ROUND ROW_COUNT
 	ROW_NUMBER RPAD RTRIM SCHEMA SECOND SHA1 SHA2 SIGN SLEEP SQRT STDDEV SUBSTR SUBSTRING SUM SYSDATE TIME
-	TIMESTAMP TRIM UCASE UNHEX UNIX_TIMESTAMP UPPER USER UTC_TIMESTAMP UUID VARIANCE VERSION WEEK YEAR`)
+	TIMESTAMP TRIM UCASE UNHEX UNIX_TIMESTAMP UPPER USER UTC_TIMESTAMP UUID VARIANCE VERSION WEEK YEAR
+	JSON_ARRAY JSON_CONTAINS JSON_LENGTH JSON_OBJECT JSON_UNQUOTE`)
 
 // pgOperators are built-in operators, as the server's lexer would cut them. Any
 // other is user-definable, and an operator is a function call with no parenthesis.
 var pgOperators = map[string]bool{"=": true, "<>": true, "!=": true, "<": true, "<=": true, ">": true, ">=": true,
 	"+": true, "-": true, "*": true, "/": true, "%": true, "^": true, "||": true, "=>": true, "->": true,
-	"->>": true, "@>": true, "<@": true, "~": true, "~*": true, "!~": true, "!~*": true}
+	"->>": true, "@>": true, "<@": true, "~": true, "~*": true, "!~": true, "!~*": true,
+	"&": true, "|": true, "<<": true, ">>": true, "&&": true, "#>": true, "#>>": true, "#-": true,
+	"?": true, "?|": true, "?&": true, "@@": true, "@?": true}
 
 // pgTypes are built-in types. A cast to any other can run a domain's CHECK or a
-// user cast's function.
-var pgTypes = wordSet(`BIGINT BOOL BOOLEAN BYTEA CHAR CHARACTER DATE DECIMAL DOUBLE FLOAT FLOAT4 FLOAT8 INT
-	INT2 INT4 INT8 INTEGER INTERVAL JSON JSONB NUMERIC REAL SMALLINT TEXT TIME TIMESTAMP TIMESTAMPTZ TIMETZ UUID
-	VARCHAR`)
+// user cast's function. DOUBLE counts only with its PRECISION: see pgTypeAt.
+var pgTypes = wordSet(`BIGINT BOOL BOOLEAN BYTEA CHAR CHARACTER CIDR DATE DECIMAL DOUBLE FLOAT FLOAT4 FLOAT8 INET
+	INT INT2 INT4 INT8 INTEGER INTERVAL JSON JSONB MACADDR NAME NUMERIC OID REAL REGCLASS REGNAMESPACE REGOPER
+	REGOPERATOR REGPROC REGPROCEDURE REGROLE REGTYPE SMALLINT TEXT TIME TIMESTAMP TIMESTAMPTZ TIMETZ TSQUERY
+	TSVECTOR UUID VARCHAR`)
+
+// pgTypeAt reports whether the word at i is a listed type. DOUBLE alone is no
+// built-in, so it resolves to whatever the application calls double.
+//
+//subpoena:enforcement_point
+func pgTypeAt(toks []token, i int) bool {
+	if toks[i].kind != tokWord || !pgTypes[toks[i].up] {
+		return false
+	}
+	if toks[i].is("DOUBLE") {
+		return i+1 < len(toks) && toks[i+1].is("PRECISION") //subpoena:enforcement
+	}
+	return true
+}
+
+// pgCastTarget reports whether what a cast names at i is a listed type, bare or
+// written pg_catalog.type.
+func pgCastTarget(toks []token, i int) bool {
+	if i+2 < len(toks) && toks[i].is("PG_CATALOG") && toks[i+1].punct(".") {
+		i += 2
+	}
+	return i < len(toks) && pgTypeAt(toks, i) && !(i+1 < len(toks) && toks[i+1].punct("."))
+}
 
 // pgBeforeString are the words a string can follow without the word being a type
-// name: mytype 'x' is a cast.
-var pgBeforeString = wordSet(`ALL AND ANY AS B BETWEEN BY CASE COLLATE DATE DEFAULT DISTINCT E ELSE ESCAPE FROM ILIKE
-	IN INTERVAL LIKE LIMIT N NOT OFFSET ON OR RETURNING SELECT SET SIMILAR THEN TIME TIMESTAMP TO USING VALUES
-	WHEN WHERE X ZONE`)
+// name: mytype 'x' is a cast. Only words the grammar will not take as a type are
+// here; a word it would is in pgStringLead, at the one position it is a keyword.
+var pgBeforeString = wordSet(`ALL AND ANY AS BETWEEN BOTH CASE COLLATE DEFAULT DISTINCT ELSE FROM IN LEADING LIMIT
+	NOT OFFSET ON OR RETURNING SELECT THEN TO TRAILING USING VALUES WHEN WHERE`)
+
+// pgStringLead reports whether the string after the word at i is not typed by it.
+//
+//subpoena:enforcement_point
+func pgStringLead(toks []token, i int) bool {
+	t := toks[i]
+	switch {
+	case t.is("B", "E", "N", "X"):
+		// X'1F'; with a gap, x is a type.
+		return t.pos+len(t.text) == toks[i+1].pos //subpoena:enforcement
+	case t.is("ZONE"):
+		return i > 0 && toks[i-1].is("TIME")
+	case t.is("BY"):
+		return i > 0 && toks[i-1].is("GROUP", "ORDER", "PARTITION")
+	case t.is("ESCAPE"):
+		return pgAfterOperand(toks, i)
+	case t.is("LIKE", "ILIKE"):
+		return pgAfterOperand(toks, i) || (i > 0 && toks[i-1].is("NOT") && pgAfterOperand(toks, i-1))
+	case t.is("NAMES", "SCHEMA", "ROLE", "AUTHORIZATION"):
+		return toks[0].is("SET") && (i == 1 || (i == 2 && toks[1].is("SESSION", "LOCAL")))
+	}
+	return pgBeforeString[t.up] || pgTypeAt(toks, i)
+}
 
 // pgHidden finds what PostgreSQL resolves to a routine with no call syntax: a
 // user operator, a cast to a type it does not know, and a field of an expression,
@@ -779,14 +994,14 @@ func pgHidden(toks []token) string {
 				return why
 			}
 		}
-		if t.kind == tokWord && i+1 < len(toks) && toks[i+1].kind == tokString && !pgBeforeString[t.up] {
+		if t.kind == tokWord && i+1 < len(toks) && toks[i+1].kind == tokString && !pgStringLead(toks, i) {
 			return "a string typed as " + t.text + ", which may run a routine"
 		}
 		if t.punct("$") && i+1 < len(toks) && toks[i+1].kind == tokNumber && strings.Contains(toks[i+1].text, ".") {
 			return "a field of a parameter, which may be a function"
 		}
 		if t.punct(":") && i+2 < len(toks) && toks[i+1].punct(":") {
-			if toks[i+2].kind != tokWord || !pgTypes[toks[i+2].up] || (i+3 < len(toks) && toks[i+3].punct(".")) {
+			if !pgCastTarget(toks, i+2) {
 				return "a cast the server may run a routine for"
 			}
 			continue
@@ -815,7 +1030,7 @@ func castType(group []token) string {
 		case t.punct(")"):
 			depth--
 		case t.is("AS") && depth == 1 && i+1 < len(group):
-			if group[i+1].kind != tokWord || !pgTypes[group[i+1].up] || (i+2 < len(group) && group[i+2].punct(".")) {
+			if !pgCastTarget(group, i+1) {
 				return "a cast the server may run a routine for"
 			}
 			return ""
@@ -852,17 +1067,22 @@ func operatorAt(toks []token, i int) (string, int) {
 }
 
 // setStatement reads SET. It is a read, unless it changes what the witness can
-// follow from here on: then the session is tainted.
+// follow from here on: then the session is tainted. The rule for a setting that
+// can change lexing or name lookup is that the name counts in any spelling and the
+// value is never parsed for what it means: it is one of the plain forms below, or
+// the session is gone.
 //
 //subpoena:enforcement_point
 func setStatement(st statement, toks, rest []token) statement {
 	if st.dialect == dialectMySQL {
+		st.taint = mySetTaint(rest)
 		for _, t := range rest {
-			if t.is("GLOBAL", "PERSIST", "PERSIST_ONLY") {
-				return opaqueStatement(st.text, st.verb, "SET %s reaches other connections", t.up) //subpoena:enforcement
+			if n := settingName(t); n == "GLOBAL" || n == "PERSIST" || n == "PERSIST_ONLY" {
+				o := opaqueStatement(st.text, st.verb, "SET %s reaches other connections", n)
+				o.taint = st.taint
+				return o //subpoena:enforcement
 			}
 		}
-		st.taint = mySetTaint(rest)
 	} else {
 		st.taint = pgSetTaint(rest)
 	}
@@ -871,14 +1091,24 @@ func setStatement(st statement, toks, rest []token) statement {
 	return q
 }
 
+// settingName is t as the server looks a setting up: quoted or not, without case.
+// "" if t can't be a name. Postgres's login options read - as _; a SET does not, and
+// counting it there costs nothing.
+func settingName(t token) string {
+	if t.kind != tokWord && t.kind != tokQuoted {
+		return ""
+	}
+	return strings.ToUpper(strings.ReplaceAll(t.text, "-", "_"))
+}
+
 // settingValue reads what SET sets: "name = value", "name TO value", with SESSION
 // or LOCAL in front.
 func settingValue(rest []token) (name string, value []token) {
 	i := skip(rest, 0, "SESSION", "LOCAL")
-	if i >= len(rest) || (rest[i].kind != tokWord && rest[i].kind != tokQuoted) {
+	if i >= len(rest) {
 		return "", nil
 	}
-	name = strings.ToUpper(rest[i].text)
+	name = settingName(rest[i])
 	i++
 	if i < len(rest) && (rest[i].punct("=") || rest[i].is("TO")) {
 		i++
@@ -891,32 +1121,174 @@ func tokenValue(t token) string {
 	return strings.Trim(t.text, "'\"")
 }
 
+// plainValue reports whether t means what it spells: a word, a quoted name, or a
+// string with no escape or doubled quote in it. An E string, a dollar quote, a
+// typed or hex literal or an expression is not one token of these kinds.
+//
+//subpoena:enforcement_point
+func plainValue(t token) bool {
+	switch t.kind {
+	case tokWord, tokQuoted:
+		return true
+	case tokString:
+		return len(t.text) >= 2 && t.text[0] != '$' && !strings.ContainsAny(t.text[1:len(t.text)-1], `\'"`) //subpoena:enforcement
+	}
+	return false
+}
+
+// pgSessionSettings are the settings that change how the witness must read text,
+// by the names only they have. NAMES and SCHEMA are SET's spellings of two of them.
+var pgSessionSettings = wordSet("SEARCH_PATH STANDARD_CONFORMING_STRINGS CLIENT_ENCODING")
+
 // pgSetTaint says why a PostgreSQL SET leaves the session unreadable, or "". The
-// server reports the first two by ParameterStatus too, but not until the next
-// Sync, and a pipelined Parse can get there first.
+// server reports two of these by ParameterStatus too, but not until the next
+// Sync, and a pipelined Parse can get there first. The search path it reports only
+// from version 18.
 //
 //subpoena:enforcement_point
 func pgSetTaint(rest []token) string {
 	name, value := settingValue(rest)
 	switch name {
 	case "STANDARD_CONFORMING_STRINGS":
-		if len(value) != 1 || !pgOn(tokenValue(value[0])) {
+		if len(value) != 1 || (!plainValue(value[0]) && value[0].kind != tokNumber) || !pgOn(tokenValue(value[0])) {
 			return "standard_conforming_strings may be off" //subpoena:enforcement
 		}
 	case "CLIENT_ENCODING", "NAMES":
-		if len(value) != 1 || !pgReadableEncoding(tokenValue(value[0])) {
+		if len(value) != 1 || !plainValue(value[0]) || !pgReadableEncoding(tokenValue(value[0])) {
 			return "the client encoding may hide quotes in multibyte characters" //subpoena:enforcement
 		}
-	case "SEARCH_PATH":
-		var parts []string
-		for _, t := range value {
-			if !t.punct(",") {
-				parts = append(parts, tokenValue(t))
+	case "SEARCH_PATH", "SCHEMA":
+		return pgSetPathTaint(value)
+	default:
+		for _, t := range rest {
+			if n := settingName(t); pgSessionSettings[n] {
+				return "a SET naming " + strings.ToLower(n) + " in a form it cannot read" //subpoena:enforcement
 			}
 		}
-		return pgPathTaint(strings.Join(parts, ","))
 	}
 	return ""
+}
+
+// pgSetPathTaint is pgPathTaint for a SET's value, which has to be a plain list.
+func pgSetPathTaint(value []token) string {
+	var parts []string
+	for i, t := range value {
+		switch {
+		case i%2 == 1 && t.punct(","):
+		case i%2 == 0 && plainValue(t):
+			parts = append(parts, tokenValue(t))
+		default:
+			return "a search path it cannot read" //subpoena:enforcement
+		}
+	}
+	if len(value)%2 == 0 {
+		return "a search path it cannot read" //subpoena:enforcement
+	}
+	return pgPathTaint(strings.Join(parts, ","))
+}
+
+// pgConfigTaint is the taint of a call to set_config, which is a SET by another
+// name. It is opaque anyway; the taint matters to what follows a Mark. Only a plain
+// first argument naming some other setting is left alone.
+//
+//subpoena:enforcement_point
+func pgConfigTaint(toks []token) string {
+	for i, t := range toks {
+		if settingName(t) != "SET_CONFIG" {
+			continue
+		}
+		if i+2 < len(toks) && toks[i+1].punct("(") && toks[i+2].kind == tokString && plainValue(toks[i+2]) &&
+			!pgSessionSettings[strings.ToUpper(strings.ReplaceAll(tokenValue(toks[i+2]), "-", "_"))] {
+			continue
+		}
+		return "set_config of a setting it cannot rule out" //subpoena:enforcement
+	}
+	return ""
+}
+
+// pgLoginTaint says why a setting given at login leaves the session unreadable, or
+// "", as pgSetTaint does. name is as the client spelled it; the server compares
+// without case, and its login options read - as _.
+//
+//subpoena:enforcement_point
+func pgLoginTaint(name, value string) string {
+	switch strings.ToUpper(strings.ReplaceAll(name, "-", "_")) {
+	case "SEARCH_PATH":
+		for _, c := range []byte(value) {
+			if !isWordByte(c) && c != ',' && c != ' ' && c != '"' {
+				return "a login search path it cannot read" //subpoena:enforcement
+			}
+		}
+		return pgPathTaint(value)
+	case "STANDARD_CONFORMING_STRINGS":
+		if !pgOn(value) {
+			return "standard_conforming_strings may be off at login" //subpoena:enforcement
+		}
+	case "CLIENT_ENCODING":
+		if !pgReadableEncoding(value) {
+			return "the login client encoding may hide quotes in multibyte characters" //subpoena:enforcement
+		}
+	}
+	return ""
+}
+
+// pgOptionsTaint reads the startup packet's options as the server does: split on
+// spaces, a backslash taking the next byte literally. Any switch but -c name=value
+// and --name=value is not read for what it does.
+//
+//subpoena:enforcement_point
+func pgOptionsTaint(options string) string {
+	args := pgSplitOptions(options)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-c" && i+1 < len(args):
+			i++
+			a = args[i]
+		case strings.HasPrefix(a, "--"):
+			a = a[2:]
+		case strings.HasPrefix(a, "-c"):
+			a = a[2:]
+		default:
+			return "login options it cannot read" //subpoena:enforcement
+		}
+		name, value, ok := strings.Cut(a, "=")
+		if !ok {
+			return "login options it cannot read" //subpoena:enforcement
+		}
+		if why := pgLoginTaint(name, value); why != "" {
+			return why //subpoena:enforcement
+		}
+	}
+	return ""
+}
+
+// pgSplitOptions is the server's pg_split_opts.
+func pgSplitOptions(s string) []string {
+	var args []string
+	var b strings.Builder
+	in := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case isSpace(c):
+			if in {
+				args, in = append(args, b.String()), false
+				b.Reset()
+			}
+		case c == '\\' && i+1 < len(s):
+			i++
+			b.WriteByte(s[i])
+			in = true
+		default:
+			b.WriteByte(c)
+			in = true
+		}
+	}
+	if in {
+		args = append(args, b.String())
+	}
+	return args
 }
 
 func pgOn(v string) bool {
@@ -956,54 +1328,130 @@ func pgPathTaint(path string) string {
 	return ""
 }
 
+// mySessionSettings are the settings that change how MySQL lexes what follows.
+// character_set_connection and the collations do not: the lexer goes by the
+// client's charset.
+var mySessionSettings = wordSet("SQL_MODE NAMES CHARSET CHARACTER CHARACTER_SET_CLIENT")
+
 // mySetTaint says why a MySQL SET leaves the session unreadable, or "". Nothing
-// on the wire reports these two, except NO_BACKSLASH_ESCAPES in the status flags.
+// on the wire reports these, except NO_BACKSLASH_ESCAPES in the status flags. Each
+// assignment counts by the name on its left, in any spelling and with any scope in
+// front; a value that only reads @@sql_mode assigns nothing.
 //
 //subpoena:enforcement_point
 func mySetTaint(rest []token) string {
-	for i, t := range rest {
-		switch {
-		case t.is("SQL_MODE"):
-			if !mySafeMode(rest[i+1:]) {
-				return "sql_mode may change how strings and names are quoted" //subpoena:enforcement
+	for len(rest) > 0 {
+		end := 0
+		for end < len(rest) && !rest[end].punct(",") {
+			if rest[end].punct("(") {
+				end = pastParens(rest, end)
+				continue
 			}
-		case t.is("NAMES", "CHARSET", "CHARACTER_SET_CLIENT"), t.is("CHARACTER") && i+1 < len(rest) && rest[i+1].is("SET"):
-			j := i + 1
-			if t.is("CHARACTER") {
-				j++
-			}
-			if j < len(rest) && (rest[j].punct("=") || rest[j].punct(":")) {
-				j++
-			}
-			if j >= len(rest) || !myReadableCharset(tokenValue(rest[j])) {
-				return "the client charset may hide quotes in multibyte characters" //subpoena:enforcement
-			}
+			end++
 		}
+		if why := myAssignTaint(rest[:end]); why != "" {
+			return why
+		}
+		rest = rest[min(end+1, len(rest)):]
 	}
 	return ""
 }
 
-// mySafeMode reports whether a sql_mode assignment is one literal that leaves
-// quoting alone.
-func mySafeMode(toks []token) bool {
-	i := 0
-	for i < len(toks) && (toks[i].punct("=") || toks[i].punct(":")) {
-		i++
+// myAssignTaint is mySetTaint for one assignment.
+func myAssignTaint(part []token) string {
+	for i, t := range part {
+		if t.punct("=") {
+			return ""
+		}
+		n := settingName(t)
+		if !mySessionSettings[n] || (n == "CHARACTER" && !(i+1 < len(part) && part[i+1].is("SET"))) {
+			continue
+		}
+		value := part[i+1:]
+		if n == "CHARACTER" {
+			value = value[1:]
+		}
+		for len(value) > 0 && (value[0].punct(":") || value[0].punct("=")) {
+			value = value[1:]
+		}
+		if n == "SQL_MODE" {
+			if !mySafeMode(value) {
+				return "sql_mode may change how strings and names are quoted" //subpoena:enforcement
+			}
+		} else if !mySafeCharset(value) {
+			return "the client charset may hide quotes in multibyte characters" //subpoena:enforcement
+		}
+		return ""
 	}
-	if i >= len(toks) || toks[i].kind != tokString {
-		return false
-	}
-	if i+1 < len(toks) && !toks[i+1].punct(",") {
-		return false
-	}
-	mode := strings.ToUpper(toks[i].text)
-	return !strings.Contains(mode, "ANSI") && !strings.Contains(mode, "NO_BACKSLASH_ESCAPES")
+	return ""
 }
 
-// myReadableCharset is pgReadableEncoding for MySQL.
+// mySafeModes are the sql_mode values that leave quoting alone. It is an
+// allow-list: ANSI, ANSI_QUOTES and NO_BACKSLASH_ESCAPES are out, and so is any
+// spelling that is not one of these.
+var mySafeModes = wordSet(`ALLOW_INVALID_DATES ERROR_FOR_DIVISION_BY_ZERO HIGH_NOT_PRECEDENCE IGNORE_SPACE
+	NO_AUTO_VALUE_ON_ZERO NO_DIR_IN_CREATE NO_ENGINE_SUBSTITUTION NO_UNSIGNED_SUBTRACTION NO_ZERO_DATE NO_ZERO_IN_DATE
+	ONLY_FULL_GROUP_BY PAD_CHAR_TO_FULL_LENGTH PIPES_AS_CONCAT REAL_AS_FLOAT STRICT_ALL_TABLES STRICT_TRANS_TABLES
+	TIME_TRUNCATE_FRACTIONAL TRADITIONAL`)
+
+// mySafeModeList reports whether t is a plain list of mySafeModes.
+//
+//subpoena:enforcement_point
+func mySafeModeList(t token) bool {
+	if t.kind == tokQuoted || !plainValue(t) {
+		return false
+	}
+	for _, m := range strings.Split(strings.ToUpper(tokenValue(t)), ",") {
+		if m != "" && !mySafeModes[m] {
+			return false //subpoena:enforcement
+		}
+	}
+	return true
+}
+
+// mySafeMode reports whether a sql_mode value is plainly safe: a literal list of
+// safe modes, or the current mode with safe modes added to it, as Rails sends:
+// CONCAT(@@sql_mode, ',STRICT_ALL_TABLES').
+func mySafeMode(value []token) bool {
+	if len(value) == 1 {
+		return mySafeModeList(value[0])
+	}
+	if len(value) < 6 || !value[0].is("CONCAT") || !value[1].punct("(") || !value[2].punct("@") || !value[3].punct("@") ||
+		value[0].pos+len(value[0].text) != value[1].pos {
+		return false
+	}
+	i := 4
+	if i+1 < len(value) && value[i].is("SESSION", "LOCAL") && value[i+1].punct(".") {
+		i += 2
+	}
+	if !value[i].is("SQL_MODE") {
+		return false
+	}
+	for i++; i+1 < len(value) && value[i].punct(","); i += 2 {
+		if value[i+1].kind != tokString || !mySafeModeList(value[i+1]) {
+			return false
+		}
+	}
+	return i == len(value)-1 && value[i].punct(")")
+}
+
+// mySafeCharset reports whether a charset value is plainly one the witness can
+// read: name, or name COLLATE collation, which does not change the lexing.
+func mySafeCharset(value []token) bool {
+	if len(value) != 1 && !(len(value) == 3 && value[1].is("COLLATE") && plainValue(value[2])) {
+		return false
+	}
+	return plainValue(value[0]) && myReadableCharset(tokenValue(value[0]))
+}
+
+// myReadableCharset is pgReadableEncoding for MySQL: single-byte charsets, and
+// multibyte ones whose every byte past the first is outside ASCII. It is an
+// allow-list, so a charset nobody checked taints the session.
 func myReadableCharset(v string) bool {
 	switch strings.ToLower(v) {
-	case "utf8mb4", "utf8mb3", "utf8", "latin1", "ascii", "binary":
+	case "utf8mb4", "utf8mb3", "utf8", "ascii", "binary", "latin1", "latin2", "latin5", "latin7",
+		"cp1250", "cp1251", "cp1256", "cp1257", "koi8r", "koi8u", "greek", "hebrew",
+		"ujis", "eucjpms", "euckr", "gb2312":
 		return true
 	}
 	return false
@@ -1061,6 +1509,9 @@ func insert(st statement, toks []token) statement {
 	name, next, ok := tableName(toks, i)
 	if !ok {
 		return opaqueStatement(st.text, st.verb, "no table after %s", st.verb) //subpoena:enforcement
+	}
+	if next+1 < len(toks) && toks[next].is("AS") && (toks[next+1].kind == tokWord || toks[next+1].kind == tokQuoted) {
+		next += 2 // INSERT INTO t AS alias (columns)
 	}
 	if next < len(toks) && toks[next].punct("(") {
 		next = pastParens(toks, next)
@@ -1218,21 +1669,38 @@ func copyStmt(st statement, rest []token) statement {
 	return st
 }
 
-// loadData reads LOAD DATA ... INTO TABLE name.
+// loadData reads LOAD DATA ... INTO TABLE name. Only its SET clause holds
+// expressions: they run for every row of the file.
 //
 //subpoena:enforcement_point
 func loadData(st statement, rest []token) statement {
 	if len(rest) > 0 && rest[0].is("DATA") {
 		for i := 0; i+1 < len(rest); i++ {
 			if rest[i].is("INTO") && rest[i+1].is("TABLE") {
-				if name, _, ok := tableName(rest, i+2); ok {
-					return write(st, name)
+				if name, next, ok := tableName(rest, i+2); ok {
+					return checked(write(st, name), loadSet(rest[next:]))
 				}
 			}
 		}
 	}
 	st = opaqueStatement(st.text, st.verb, "not LOAD DATA INTO TABLE") //subpoena:enforcement
 	return st
+}
+
+// loadSet is the SET clause of what follows LOAD DATA's table name, or nil.
+// CHARACTER SET there names the file's charset.
+//
+//subpoena:enforcement_point
+func loadSet(toks []token) []token {
+	for i := 0; i < len(toks); i++ {
+		switch {
+		case toks[i].punct("("):
+			i = pastParens(toks, i) - 1
+		case toks[i].is("SET") && (i == 0 || !toks[i-1].is("CHARACTER")):
+			return toks[i:] //subpoena:enforcement
+		}
+	}
+	return nil
 }
 
 // ddl reads CREATE, DROP and ALTER of a table. Of anything else it is opaque: a
@@ -1254,6 +1722,9 @@ func ddl(st statement, rest []token) statement {
 	}
 	switch st.verb {
 	case "CREATE":
+		if st.dialect == dialectPostgres && linksTable(rest[next:]) {
+			return opaqueStatement(st.text, st.verb, "rows reach a table it does not name") //subpoena:enforcement
+		}
 		if body := createBody(rest[next:]); body != nil {
 			if !body[0].punct("(") && !body[0].is("SELECT", "VALUES", "TABLE", "WITH") {
 				return opaqueStatement(st.text, st.verb, "CREATE TABLE from something other than a query") //subpoena:enforcement
@@ -1263,8 +1734,10 @@ func ddl(st statement, rest []token) statement {
 			}
 		}
 	case "ALTER":
-		for _, t := range rest[next:] {
-			if t.is("RENAME", "EXCHANGE") {
+		tail := rest[next:]
+		for j, t := range tail {
+			if t.is("RENAME", "EXCHANGE", "ATTACH") || (t.is("INHERIT") && !(j > 0 && tail[j-1].is("NO"))) ||
+				(t.is("SCHEMA") && j > 0 && tail[j-1].is("SET")) {
 				return opaqueStatement(st.text, st.verb, "rows reach a table it does not name") //subpoena:enforcement
 			}
 		}
@@ -1275,6 +1748,20 @@ func ddl(st statement, rest []token) statement {
 	}
 	st.noCount = true
 	return write(st, names...)
+}
+
+// linksTable reports whether what follows CREATE TABLE's name ties the new table
+// to another: rows written to one then show in the other.
+func linksTable(toks []token) bool {
+	for i := 0; i < len(toks); i++ {
+		switch {
+		case toks[i].punct("("):
+			i = pastParens(toks, i) - 1
+		case toks[i].is("INHERITS"), toks[i].is("PARTITION") && i+1 < len(toks) && toks[i+1].is("OF"):
+			return true
+		}
+	}
+	return false
 }
 
 // createBody finds the query in what follows CREATE TABLE's name, or nil if there
@@ -1332,7 +1819,24 @@ func txCommand(st statement, rest []token) statement {
 		st.tx = txRelease
 		st.savepoint = savepointName(rest, 0)
 	}
+	if st.dialect == dialectMySQL {
+		st.savepoint = myFoldSavepoint(st.savepoint)
+	}
 	return st
+}
+
+// myFoldSavepoint is name as MySQL compares it, quoted or not: without case, by a
+// collation that also folds accents and pads with spaces. A name outside ASCII
+// words could equal any other, so it reads as no name.
+//
+//subpoena:enforcement_point
+func myFoldSavepoint(name string) string {
+	for i := 0; i < len(name); i++ {
+		if name[i] >= 0x80 || !isWordByte(name[i]) {
+			return "" //subpoena:enforcement
+		}
+	}
+	return strings.ToLower(name)
 }
 
 // savepointName reads "[SAVEPOINT] name" at i. "" means none could be read; the

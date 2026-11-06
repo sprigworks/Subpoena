@@ -293,7 +293,9 @@ Check: the `delivery_` cases in `conformance/witness.yaml` (`delivered`,
   stayed, as far as the wire can say. W4's other rules apply.
   The file cannot show what only the catalog knows: a view over a writing function,
   field notation (`o.w` calling `w(o)`), or an overload of a built-in name, installed
-  before the capture, reads as a plain read (`witnesses/README.md` has the list of
+  before the capture, reads as a plain read, and a write through an updatable view, or
+  to a partition, a parent or a child, is a write to the name in the statement. A
+  table in a claim is only as good as that name (`witnesses/README.md` has the list of
   what is never seen).
   A port ships the reader; a `no_row` check over it is not in Python yet, so a
   Python test reads `committed` and `health` itself.

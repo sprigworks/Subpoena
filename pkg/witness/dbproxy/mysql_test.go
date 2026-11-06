@@ -486,7 +486,9 @@ func TestMySQLLocalInfile(t *testing.T) {
 	w.healthy()
 }
 
-func TestMySQLResetConnectionRollsBack(t *testing.T) {
+// Round 2 review 7, H4: no reply says what the reset undid. The two tests after
+// this one used to read rolled_back, which a MyISAM table proved wrong.
+func TestMySQLResetConnectionLeavesWritesUnknown(t *testing.T) {
 	w := myReadyWire(t, 0)
 	w.client(myPrepare("SELECT 1"))
 	w.server(myPrepareOK(1, 5, 0, 0))
@@ -496,17 +498,17 @@ func TestMySQLResetConnectionRollsBack(t *testing.T) {
 	w.server(myOK(1, 1, stAutocommit|stInTrans, 0))
 	w.client(packet(0, []byte{0x1f}))
 	w.server(myOK(1, 0, stAutocommit, 0))
-	w.want("rolled_back INSERT")
+	w.want("unknown INSERT")
 	w.client(myExecute(5))
 	w.server(myOK(1, 0, stAutocommit, 0))
 	if got := w.cap.committed(); len(got) != 1 || !got[0].Opaque {
 		t.Fatalf("a reset must forget statements: %+v", got)
 	}
 	w.s.finish()
-	w.healthy()
+	w.faulted("session reset")
 }
 
-func TestMySQLChangeUserRollsBack(t *testing.T) {
+func TestMySQLChangeUserLeavesWritesUnknown(t *testing.T) {
 	w := myReadyWire(t, 0)
 	w.client(myQuery("BEGIN"))
 	w.server(myOK(1, 0, stAutocommit|stInTrans, 0))
@@ -516,11 +518,11 @@ func TestMySQLChangeUserRollsBack(t *testing.T) {
 	w.server(packet(1, []byte{0xfe}, cstr("mysql_native_password"), []byte("abc")))
 	w.client(packet(2, []byte("reply")))
 	w.server(myOK(3, 0, stAutocommit, 0))
-	w.want("rolled_back INSERT")
+	w.want("unknown INSERT")
 	w.client(myQuery("SELECT 1"))
 	w.server(myOK(1, 0, stAutocommit, 0))
 	w.s.finish()
-	w.healthy()
+	w.faulted("session reset")
 }
 
 func TestMySQLBigCommandSpansPackets(t *testing.T) {
@@ -676,7 +678,7 @@ func TestMySQLDroppedInFlight(t *testing.T) {
 	w.faulted("dropped")
 }
 
-func TestMySQLQuitRollsBackCleanly(t *testing.T) {
+func TestMySQLQuitLeavesWritesUnknown(t *testing.T) {
 	w := myReadyWire(t, 0)
 	w.client(myQuery("BEGIN"))
 	w.server(myOK(1, 0, stAutocommit|stInTrans, 0))
@@ -684,7 +686,17 @@ func TestMySQLQuitRollsBackCleanly(t *testing.T) {
 	w.server(myOK(1, 1, stAutocommit|stInTrans, 0))
 	w.client(packet(0, []byte{0x01}))
 	w.s.finish()
-	w.want("rolled_back INSERT")
+	w.want("unknown INSERT")
+	w.faulted("COM_QUIT")
+}
+
+// A transaction with nothing written has nothing to be unsure of.
+func TestMySQLQuitWithNoWriteOpenIsClean(t *testing.T) {
+	w := myReadyWire(t, 0)
+	w.client(myQuery("BEGIN"))
+	w.server(myOK(1, 0, stAutocommit|stInTrans, 0))
+	w.client(packet(0, []byte{0x01}))
+	w.s.finish()
 	w.healthy()
 }
 

@@ -159,7 +159,9 @@ func (s *mySession) noteStatus(status uint16) {
 
 // failed applies an ERR to the statement it ends. ERR carries no status flags. A
 // routine that failed may have committed part of its work, in or out of a
-// transaction, and a statement that commits implicitly did so before it failed.
+// transaction, and a statement that commits implicitly did so before it failed:
+// LOCK TABLES of a table that isn't there has committed. Only the verbs known not to
+// commit leave the transaction standing.
 //
 //subpoena:enforcement_point
 func (s *mySession) failed(st *statement) {
@@ -169,15 +171,16 @@ func (s *mySession) failed(st *statement) {
 		s.tx.unknown(st) //subpoena:enforcement
 		return
 	}
-	if myImplicitCommit[st.verb] {
+	if !myKeepsTransaction[st.verb] {
 		s.tx.commit() //subpoena:enforcement
 	}
 	s.tx.done(st, witness.RowsUnknown, witness.OutcomeFailed)
 }
 
-// myImplicitCommit are the known verbs that commit the open transaction before
-// they run, so before they can fail.
-var myImplicitCommit = wordSet("CREATE ALTER DROP TRUNCATE")
+// myKeepsTransaction are the verbs that do not commit the open transaction before
+// they run. Any other may have, so its failure says nothing about what it left open.
+var myKeepsTransaction = wordSet(`SELECT VALUES TABLE WITH INSERT REPLACE UPDATE DELETE EXPLAIN DESCRIBE DESC SHOW
+	SET USE PREPARE DEALLOCATE COMMIT ROLLBACK SAVEPOINT RELEASE`)
 
 // myAsciiTrailCollations are the handshake's collation ids of big5, sjis, gbk,
 // cp932 and gb18030, whose multibyte characters can end in a backslash.
@@ -490,9 +493,12 @@ func (s *mySession) authReply(p []byte) error {
 }
 
 // resetSession applies what COM_CHANGE_USER and COM_RESET_CONNECTION do: the open
-// transaction rolls back and prepared statements go.
+// transaction ends and prepared statements go. No reply says what the end undid: a
+// non-transactional table keeps its rows.
+//
+//subpoena:enforcement_point
 func (s *mySession) resetSession() {
-	s.tx.rollback()
+	s.tx.unproven("a session reset") //subpoena:enforcement
 	clear(s.prepared)
 }
 
@@ -846,7 +852,9 @@ func (s *mySession) finish() {
 		s.tx.abandon() //subpoena:enforcement
 	case len(s.queue) != 0 || s.status&myStatusInTrans != 0 || len(s.tx.pending) != 0:
 		if s.terminated && len(s.queue) == 0 {
-			s.tx.rollback()
+			// The server rolls back and says nothing, and only an explicit ROLLBACK's
+			// warning shows a table that could not.
+			s.tx.unproven("COM_QUIT") //subpoena:enforcement
 			return
 		}
 		s.cap.fault("connection %d: dropped mid-transaction (status %#x, %d replies owed, %d writes open)", s.id, s.status, len(s.queue), len(s.tx.pending)) //subpoena:enforcement

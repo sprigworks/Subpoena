@@ -165,6 +165,7 @@ var alwaysMissed = []string{
 	"rows written by triggers, rules and foreign-key actions, on tables the statement does not name",
 	"rows changed by a statement that reports zero rows, such as an insert a trigger redirected",
 	"the bound values of a statement: it sees that a table was written, not with what",
+	"rows that reach a table the statement does not name through a relation installed before the capture: an updatable view, a partition, a parent or child table; a claim on a table is only as good as the name in the statement",
 	"routines installed before the capture that read as something else: a view over a writing function, a function called as a column (o.w for w(o)), an overload of a listed function, operator or cast for other argument types",
 	"work a function on another connection committed, such as dblink inside a statement that then failed",
 }
@@ -294,7 +295,30 @@ func (t *txLog) abandon() {
 	t.savepoints = nil
 }
 
+// unproven ends the transaction on no word from the server, as a MySQL session
+// does when it ends with one open: nothing says what the end could undo, so its
+// writes are unknown, and the capture cannot certify absence.
+//
+//subpoena:enforcement_point
+func (t *txLog) unproven(how string) {
+	if len(t.pending) != 0 {
+		t.cap.fault("connection %d: %s with %d writes open: nothing shows that a non-transactional table was not among them", t.conn, how, len(t.pending)) //subpoena:enforcement
+	}
+	t.abandon()
+}
+
+// savepoint sets one. MySQL's replaces an older one of the name and Postgres's
+// shadows it; find takes the newest either way, and the server refuses a name a
+// rollback took away. A name it could not read may be any name, so no savepoint
+// before it can be trusted to be there: rolling back to one then undoes nothing
+// here, the safe direction.
+//
+//subpoena:enforcement_point
 func (t *txLog) savepoint(name string) {
+	if name == "" {
+		t.savepoints = nil //subpoena:enforcement
+		return
+	}
 	t.savepoints = append(t.savepoints, savepoint{name, len(t.pending)})
 }
 

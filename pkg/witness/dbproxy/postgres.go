@@ -224,8 +224,9 @@ func (s *pgSession) startup(r *bufio.Reader, up, back io.Writer) error {
 	return err
 }
 
-// startupParameters looks for a search path set at login. The server reports the
-// lexing settings by ParameterStatus, but not this one before version 18.
+// startupParameters reads the settings given at login, by the rule a SET goes by.
+// The server reports the lexing settings by ParameterStatus, but not the search
+// path before version 18.
 //
 //subpoena:enforcement_point
 func (s *pgSession) startupParameters(b []byte) {
@@ -239,11 +240,10 @@ func (s *pgSession) startupParameters(b []byte) {
 			return
 		}
 		b = rest
-		switch {
-		case key == "search_path":
-			s.tainted(pgPathTaint(value))
-		case key == "options" && strings.Contains(value, "search_path") && strings.Contains(value, "pg_catalog"):
-			s.tainted("the login options set a search path naming pg_catalog") //subpoena:enforcement
+		if strings.EqualFold(key, "options") {
+			s.tainted(pgOptionsTaint(value)) //subpoena:enforcement
+		} else {
+			s.tainted(pgLoginTaint(key, value)) //subpoena:enforcement
 		}
 	}
 }
@@ -545,6 +545,7 @@ func (s *pgSession) onServer(typ byte, body []byte) error {
 			return s.unreadableLocked("FunctionCallResponse with no call waiting") //subpoena:enforcement
 		}
 		s.tx.add(it.current(), witness.RowsUnknown) //subpoena:enforcement
+		s.afterOpaque(it.current())
 		s.advance(it)
 	case 'W':
 		return s.unreadableLocked("CopyBothResponse: a replication stream") //subpoena:enforcement
@@ -573,6 +574,7 @@ func (s *pgSession) serverError() {
 	}
 	if it := s.result(); it != nil {
 		st := s.readable(it.current())
+		s.afterOpaque(st)
 		if st.mayCommit() && s.status == 'I' {
 			s.tx.unknown(st) //subpoena:enforcement
 		} else {
@@ -643,6 +645,23 @@ func (s *pgSession) forget(st *statement) {
 	}
 }
 
+// afterOpaque applies a statement that ran code the witness cannot see. A routine
+// can DEALLOCATE and PREPARE a name, and that outlives a rollback and a failure, so
+// no name or portal is known to hold what it held.
+//
+//subpoena:enforcement_point
+func (s *pgSession) afterOpaque(st *statement) {
+	if st.class != classOpaque {
+		return
+	}
+	for name := range s.prepared {
+		s.prepared[name] = rebound(st.verb) //subpoena:enforcement
+	}
+	for name := range s.portals {
+		s.portals[name] = rebound(st.verb) //subpoena:enforcement
+	}
+}
+
 // rebound stands for what a name holds after a SQL-level verb touched it.
 func rebound(verb string) *statement {
 	o := opaqueStatement("", "EXECUTE", "a name %s changed", verb)
@@ -681,6 +700,7 @@ func (s *pgSession) complete(st *statement, tag string) {
 	verb, rows := parseTag(tag)
 	s.forget(st)
 	st = s.readable(st)
+	s.afterOpaque(st)
 	switch tag {
 	case "BEGIN", "START TRANSACTION":
 		s.status = 'T'

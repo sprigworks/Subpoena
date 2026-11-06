@@ -108,7 +108,7 @@ func (c *container) start(t *testing.T, image string, port int, ready func(addr 
 			return
 		}
 		c.addr = strings.TrimSpace(strings.Split(string(out), "\n")[0])
-		deadline := time.Now().Add(2 * time.Minute)
+		deadline := time.Now().Add(8 * time.Minute) // MySQL takes minutes to initialise on a loaded host
 		for {
 			if c.err = ready(c.addr); c.err == nil || time.Now().After(deadline) {
 				return

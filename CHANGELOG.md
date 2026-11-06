@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The database witness goes by what the server shows.** A `SET` of a setting that
+  changes lexing or lookup counts in any spelling, and the session survives only a
+  plain value on an allow-list; the startup packet and `options` go by the same rule.
+  A keyword is excused only in its exact position, and bare `JOIN (`, alias column
+  lists, `WITH t(a) AS`, `INSERT INTO o AS u (id)`, `LIKE (` and `trim(both` no longer
+  read as calls. On MySQL a write open at `COM_QUIT` or a session reset is `unknown` and
+  a fault, even on InnoDB, where it was `rolled_back`; a failed statement commits unless
+  its verb is known not to; savepoint names fold as the server folds them; and `LOAD
+  DATA ... SET` is checked. Any opaque statement makes Postgres prepared names
+  opaque. `INHERIT`, `SET SCHEMA`, `ATTACH PARTITION`, `INHERITS` and `PARTITION OF` are
+  opaque, and `Missed` now says that a claim on a table is only as good as the name in
+  the statement: updatable views, partitions and inheritance reach a table it does not name.
 - **The file witness no longer overstates.** A SQLite table claim is Inconclusive
   for a virtual table, whose rows are on no page of its own, and the reader now
   names any table whose schema row changed or whose pages changed owner, so a
