@@ -1055,6 +1055,28 @@ cases:
       A: Pass
     no_delivery_peers: ["172.17.0.3:41912"]
 
+  # A connected socket keeps its broadcast route with the option cleared.
+  - name: delivery_held_broadcast_route
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"comm":"app","protocol":"udp","peer":"172.17.255.255:41912","broadcast_route":true,"trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Inconclusive
+    no_delivery_peers: ["172.17.0.3:41912"]
+
+  # The route shows a broadcast address of any shape.
+  - name: delivery_held_broadcast_route_any_address
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"comm":"app","protocol":"udp","peer":"10.99.0.77:41912","broadcast_route":true,"trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Inconclusive
+    no_delivery_peers: ["10.99.0.1:41912"]
+
   # A first hop arrives on port 0: a rule on its address matches on any port.
   - name: delivery_first_hop_any_port
     lines:
@@ -1065,6 +1087,14 @@ cases:
     no_delivery:
       A: Fail
     no_delivery_peers: ["10.77.0.2:41900"]
+
+  # broadcast_route has one type.
+  - name: delivery_broadcast_route_not_a_boolean
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"comm":"app","protocol":"udp","peer":"172.17.255.255:41912","broadcast_route":1,"trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
 
   # broadcast has one type.
   - name: delivery_broadcast_not_a_boolean

@@ -36,23 +36,35 @@ type DeliveryEvent struct {
 	Attribution Attribution
 	SeenAt      time.Time // when the witness read the event, not when it was sent
 	// Broadcast says the socket had SO_BROADCAST set. Only the route can say an
-	// address like 172.17.255.255 is a subnet's broadcast, and no line holds the
-	// route, so the option stands for it: see Fanout. It alone means little: Go
-	// sets it on every socket it makes.
+	// address like 172.17.255.255 is a subnet's broadcast, and a send that names its
+	// address has no route yet, so the option stands for it: see Fanout. It alone
+	// means little: Go sets it on every socket it makes.
 	Broadcast bool
+	// BroadcastRoute says the send went out on a broadcast route the socket held.
+	// A connected socket keeps the route it found, so this holds with the option
+	// cleared since, and for a broadcast address of any shape.
+	BroadcastRoute bool
 	// AnyPeer asks a match whether it would take this send if the send reached
 	// everyone listening on its port. A witness never sets it; see AnyMember.
 	AnyPeer bool
 }
 
 // Fanout reports whether the send may reach sockets other than its Peer: Peer is
-// a multicast group or the limited broadcast address, or it may be a subnet's
-// broadcast address. Who was listening, the kernel does not say at the send, so a
-// claim about one of them cannot be settled either way.
+// a multicast group or the limited broadcast address, or the socket's route says
+// it is a broadcast address, or it may be a subnet's. Who was listening, the kernel
+// does not say at the send, so a claim about one of them cannot be settled either
+// way.
 //
-// A subnet's broadcast address has every host bit set, and a subnet with one has at
-// least two, so with Broadcast only an IPv4 address ending in those two can be one.
+// A subnet's usual broadcast address has every host bit set, and a subnet with one
+// has at least two, so with Broadcast only an IPv4 address ending in those two is
+// taken for one. A host setting can name any other address (ip addr ... brd). Only
+// BroadcastRoute shows that, so a send that named such an address is not Fanout.
+//
+//subpoena:enforcement_point
 func (e DeliveryEvent) Fanout() bool {
+	if e.BroadcastRoute {
+		return true //subpoena:enforcement
+	}
 	a := e.Peer.Addr().Unmap()
 	if a.IsMulticast() || a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
 		return true

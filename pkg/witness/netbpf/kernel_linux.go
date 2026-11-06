@@ -56,6 +56,9 @@ const (
 	opSendmsg = 2
 	opDeliver = 3
 
+	broadcastOption = 1 // the event's broadcast bits, as bpf/net.c sets them
+	broadcastRoute  = 2
+
 	afInet  = 2
 	afInet6 = 10
 
@@ -334,16 +337,17 @@ func decode(raw []byte, at time.Time) (Event, error) {
 		return Event{}, fmt.Errorf("netbpf: decode: %w", err)
 	}
 	e := Event{
-		PID:       int(r.Pid),
-		HostPID:   int(r.HostPid),
-		Comm:      cstr(r.Comm[:]),
-		Bytes:     r.Bytes,
-		Broadcast: r.Broadcast != 0,
-		RootID:    r.RootId,
-		SockType:  int(r.SockType),
-		Protocol:  protocolName(r.Protocol),
-		CgroupID:  r.CgroupId,
-		Time:      at,
+		PID:            int(r.Pid),
+		HostPID:        int(r.HostPid),
+		Comm:           cstr(r.Comm[:]),
+		Bytes:          r.Bytes,
+		Broadcast:      r.Broadcast&broadcastOption != 0,
+		BroadcastRoute: r.Broadcast&broadcastRoute != 0,
+		RootID:         r.RootId,
+		SockType:       int(r.SockType),
+		Protocol:       protocolName(r.Protocol),
+		CgroupID:       r.CgroupId,
+		Time:           at,
 	}
 	switch r.Op {
 	case opConnect:

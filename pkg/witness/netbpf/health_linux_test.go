@@ -335,6 +335,18 @@ func TestDecode(t *testing.T) {
 		t.Fatalf("a first hop decodes to %+v, %v", e, err)
 	}
 
+	// The option and the route are two bits.
+	for _, tc := range []struct {
+		bits          uint32
+		option, route bool
+	}{{0, false, false}, {1, true, false}, {2, false, true}, {3, true, true}} {
+		b := v4
+		b.Broadcast = tc.bits
+		if e, err := decode(encode(t, b), at); err != nil || e.Broadcast != tc.option || e.BroadcastRoute != tc.route {
+			t.Fatalf("bits %d decode to %+v, %v", tc.bits, e, err)
+		}
+	}
+
 	raw := encode(t, v4)
 	if _, err := decode(raw[:10], at); err == nil {
 		t.Fatal("short record must fail")

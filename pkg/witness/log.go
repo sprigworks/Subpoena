@@ -56,20 +56,21 @@ type FileLine struct {
 // (W8) has the rest. Peer and Local are "address:port", "[address]:port" for
 // IPv6. An empty Peer means the send's peer could not be read.
 type DeliveryLine struct {
-	Time        time.Time `json:"time"`
-	DeliveryOp  string    `json:"delivery_op"`
-	PID         int       `json:"pid"`
-	HostPID     int       `json:"host_pid"`
-	Comm        string    `json:"comm"`
-	Protocol    string    `json:"protocol"`
-	Peer        string    `json:"peer"`
-	Local       string    `json:"local"`
-	Bytes       uint64    `json:"bytes"`
-	Broadcast   bool      `json:"broadcast,omitempty"`
-	CgroupID    uint64    `json:"cgroup_id"`
-	Cgroup      string    `json:"cgroup"`
-	TraceID     string    `json:"trace_id,omitempty"`
-	Attribution string    `json:"attribution,omitempty"`
+	Time           time.Time `json:"time"`
+	DeliveryOp     string    `json:"delivery_op"`
+	PID            int       `json:"pid"`
+	HostPID        int       `json:"host_pid"`
+	Comm           string    `json:"comm"`
+	Protocol       string    `json:"protocol"`
+	Peer           string    `json:"peer"`
+	Local          string    `json:"local"`
+	Bytes          uint64    `json:"bytes"`
+	Broadcast      bool      `json:"broadcast,omitempty"`
+	BroadcastRoute bool      `json:"broadcast_route,omitempty"`
+	CgroupID       uint64    `json:"cgroup_id"`
+	Cgroup         string    `json:"cgroup"`
+	TraceID        string    `json:"trace_id,omitempty"`
+	Attribution    string    `json:"attribution,omitempty"`
 }
 
 // Record is a line that marks a capture window: "start" once the witness is
@@ -333,7 +334,7 @@ func readDelivery(b []byte) (DeliveryEvent, error) {
 		return DeliveryEvent{}, fmt.Errorf("unknown delivery_op %q", d.DeliveryOp)
 	}
 	e := DeliveryEvent{
-		PID: d.PID, Comm: d.Comm, Op: Op(d.DeliveryOp), Protocol: d.Protocol, Bytes: d.Bytes, Broadcast: d.Broadcast,
+		PID: d.PID, Comm: d.Comm, Op: Op(d.DeliveryOp), Protocol: d.Protocol, Bytes: d.Bytes, Broadcast: d.Broadcast, BroadcastRoute: d.BroadcastRoute,
 		Cgroup: d.Cgroup, CgroupID: d.CgroupID, TraceID: d.TraceID, Attribution: Attribution(d.Attribution), SeenAt: d.Time,
 	}
 	var err error

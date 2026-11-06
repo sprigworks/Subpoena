@@ -155,6 +155,26 @@ func TestWatchRowsKeepsASightingWithNoRowCapture(t *testing.T) {
 	}
 }
 
+// A connected socket keeps its route, so the route says what the option no longer
+// can, and it shows a broadcast address of any shape.
+func TestAHeldBroadcastRouteIsFanout(t *testing.T) {
+	line := func(peer string) string {
+		return `{"time":"2026-11-06T12:00:01Z","delivery_op":"deliver","pid":7,"comm":"app","protocol":"udp","peer":"` + peer + `","broadcast_route":true,` +
+			`"trace_id":"` + captureTrace + `","attribution":"cgroup"}`
+	}
+	sub := netip.MustParseAddrPort("172.17.0.3:41912")
+	for _, peer := range []string{"172.17.255.255:41912", "10.99.0.77:41912"} {
+		l := fileWith(t, deliveryToo, line(peer))
+		if v, err := NoDelivery(l, captureTrace, DeliveryTo(sub)); v != Inconclusive {
+			t.Errorf("%s: %v (%v), want Inconclusive", peer, v, err)
+		}
+	}
+	l := fileWith(t, deliveryToo, line("10.99.0.77:41999"))
+	if v, err := NoDelivery(l, captureTrace, DeliveryTo(sub)); v != Pass {
+		t.Errorf("another port: %v (%v), want Pass", v, err)
+	}
+}
+
 // fanoutLine is a send from the trace to peer, with SO_BROADCAST set or not.
 func fanoutLine(peer string, broadcast bool) string {
 	b := ""

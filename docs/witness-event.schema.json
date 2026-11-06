@@ -187,6 +187,10 @@
       "type": "boolean",
       "description": "On a delivery line: a datagram or raw socket had SO_BROADCAST set, so the peer may be a subnet's broadcast address. Absent when false."
     },
+    "broadcast_route": {
+      "type": "boolean",
+      "description": "On a delivery line: the send went out on a broadcast route the socket held, whatever SO_BROADCAST said, so the peer is a broadcast address of any shape. Absent when false."
+    },
     "event": {
       "type": "string",
       "enum": [

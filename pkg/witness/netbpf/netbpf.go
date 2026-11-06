@@ -28,8 +28,8 @@
 //
 // A send with an IP source route, set on the socket or with the send, leaves for
 // its first hop, not its peer, so Delivered has that hop as well, on port 0. A send
-// on a socket with SO_BROADCAST may reach a subnet, which no address can show, so
-// the event says so. Dialed has neither: it reports the destination named.
+// on a socket with SO_BROADCAST, or on a broadcast route the socket holds, may reach
+// a subnet, which no address can show, so the event says so. Dialed has neither: it reports the destination named.
 //
 // What it does not see: packet sockets (AF_PACKET); raw sockets that write
 // their own IP header (the reported destination is the one passed to the
@@ -107,7 +107,10 @@ type Event struct {
 	RootID uint64
 	// Broadcast says a datagram or raw socket had SO_BROADCAST set.
 	Broadcast bool
-	Time      time.Time
+	// BroadcastRoute says the send went out on a route the socket holds that is a
+	// broadcast route, whatever the option says now.
+	BroadcastRoute bool
+	Time           time.Time
 
 	// Set by the Witness: how the event was attributed to a trace, if at all.
 	TraceID     string
@@ -118,7 +121,7 @@ type Event struct {
 func (e Event) DeliveryLine() witness.DeliveryLine {
 	l := witness.DeliveryLine{
 		Time: e.Time.UTC(), DeliveryOp: string(e.Op), PID: e.PID, HostPID: e.HostPID, Comm: e.Comm,
-		Protocol: e.Protocol, Bytes: e.Bytes, Broadcast: e.Broadcast, CgroupID: e.CgroupID, Cgroup: e.Cgroup,
+		Protocol: e.Protocol, Bytes: e.Bytes, Broadcast: e.Broadcast, BroadcastRoute: e.BroadcastRoute, CgroupID: e.CgroupID, Cgroup: e.Cgroup,
 		TraceID: e.TraceID, Attribution: string(e.Attribution),
 	}
 	if e.Dest.IsValid() {
@@ -207,19 +210,20 @@ func (w *Witness) record(e Event) {
 	defer w.mu.Unlock()
 	send := e.Op == witness.OpDeliver || e.Op == witness.OpSendmsg
 	d := witness.DeliveryEvent{
-		PID:         e.PID,
-		Comm:        e.Comm,
-		Op:          e.Op,
-		Protocol:    e.Protocol,
-		Peer:        e.Dest,
-		Local:       e.Local,
-		Bytes:       e.Bytes,
-		Broadcast:   e.Broadcast,
-		Cgroup:      e.Cgroup,
-		CgroupID:    e.CgroupID,
-		TraceID:     e.TraceID,
-		Attribution: e.Attribution,
-		SeenAt:      e.Time,
+		PID:            e.PID,
+		Comm:           e.Comm,
+		Op:             e.Op,
+		Protocol:       e.Protocol,
+		Peer:           e.Dest,
+		Local:          e.Local,
+		Bytes:          e.Bytes,
+		Broadcast:      e.Broadcast,
+		BroadcastRoute: e.BroadcastRoute,
+		Cgroup:         e.Cgroup,
+		CgroupID:       e.CgroupID,
+		TraceID:        e.TraceID,
+		Attribution:    e.Attribution,
+		SeenAt:         e.Time,
 	}
 	if send {
 		w.coverage.Sends++

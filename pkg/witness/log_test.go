@@ -8,6 +8,7 @@ package witness
 
 import (
 	"encoding/json"
+	"net/netip"
 	"os"
 	"reflect"
 	"slices"
@@ -278,5 +279,20 @@ func TestLogHealthComesFromRecords(t *testing.T) {
 		if (tc.want == "") != (h == nil) || (h != nil && !strings.Contains(h.Error(), tc.want)) {
 			t.Errorf("%s: health %v, want %q", tc.name, h, tc.want)
 		}
+	}
+}
+
+// A route the socket held is a broadcast route whatever its address looks like, and
+// whatever the option says now.
+func TestFanoutTrustsAHeldBroadcastRoute(t *testing.T) {
+	peer := netip.MustParseAddrPort("10.99.0.77:41912")
+	if (DeliveryEvent{Peer: peer}).Fanout() {
+		t.Fatal("a host with no route must not be Fanout")
+	}
+	if (DeliveryEvent{Peer: peer, Broadcast: true}).Fanout() {
+		t.Fatal("the option alone cannot make this address a broadcast one")
+	}
+	if !(DeliveryEvent{Peer: peer, BroadcastRoute: true}).Fanout() {
+		t.Fatal("a held broadcast route must be Fanout")
 	}
 }

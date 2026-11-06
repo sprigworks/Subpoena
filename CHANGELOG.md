@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A broadcast on a connected socket is read from its route.** The kernel checks `SO_BROADCAST`
+  when it finds a route, and a connected UDP socket keeps it, so an app could set the option,
+  connect to a broadcast address, clear it and send, with `NoDelivery` Pass. The delivery hook
+  now reads the route the socket holds (`broadcast_route` on a line, `BroadcastRoute`), which
+  also shows a broadcast address set by hand on a connected send. On a send that names such an
+  address it stays unknown, and `witnesses/README.md` says so.
 - **`WatchRows` needs a row capture,** as `NoRow` and every other `Watch` check do. On a witness
   file that names none it is Inconclusive, and a refused write in such a file still fails.
 - **The database witness goes by what the server shows.** A `SET` of a setting that

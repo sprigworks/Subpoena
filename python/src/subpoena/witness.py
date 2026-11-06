@@ -154,7 +154,7 @@ _KNOWN = ("time", "pid", "ppid", "host_pid", "comm", "exe", "command", "args", "
           "trace_id", "attribution", "record", "healthy", "error", "roots", "captures", "coverage", "silent_closes",
           "symlinks",
           "file_op", "path", "root", "is_dir", "source", "rename", "cookie",
-          "delivery_op", "protocol", "peer", "local", "bytes", "broadcast",
+          "delivery_op", "protocol", "peer", "local", "bytes", "broadcast", "broadcast_route",
           "event", "engine", "conn", "dest", "statement", "verb", "tables", "opaque", "reason", "rows", "outcome")
 _FILE_STR_FIELDS = ("file_op", "path", "root", "source", "rename", "trace_id", "attribution")
 
@@ -599,9 +599,14 @@ class DeliveryEvent:
     attribution: str = ""
     seen_at: Optional[datetime] = None
     # The socket had SO_BROADCAST set. Only the route can say an address like
-    # 172.17.255.255 is a subnet's broadcast, so the option stands for it. It
-    # alone means little: Go sets it on every socket it makes.
+    # 172.17.255.255 is a subnet's broadcast, and a send that names its address has
+    # no route yet, so the option stands for it. It alone means little: Go sets it
+    # on every socket it makes.
     broadcast: bool = False
+    # The send went out on a broadcast route the socket held. A connected socket
+    # keeps the route it found, so this holds with the option cleared since, and
+    # for a broadcast address of any shape.
+    broadcast_route: bool = False
     # Asks a match whether it would take this send if it reached everyone
     # listening on its port. A witness never sets it; see any_member.
     any_peer: bool = False
@@ -615,9 +620,13 @@ class DeliveryEvent:
     @property
     def fanout(self) -> bool:
         """The send may reach sockets other than its peer: the peer is a multicast
-        group or the limited broadcast address, or it may be a subnet's broadcast
-        address. That has every host bit set, and a subnet with one has at least
-        two, so with broadcast only an IPv4 address ending in those two can be one."""
+        group or the limited broadcast address, or the socket's route says it is a
+        broadcast address, or it may be a subnet's. A subnet's usual one has every
+        host bit set, and a subnet with one has at least two, so with broadcast only
+        an IPv4 address ending in those two is taken for one. A host setting can
+        name any other address, which only broadcast_route shows."""
+        if self.broadcast_route:
+            return True
         if self.peer is None:
             return False
         a = self.peer.addr
@@ -646,8 +655,9 @@ def _delivery(l: dict) -> DeliveryEvent:
             raise ValueError(f"{k} is not an integer")
         if not lo <= v <= hi:
             raise ValueError(f"{k} {v} is out of range")
-    if l.get("broadcast") is not None and not isinstance(l["broadcast"], bool):
-        raise ValueError("broadcast is not a boolean")
+    for k in ("broadcast", "broadcast_route"):
+        if l.get(k) is not None and not isinstance(l[k], bool):
+            raise ValueError(f"{k} is not a boolean")
     if not l.get("time"):
         raise ValueError("no time")
     seen_at = _parse_time(l["time"])
@@ -659,7 +669,7 @@ def _delivery(l: dict) -> DeliveryEvent:
         local=AddrPort.of(l["local"]) if l.get("local") else None, protocol=g("protocol", ""),
         bytes=g("bytes", 0), pid=g("pid", 0), comm=g("comm", ""), cgroup=g("cgroup", ""),
         cgroup_id=g("cgroup_id", 0), trace_id=g("trace_id", ""), attribution=g("attribution", ""), seen_at=seen_at,
-        broadcast=g("broadcast", False),
+        broadcast=g("broadcast", False), broadcast_route=g("broadcast_route", False),
     )
 
 

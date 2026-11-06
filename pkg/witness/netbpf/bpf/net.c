@@ -105,9 +105,22 @@ struct sock_common {
 	struct in6_addr skc_v6_rcv_saddr; // only with CONFIG_IPV6
 } __attribute__((preserve_access_index));
 
+struct dst_ops {
+	unsigned short family;
+} __attribute__((preserve_access_index));
+
+struct dst_entry {
+	struct dst_ops *ops;
+} __attribute__((preserve_access_index));
+
+struct rtable {
+	unsigned int rt_flags;
+} __attribute__((preserve_access_index));
+
 struct sock {
 	struct sock_common __sk_common;
 	u16 sk_protocol; // a plain field from Linux 5.6; BTF needs 5.8 anyway
+	struct dst_entry *sk_dst_cache;
 } __attribute__((preserve_access_index));
 
 enum sock_flags {
@@ -164,6 +177,11 @@ struct inet_sock {
 #define IPPROTO_UDP 17
 #define IPPROTO_UDPLITE 136
 
+#define RTCF_BROADCAST 0x10000000
+
+#define BROADCAST_OPTION 1
+#define BROADCAST_ROUTE 2
+
 #define OP_CONNECT 1
 #define OP_SENDMSG 2
 #define OP_DELIVER 3
@@ -185,7 +203,7 @@ struct event {
 	u32 sock_type; // SOCK_STREAM, SOCK_DGRAM, ...
 	u32 protocol;  // sk_protocol: IPPROTO_TCP, IPPROTO_UDP, ...
 	u32 depth;     // number of valid entries in cgroup
-	u32 broadcast; // 1: a datagram or raw socket with SO_BROADCAST set
+	u32 broadcast; // BROADCAST_OPTION, BROADCAST_ROUTE, or both
 	u16 port;      // destination port, network byte order
 	u16 local_port; // this end's port, host byte order
 	u8 addr[16];   // destination address: 4 bytes for AF_INET, 16 for AF_INET6
@@ -412,14 +430,29 @@ static __always_inline void fill_local(struct event *e, struct sock *sk)
 }
 
 // may_broadcast reports whether a send on sock may go to a broadcast address. The
-// route decides that, and the kernel refuses it unless SO_BROADCAST is set, so the
-// option is what can be read here. A stream socket ignores the option.
+// route decides that, and no route exists yet for a send that names its address.
+// The kernel refuses such a send unless SO_BROADCAST is set, so the option is what
+// can be read here: BROADCAST_OPTION. A stream socket ignores the option.
 static __always_inline u32 may_broadcast(struct socket *sock)
 {
 	if ((u16)BPF_CORE_READ(sock, type) == SOCK_STREAM)
 		return 0;
 	u64 flags = BPF_CORE_READ(sock, sk, __sk_common.skc_flags);
-	return (flags >> bpf_core_enum_value(enum sock_flags, SOCK_BROADCAST)) & 1;
+	return (flags >> bpf_core_enum_value(enum sock_flags, SOCK_BROADCAST)) & 1 ? BROADCAST_OPTION : 0;
+}
+
+// held_broadcast reports whether the route a socket holds for its peer is a broadcast
+// route. The kernel checks SO_BROADCAST when it finds a route, and connect finds it:
+// a connected UDP socket keeps it and sends on it with the option long cleared, so
+// the option says nothing of such a send. If the kernel has dropped the route, the
+// send looks one up and is refused, as a cleared send to a mapped peer is here: it
+// goes by name. An IPv6 route has no such flag, and its family says which it is.
+static __always_inline u32 held_broadcast(struct sock *sk)
+{
+	struct dst_entry *dst = BPF_CORE_READ(sk, sk_dst_cache);
+	if (!dst || BPF_CORE_READ(dst, ops, family) != AF_INET)
+		return 0;
+	return BPF_CORE_READ((struct rtable *)dst, rt_flags) & RTCF_BROADCAST ? BROADCAST_ROUTE : 0;
 }
 
 // dest_family says how report reads a destination at addr (a kernel sockaddr):
@@ -664,7 +697,7 @@ int handle_deliver(u64 *ctx)
 	e->family = family;
 	e->sock_type = type;
 	e->protocol = BPF_CORE_READ(sk, sk_protocol);
-	e->broadcast = may_broadcast(sock);
+	e->broadcast = may_broadcast(sock) | held_broadcast(sk);
 	e->bytes = (u32)(int)ctx[2];
 	e->port = port;
 	__builtin_memcpy(e->addr, peer, 16);

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/sprigworks/subpoena/pkg/harness"
@@ -48,7 +49,7 @@ func cmsg(level, typ int, data []byte) []byte {
 // routedSend is the helper's "route" and "bcast" forms:
 //
 //	route <how> <hop> <to>   how: sticky, connected, retopts, tos, none
-//	bcast <named|connected> <to>
+//	bcast <named|connected|cleared> <to>
 func routedSend(f []string) error {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, 0)
 	if err != nil {
@@ -61,9 +62,14 @@ func routedSend(f []string) error {
 		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1); err != nil {
 			return err
 		}
-		if f[1] == "connected" {
+		if f[1] != "named" {
 			if err := syscall.Connect(fd, sa); err != nil {
 				return err
+			}
+			if f[1] == "cleared" {
+				if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_BROADCAST, 0); err != nil {
+					return err
+				}
 			}
 			_, err := syscall.Write(fd, []byte("x"))
 			return err
@@ -171,7 +177,7 @@ func TestKernelReportsABroadcastSend(t *testing.T) {
 	to := netip.MustParseAddrPort("127.255.255.255:41912")
 	sub := netip.MustParseAddrPort("127.0.0.1:41912")
 	other := netip.MustParseAddrPort("127.0.0.1:41999")
-	for _, how := range []string{"named", "connected"} {
+	for _, how := range []string{"named", "connected", "cleared"} {
 		t.Run(how, func(t *testing.T) {
 			g, root := sessionGroup(t, tidB)
 			w := start(t, Config{CgroupRoot: root})
@@ -180,7 +186,7 @@ func TestKernelReportsABroadcastSend(t *testing.T) {
 				t.Fatalf("Stop: %v", err)
 			}
 			got := toPeer(w.Delivered(tidB), to)
-			if len(got) != 1 || !got[0].Broadcast || !got[0].Fanout() {
+			if len(got) != 1 || got[0].Broadcast != (how != "cleared") || got[0].BroadcastRoute != (how != "named") || !got[0].Fanout() {
 				t.Fatalf("Delivered = %+v", w.Delivered(tidB))
 			}
 			if v, err := harness.NoDelivery(w, tidB, harness.DeliveryTo(sub)); v != harness.Inconclusive {
@@ -206,6 +212,32 @@ func TestKernelReportsABroadcastSend(t *testing.T) {
 			t.Fatalf("Delivered = %+v", got)
 		}
 	})
+}
+
+// Clearing the option on a connected socket is a way a hostile sender may choose:
+// the broadcast still goes out, and a subscriber gets it. Only the route shows that.
+func TestKernelASubscriberHearsAClearedBroadcast(t *testing.T) {
+	pc, err := net.ListenPacket("udp4", "0.0.0.0:41913")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	g, root := sessionGroup(t, tidB)
+	w := start(t, Config{CgroupRoot: root})
+	dial(t, g, "bcast cleared 127.255.255.255:41913")
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := pc.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := pc.ReadFrom(make([]byte, 8)); err != nil {
+		t.Fatalf("the fixture must really reach the subscriber: %v", err)
+	}
+	sub := netip.MustParseAddrPort("127.0.0.1:41913")
+	if v, err := harness.NoDelivery(w, tidB, harness.DeliveryTo(sub)); v != harness.Inconclusive {
+		t.Fatalf("the subscriber: %v (%v), want Inconclusive", v, err)
+	}
 }
 
 // Under the session root means the root, not any cgroup with its last name.

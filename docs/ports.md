@@ -242,6 +242,7 @@ Check: the `file_` cases in `conformance/witness.yaml`; the Python runners are
   | `bytes` | integer (uint64) | what the caller asked to send, not what the peer received |
 
   | `broadcast` | boolean | a datagram or raw socket had `SO_BROADCAST` set; absent when false |
+  | `broadcast_route` | boolean | the send went out on a broadcast route the socket held, whatever the option said; absent when false |
 
   A stop record may carry `coverage`, one line on
   what the capture might have missed even when healthy. W3 and W4 apply: `delivered(trace_id)` returns every
@@ -254,8 +255,8 @@ Check: the `file_` cases in `conformance/witness.yaml`; the Python runners are
   `no_delivery(witness, trace_id, match)` follows W6's rule over `delivered`, and
   with no matching send a file whose start record does not list `delivery` is
   Inconclusive, however healthy: nothing was looking. A send a match does not
-  take, that is `fanout` (its `peer` multicast or `255.255.255.255`, or `broadcast`
-  set with an IPv4 `peer` whose last two bits are set), and that the match takes as `any_member()`, is Inconclusive too: it may
+  take, that is `fanout` (`broadcast_route` set, or its `peer` multicast or
+  `255.255.255.255`, or `broadcast` set with an IPv4 `peer` whose last two bits are set), and that the match takes as `any_member()`, is Inconclusive too: it may
   have reached the peer. `delivery_to` then compares only the port.
   `delivery_to(peers)` matches a send that may have gone to a peer: a zero port
   matches every port of the address, an unspecified address matches the port on

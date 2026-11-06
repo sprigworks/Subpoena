@@ -661,10 +661,16 @@ Read a Pass with these in mind:
   get the bytes while the peer names a group, or a subnet's broadcast address. The
   send cannot say who was listening, so `NoDelivery` with `DeliveryTo`, and a `Never`
   entry, are Inconclusive on one for the entry's port, or any port if it has none. A
-  rule naming that very address still fails. A subnet's broadcast address cannot be
-  told from a host's, so a datagram or raw send with `SO_BROADCAST` set counts if its
-  IPv4 address ends in two set bits, as every such address does, even one that named
-  a host. Go sets the option on every socket it makes, so expect this from a Go
+  rule naming that very address still fails. A send on a connected socket is read from
+  the route the socket holds, which is `BroadcastRoute`: the kernel checks
+  `SO_BROADCAST` when it finds the route, so clearing the option after `connect` changes
+  nothing. A send that names its address has no route yet, and the kernel refuses it
+  unless the option is set, so it counts if the option is set and its IPv4 address ends
+  in two set bits, as a subnet's usual broadcast address does, even one that named a
+  host. An address set by hand on an interface (`ip addr ... brd 10.99.0.77`) need not
+  end that way: it is known on a connected send, and **not** on a named one, which needs
+  that host setting and reads as a send to a host. Go sets the option on every socket
+  it makes, so expect this from a Go
   sender to a host ending that way, on the rule's port. A match of your own sees only `Peer`, unless it reads
   `AnyPeer`. `Allowed` is not affected: such a peer is not on the list.
 - **The peer is what the sender's kernel holds.** Behind NAT or a proxy it is the

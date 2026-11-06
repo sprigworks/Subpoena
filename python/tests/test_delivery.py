@@ -141,6 +141,10 @@ def sends(*lines):
     ("172.17.0.9:41912", {}, "172.17.0.3:41912", Verdict.PASS),
     ("239.7.7.7:41912", {}, "239.7.7.7:41912", Verdict.FAIL),
     ("172.17.0.3:41912", {"broadcast": True}, "172.17.0.3:41912", Verdict.FAIL),
+    ("172.17.255.255:41912", {"broadcast_route": True}, "172.17.0.3:41912", Verdict.INCONCLUSIVE),
+    ("10.99.0.77:41912", {"broadcast_route": True}, "172.17.0.3:41912", Verdict.INCONCLUSIVE),
+    ("10.99.0.77:41999", {"broadcast_route": True}, "172.17.0.3:41912", Verdict.PASS),
+    ("10.99.0.77:41912", {"broadcast": True}, "172.17.0.3:41912", Verdict.PASS),
 ])
 def test_a_fanout_send_may_have_reached_the_peer(peer, extra, rule, want):
     v, err = no_delivery(sends((peer, extra)), TRACE, delivery_to(rule))
