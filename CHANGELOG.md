@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A `TestMain` that retries no longer hides a kill.** `-test.failfast` made a second `m.Run` a
+  run of nothing that exits 0, so a suite that caught the mutant read as survived. A green run
+  with a test's fail event in it now goes again without that flag. Red still has to hold as a
+  kill, and a retry that truly passes is still survived.
+- **A failed `Example` is a kill.** It has a fail event and no `file:line`, so it read as a crash.
+  Package testing's own `got:` report now counts as its failure message, as `other` evidence.
 - **A printed log line after open text takes no witness kill.** A line such as
   `INFO    server.go:42: handling request` has the shape of a failure after text printed with
   no newline, and it read as the test's first failure, pushing a witness kill down to

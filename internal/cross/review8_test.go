@@ -3,6 +3,7 @@
 package cross
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -180,5 +181,119 @@ func TestAnOpenLineStandsOnlyWhereNothingCleanDoes(t *testing.T) {
 				t.Errorf("repeat: %s %q", ev, msg)
 			}
 		})
+	}
+}
+
+// Review 8, L4. A failed Example has a fail event and go's own comparison under it,
+// and no file:line, and it is a clean failure, not a crash.
+func TestAFailedExampleIsAKill(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		body string
+		want Outcome
+	}{
+		"mismatch": {`fmt.Println(Check("mallory") != nil)
+	// Output: true`, Killed},
+		"panic": {`if Check("mallory") == nil { panic("boom") }
+	fmt.Println("x")
+	// Output: x`, Crashed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import "fmt"
+
+func ExampleCheck() {
+	` + tc.body + `
+}
+`})
+			r := killOf(t, Options{Target: dir})
+			if r.Outcome != tc.want {
+				t.Fatalf("got %+v", r)
+			}
+			if tc.want == Killed && (r.Evidence != EvidenceOther || r.FirstFailure != "got: false want: true") {
+				t.Fatalf("evidence %s %q", r.Evidence, r.FirstFailure)
+			}
+		})
+	}
+}
+
+// Only an Example's report reads this way, and a report's text is no failure line:
+// what the code printed is under "got:", and it can name no witness.
+func TestAnExampleReportIsTextOnly(t *testing.T) {
+	run := func(test string, lines ...string) string {
+		raw := event("run", "p", test, "") + event("output", "p", test, "--- FAIL: "+test+" (0.00s)\n")
+		for _, l := range lines {
+			raw += event("output", "p", test, l+"\n")
+		}
+		return raw + event("fail", "p", test, "") + event("fail", "p", "", "") + exitEvent("p", "1") + "\n"
+	}
+	forged := crossmark.Sign("not the key", "witness: seen")
+	if ev, msg, crashed := firstFailure(run("ExampleCheck", "got:", "    a.go:1: "+forged, "want:", "true"), testKey); crashed || ev != EvidenceOther || !strings.HasPrefix(msg, "got: ") {
+		t.Errorf("crashed %v, %s %q", crashed, ev, msg)
+	}
+	if _, _, crashed := firstFailure(run("TestCheck", "got:", "false"), testKey); !crashed {
+		t.Error("a test with no failure message was read as a clean failure")
+	}
+	if _, _, crashed := firstFailure(run("ExampleCheck", "nothing of go's"), testKey); !crashed {
+		t.Error("an Example with no report was read as a clean failure")
+	}
+	if fs := failures(run("ExampleCheck", append([]string{"got:"}, strings.Split(strings.Repeat("line\n", 400), "\n")...)...)); len(fs) != 1 || len(fs[0].text) > maxFailureText+10 {
+		t.Errorf("an unbounded report: %d", len(fs))
+	}
+}
+
+// Review 8, L5. -test.failfast turned a TestMain's retry into a run of nothing that
+// exits 0. A run green with a failed test in it goes again as it would have run.
+func TestARetryingTestMainDoesNotHideAKill(t *testing.T) {
+	t.Parallel()
+	const main = `package mini
+
+import ("os"; "testing")
+
+func TestMain(m *testing.M) {
+	if c := m.Run(); c != 0 { os.Exit(m.Run()) }
+	os.Exit(0)
+}
+`
+	for name, tc := range map[string]struct {
+		body string
+		want Outcome
+	}{
+		"fails both times": {`if Check("mallory") == nil { t.Fatal("mallory let in") }`, Killed},
+		// The retry truly passes, so the suite is green with the mutant.
+		"a retry passes": {`tries++; if tries == 1 && Check("mallory") == nil { t.Fatal("mallory let in") }`, Survived},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := module(t, map[string]string{"gate.go": gate3, "main_test.go": main, "gate_test.go": `package mini
+
+import "testing"
+
+var tries int
+
+func TestRefused(t *testing.T) { ` + tc.body + ` }
+`})
+			if r := killOf(t, Options{Target: dir}); r.Outcome != tc.want {
+				t.Fatalf("got %+v", r)
+			}
+		})
+	}
+}
+
+// Printed text that makes a fail event buys a second run and no more.
+func TestAGreenRunWithAPrintedFailureStillSurvives(t *testing.T) {
+	t.Parallel()
+	dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import ("fmt"; "testing")
+
+func TestRefused(t *testing.T) {
+	if Check("mallory") == nil { fmt.Println("\x16--- FAIL: TestRefused (0.00s)") }
+}
+`})
+	if r := killOf(t, Options{Target: dir}); r.Outcome != Survived {
+		t.Fatalf("got %+v", r)
 	}
 }

@@ -670,6 +670,24 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 		if res.EvidenceFile, ferr = keepEvidence(o, ms, "", raw); ferr != nil {
 			return res, ferr
 		}
+		if err == nil && len(failEvents(raw)) > 0 {
+			// Green with a failed test in it. -test.failfast is why that can be: a
+			// TestMain that calls m.Run again gets a run of nothing, and exit 0. So
+			// it goes again as it would have run. Red there still has to hold as a
+			// kill, so printed text that made the fail event buys only this run.
+			fmt.Fprintf(o.Log, "  green with a failed test in it; running without -test.failfast\n")
+			raw, err = o.run.test(ctx, o, sb, testArgs[:len(testArgs)-2]...)
+			if ctx.Err() != nil {
+				return res, fmt.Errorf("cross: run stopped: %w", ctx.Err())
+			}
+			file, ferr := keepEvidence(o, ms, "-repeat", raw)
+			if ferr != nil {
+				return res, ferr
+			}
+			if file != "" {
+				res.RepeatEvidence = append(res.RepeatEvidence, file)
+			}
+		}
 		out := testText(raw)
 		if err != nil {
 			// -test.failfast: one red test is a kill, so the rest of a package's
@@ -1317,6 +1335,7 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 	ginkgo := map[key]bool{} // test -> a Ginkgo spec's failure report has opened
 	report := map[key]int{}  // test -> index in fs of that report's failure
 	gomega := map[key]int{}  // test -> index in fs of the Ginkgo message being read
+	example := map[key]int{} // test -> index in fs of the Example report being read
 	for _, e := range evs {
 		k := key{e.Package, e.Test}
 		// A package's own key fails too, but its output came from no test: a
@@ -1328,6 +1347,17 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 			continue
 		}
 		line := strings.TrimRight(e.Output, "\n")
+		if n, ok := example[k]; ok {
+			if len(fs[n].text) < maxFailureText {
+				fs[n].text = strings.TrimSpace(fs[n].text + " " + strings.TrimSpace(line))
+			}
+			continue
+		}
+		if line == exampleReport && exampleRE.MatchString(e.Test) {
+			example[k] = len(fs)
+			fs = append(fs, failure{pkg: e.Package, test: e.Test, text: line})
+			continue
+		}
 		if ginkgoSuiteRE.MatchString(line) {
 			suite[k] = true
 		} else if suite[k] && ginkgoReportRE.MatchString(line) {
@@ -1379,6 +1409,14 @@ func failLine(line string) ([]string, bool) {
 	}
 	return openFailMsgRE.FindStringSubmatch(line), true
 }
+
+// A failed Example has no file:line. Package testing compares its output and prints
+// "got:", then that output, then what it wanted. An Example fails no other way but
+// by a panic, which the exit code sees, so this is a clean failure. The head stays
+// blank: all below "got:" is what the code printed, so no tag is read there.
+const exampleReport = "got:"
+
+var exampleRE = regexp.MustCompile(`^Example[^/]*$`)
 
 // crashRE matches the first line of a panic or a runtime fatal error.
 var crashRE = regexp.MustCompile(`^(panic|fatal error): `)
