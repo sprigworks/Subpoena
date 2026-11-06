@@ -47,6 +47,42 @@ const (
 	RecordStop  = "stop"
 )
 
+// EventRow is RowLine.Event. A line with an event field that is not a record is
+// a database witness's row line.
+const EventRow = "row"
+
+// RowLine is one line a database witness writes: one statement and what became
+// of it. Rows is -1 when the server gave no usable count. Unlike an exec line it
+// has no trace ID: it holds for every trace (Attribution "destination").
+type RowLine struct {
+	Time        time.Time `json:"time"`
+	Event       string    `json:"event"`
+	Engine      string    `json:"engine"`
+	Conn        int       `json:"conn"`
+	Dest        string    `json:"dest"`
+	Statement   string    `json:"statement"`
+	Verb        string    `json:"verb"`
+	Tables      []string  `json:"tables"`
+	Opaque      bool      `json:"opaque"`
+	Reason      string    `json:"reason,omitempty"`
+	Rows        int64     `json:"rows"`
+	Outcome     Outcome   `json:"outcome"`
+	Attribution string    `json:"attribution"`
+}
+
+// RowLineOf is e as a line of the witness file.
+func RowLineOf(e RowEvent) RowLine {
+	tables := e.Tables
+	if tables == nil {
+		tables = []string{} // the schema requires an array, never null
+	}
+	return RowLine{
+		Time: e.SeenAt, Event: EventRow, Engine: e.Engine, Conn: e.Conn, Dest: e.Dest.String(),
+		Statement: e.Statement, Verb: e.Verb, Tables: tables, Opaque: e.Opaque, Reason: e.Reason,
+		Rows: e.Rows, Outcome: e.Outcome, Attribution: string(e.Attribution),
+	}
+}
+
 // Log is a witness file read back: a Witness over what subpoena-witness
 // wrote, for tests that run the witness as a separate process.
 type Log struct {
