@@ -718,9 +718,9 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 // can need a test in another package, and it has no -failfast because a test that
 // catches the mutant is then sure to run, whatever test stopped the first run:
 // under -shuffle another can come first. If a package of the repeat died or the
-// run hung, that says nothing of the tests it took with it, and the tests of the
-// first run go again alone, by the same rule: a flake still has to fail twice in
-// one test. Under RequireWitness a test of the first run must give witness evidence
+// run hung, that says nothing of the tests it took with it, so the first run's
+// command goes again, then its failed tests alone, each by the same rule: a flake
+// still has to fail twice in one test. Under RequireWitness a test of the first run must give witness evidence
 // on the repeat too, wherever it ran, or only one of the two runs had any. Then
 // killReruns runs without the mutant, each on a fresh copy: the first the mutant
 // run's whole command, and the rest the failed packages. One that fails or does
@@ -784,14 +784,22 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 			// With no -failfast the repeat reaches tests the first run never did,
 			// and the mutant can crash or hang one of them, or -shuffle can put one
 			// first. That says nothing of the test that failed, so that test
-			// decides, with what can crash it left out.
-			fmt.Fprintf(o.Log, "  %s; running the first run's failed tests again\n", reason)
-			again, againErr, err := withMutant(onlyTests(whole, first))
-			if err != nil {
-				return err
-			}
-			if notAKill(again, againErr, o.key, first) == "" {
+			// decides. The first run's own command goes first, as the test can need
+			// what ran before it. Then the test goes alone, with what can crash it
+			// left out, for when the command too reaches that crash.
+			fmt.Fprintf(o.Log, "  %s; running the first run's command again, then its failed tests\n", reason)
+			for _, a := range [][]string{args, onlyTests(whole, first)} {
+				again, againErr, err := withMutant(a)
+				if err != nil {
+					return err
+				}
+				if notAKill(again, againErr, o.key, first) != "" {
+					continue
+				}
 				out, why = again, ""
+				if ev, _ := repeatEvidence(again, o.key, first); !asked || ev == EvidenceWitness {
+					break
+				}
 			}
 		}
 		if why != "" {

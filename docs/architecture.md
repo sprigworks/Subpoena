@@ -115,9 +115,11 @@ event counts only for a test with a `run` event and no `pass` or `skip`. A test 
 prints the framed run line and fail line of a test that never ran still gets through:
 go test cannot tell those from the real thing, and neither can cross. In Go a repeat where
 a package crashes, or that hangs, can do so in a test the first run never reached, and
-under `-shuffle` such a test can come first. So the tests of the first run then run again
-alone and decide, by the same rule: a clean kill, in a test of the first run. A test
-that needs another to run first can come back unconfirmed here. With
+under `-shuffle` such a test can come first. So the first run's own command goes again,
+as a test can need what ran before it, and if that stops short too, the tests of the first
+run go alone. Each goes by the same rule: a clean kill, in a test of the first run. A test
+that needs another to run first can still come back unconfirmed if the command stops short
+as well, as under `-shuffle` it can. With
 `--require-witness`, a test of the first run must give witness evidence on the repeat
 too, as its own first failure, wherever it ran: go test gives packages in the order they
 finished, so in Go another package's plain failure takes nothing from it. In Go a package

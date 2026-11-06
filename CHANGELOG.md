@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A kill that needs an earlier test survives a repeat that stops short.** When the repeat
+  crashed or hung, cross ran the first run's failed tests alone, and a test that needs what ran
+  before it then passed, so a real kill read as unconfirmed. The first run's own command now
+  goes first, and the failed tests alone only if that stops short too.
 - **A routing header on an IPv6 flow label gives an unknown peer.** It was on neither the send
   nor the socket's options, so a packet could reach a hop no rule saw. The delivery hook now
   walks the flow labels the socket holds, however a send names one.
