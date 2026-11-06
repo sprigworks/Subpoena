@@ -22,12 +22,13 @@ import (
 type witnessCases struct {
 	Traces map[string]string `yaml:"traces"`
 	Cases  []struct {
-		Name      string            `yaml:"name"`
-		Lines     []string          `yaml:"lines"`
-		ReadError string            `yaml:"read_error"`
-		Health    string            `yaml:"health"`
-		Spawned   map[string][]int  `yaml:"spawned"`
-		NoSpawn   map[string]string `yaml:"no_spawn"`
+		Name      string              `yaml:"name"`
+		Lines     []string            `yaml:"lines"`
+		ReadError string              `yaml:"read_error"`
+		Health    string              `yaml:"health"`
+		Spawned   map[string][]int    `yaml:"spawned"`
+		NoSpawn   map[string]string   `yaml:"no_spawn"`
+		Committed map[string][]string `yaml:"committed"`
 	} `yaml:"cases"`
 }
 
@@ -89,6 +90,15 @@ func TestWitnessCases(t *testing.T) {
 			for name, want := range c.NoSpawn {
 				if v, _ := harness.NoSpawn(log, trace(t, name)); v.String() != want {
 					t.Errorf("no_spawn %s: got %s, want %s", name, v, want)
+				}
+			}
+			for name, want := range c.Committed {
+				got := []string{}
+				for _, e := range log.Committed(trace(t, name)) {
+					got = append(got, e.Verb)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("committed %s: got %v, want %v", name, got, want)
 				}
 			}
 		})

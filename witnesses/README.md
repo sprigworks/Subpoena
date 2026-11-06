@@ -296,6 +296,121 @@ connect in a real session cgroup are attributed with the right cgroup ID; the
 test process's own dial is not attributed; and a burst of sends before `Stop`
 is not lost.
 
+### Database rows: `dbproxy` (runs in `go test`)
+
+`pkg/witness/dbproxy` is a wire-protocol proxy for PostgreSQL and MySQL. The test
+points the application's DSN at its loopback listener; it forwards to the real
+server and logs statements and commits per connection. There is no ORM awareness,
+nothing inside the database, and no trigger. It needs no root.
+
+**It has no SQLite or MongoDB support.** Neither speaks these protocols, and
+SQLite has no socket at all, so a suite on either gets nothing from it. MariaDB
+may work and has not been tested; its extended commands are unreadable frames.
+
+```go
+w, err := dbproxy.New(dbproxy.Config{Engine: dbproxy.Postgres, Upstream: "127.0.0.1:5432"})
+// point the app at w.Addr(), sslmode=disable or prefer; run migrations and seeds
+w.Mark() // what committed so far is setup
+harness.WatchRows(t, w, traceID, harness.RowRule{Allowed: []string{"audit_log"}})
+// drive the denied request
+w.Stop()
+harness.RequireNoRow(t, w, traceID, "users")
+```
+
+The interface is `witness.DBWitness`, with `Committed(traceID)`.
+`harness.NoRow`, `RequireNoRow` and `CheckNoRow` follow `NoDial`: a committed write
+that changed rows and counts against the table is Fail even from an unhealthy
+capture; with none, missing or bad health is Inconclusive. The empty table means
+any table. `WatchRows` runs at cleanup like `WatchSpawns`; a `RowRule` has `Never`
+and `Allowed` tables, and a statement it could not read fails on either. Names
+compare without case, with or without a schema.
+
+**Attribution** is by destination, as with `Sinkhole`. The proxy sees a socket, not
+a request, and the harness drives one request at a time, so every statement holds
+for every trace. There is no pool tagging, which would need the application's
+cooperation. Run the app's setup before `Mark`, or against the real address.
+`Mark` hides what has committed; a transaction open across it still counts, and
+faults are never forgotten. It does not take back lines already in a witness file.
+
+**What is reported is what committed, on the server's word.** A write is held per
+connection until the server says how its transaction ended:
+
+- Postgres: `ReadyForQuery` and the `CommandComplete` tag. Status `I` ends a
+  transaction, explicit or implicit, and an error in that cycle makes the ending
+  a rollback, so a failed pipeline or multi-statement query undoes what ran first.
+  `COMMIT` of a failed transaction is answered `ROLLBACK`, and the tag wins.
+- MySQL: the status flags on every OK and EOF. With no transaction open after a
+  statement, everything pending has committed, whether by `COMMIT`, autocommit, or
+  implicitly by DDL. A `ROLLBACK` that leaves a warning could not undo a
+  non-transactional table, and its writes stand.
+
+Savepoints undo only what followed them. Prepared statements are tied to their SQL
+through `Parse`/`Bind`/`Execute` and `COM_STMT_PREPARE`/`EXECUTE`. Bound values are
+never read or logged; statement text is, so a literal in SQL is in the log.
+
+**Zero rows is no row.** `UPDATE 0` and an OK with no rows affected are committed
+but are not an effect, so `DELETE ... WHERE owner = $1` refusing by matching
+nothing passes. The count comes from the server. A trigger that redirects an insert
+can make it report 0 for a row that exists elsewhere.
+
+**What it cannot read over-reports.** Table extraction is deliberately strict:
+any form it does not know is opaque, and an opaque statement counts against every
+table and cannot be excused by a zero count. That covers text that does not
+tokenize, MySQL's executed `/*! */` comments, `EXECUTE` of SQL-level `PREPARE`,
+`CALL`, `DO`, data-modifying `WITH`, multi-table `UPDATE` and `DELETE`, `TRUNCATE
+CASCADE`, schema changes other than to a table, and any function not known to leave
+rows alone, even in a `SELECT`: `SELECT delete_user(1)` is opaque, and a false alarm
+is the cost. The server also checks the text: a tag or row count that contradicts
+it, or more results than statements, makes the statement opaque.
+
+**TLS is refused, never passed through.** Postgres's `SSLRequest` and
+`GSSENCRequest` get `N`; MySQL's greeting has `CLIENT_SSL` and the compression flags
+cleared. A client that prefers TLS goes on in the clear. One that insists leaves, or
+sends a TLS record anyway, and that is Inconclusive: encrypted bytes it cannot read
+must never read as no row. pgx with `sslmode=prefer` leaves and redials, so a
+Postgres departure is excused by a plain connection that followed; that is decided
+at `Stop`. A MySQL client leaving at the greeting can't be told from a port probe,
+and is Inconclusive either way.
+
+**Inconclusive.** `Health` fails for: an unreadable frame or a reply matching no
+command (the connection goes on as a raw copy, so the application is not broken by
+its witness); a connection dropped with a transaction open or a reply owed, whose
+writes get outcome `unknown`; a connection it could not proxy, or left queued at
+`Stop`; a client insisting on TLS or compression; a failed write to the witness
+file; and a capture not yet stopped. Faults are per capture, not per table. A
+`Terminate` or `COM_QUIT` with a transaction open is a clean rollback; an idle
+pooled connection at `Stop` is no fault. `Stop` waits up to a second for replies
+already owed.
+
+`Coverage()` reports counts, faults, and in `Missed` what the capture may have
+missed. Log it next to an absence claim. Nothing connecting looks the same as nothing
+being written (`Connections` is 0), so pair a no-row claim with a positive control,
+as with `Sinkhole`, in which an allowed write is seen.
+
+Not seen, in every capture:
+
+- connections that do not go through the listener;
+- rows written by triggers, rules and foreign-key actions, on tables the statement
+  does not name;
+- bound values, so it can say a table was written, and not with what.
+
+Over-reported, in the safe direction: `PREPARE TRANSACTION` counts as committed,
+since it can be decided on another connection; after a MySQL deadlock, whose ERR
+carries no status, pending writes count until the next flags are seen; and a
+`SELECT` of a user function counts even if it only reads.
+
+For a suite in another language, `subpoena-witness db -engine postgres -upstream
+host:port -out file` runs the same witness, needs no privileges, and stops on
+SIGTERM; `Config.Output` is the same thing in Go. The file holds row lines
+(`docs/ports.md`, W7), which Python reads with `read_log(f).committed(trace_id)`.
+Running the witness stays Go-only.
+
+`pkg/witness/dbproxy/live` tests it against real `postgres` and `mysql` containers,
+with pgx, go-sql-driver, `psql` and the `mysql` client, checking each verdict against
+what the tables hold. Those tests skip without Docker or the images, and under
+`subpoena-cross`; `make test-db` makes a skip a failure. The frame parsers also
+replay bytes recorded from those servers, in `pkg/witness/dbproxy/testdata`.
+
 ### How other witnesses identify a process's cgroup
 
 The kernel's own identity for a cgroup is its path, or its 64-bit cgroup ID
@@ -359,6 +474,7 @@ outside Kubernetes, so off Kubernetes it is unproven as a backstop.
   program (dual MIT/GPL-2.0, as the kernel requires for its helpers).
 - `../pkg/witness/netbpf/`: the kernel-side network witness; `bpf/net.c` is
   its eBPF program (dual MIT/GPL-2.0).
+- `../pkg/witness/dbproxy/`: the database witness, a wire-protocol proxy.
 - `../cmd/subpoena-witness/`: runs it as a daemon, JSON lines out.
 - `../pkg/cgroup/`: per-session cgroup creation, placement and IDs, shared by
   the gateway and the witnesses.

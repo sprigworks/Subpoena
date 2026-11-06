@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -116,7 +117,8 @@ func TestAMalformedLineIsAnErrorWithItsLineNumber(t *testing.T) {
 
 // The schema is the contract other languages read; Line and Record are what
 // the witness writes. They must name the same fields, with the same ones
-// required: Line's in the schema's else branch, Record's in its then branch.
+// required: Record's in the schema's then branch, and in its else branch
+// RowLine's then and Line's else.
 func TestLineMatchesTheSchema(t *testing.T) {
 	b, err := os.ReadFile("../../docs/witness-event.schema.json")
 	if err != nil {
@@ -130,7 +132,11 @@ func TestLineMatchesTheSchema(t *testing.T) {
 		AdditionalProperties *bool                     `json:"additionalProperties"`
 		If                   branch                    `json:"if"`
 		Then                 branch                    `json:"then"`
-		Else                 branch                    `json:"else"`
+		Else                 struct {
+			If   branch `json:"if"`
+			Then branch `json:"then"`
+			Else branch `json:"else"`
+		} `json:"else"`
 	}
 	if err := json.Unmarshal(b, &schema); err != nil {
 		t.Fatal(err)
@@ -140,6 +146,9 @@ func TestLineMatchesTheSchema(t *testing.T) {
 	}
 	if !reflect.DeepEqual(schema.If.Required, []string{"record"}) {
 		t.Errorf("a line is a record exactly when it has a record field; if = %v", schema.If.Required)
+	}
+	if !reflect.DeepEqual(schema.Else.If.Required, []string{"event"}) {
+		t.Errorf("a line that is no record is a row line exactly when it has an event field; if = %v", schema.Else.If.Required)
 	}
 	fieldsOf := func(v any) (fields, required []string) {
 		lt := reflect.TypeOf(v)
@@ -155,8 +164,9 @@ func TestLineMatchesTheSchema(t *testing.T) {
 	}
 	lineFields, lineReq := fieldsOf(Line{})
 	recFields, recReq := fieldsOf(Record{})
+	rowFields, rowReq := fieldsOf(RowLine{})
 	all := map[string]bool{}
-	for _, f := range append(lineFields, recFields...) {
+	for _, f := range slices.Concat(lineFields, recFields, rowFields) {
 		all[f] = true
 	}
 	var fields, props []string
@@ -169,12 +179,16 @@ func TestLineMatchesTheSchema(t *testing.T) {
 	sort.Strings(fields)
 	sort.Strings(props)
 	sort.Strings(schema.Then.Required)
-	sort.Strings(schema.Else.Required)
+	sort.Strings(schema.Else.Then.Required)
+	sort.Strings(schema.Else.Else.Required)
 	if !reflect.DeepEqual(fields, props) {
-		t.Errorf("fields:\n Line+Record %v\n schema      %v", fields, props)
+		t.Errorf("fields:\n Line+Record+RowLine %v\n schema              %v", fields, props)
 	}
-	if !reflect.DeepEqual(lineReq, schema.Else.Required) {
-		t.Errorf("exec line required:\n Line   %v\n schema %v", lineReq, schema.Else.Required)
+	if !reflect.DeepEqual(lineReq, schema.Else.Else.Required) {
+		t.Errorf("exec line required:\n Line   %v\n schema %v", lineReq, schema.Else.Else.Required)
+	}
+	if !reflect.DeepEqual(rowReq, schema.Else.Then.Required) {
+		t.Errorf("row line required:\n RowLine %v\n schema  %v", rowReq, schema.Else.Then.Required)
 	}
 	if !reflect.DeepEqual(recReq, schema.Then.Required) {
 		t.Errorf("record required:\n Record %v\n schema %v", recReq, schema.Then.Required)
@@ -239,69 +253,6 @@ func TestLogHealthComesFromRecords(t *testing.T) {
 		h := log.Health()
 		if (tc.want == "") != (h == nil) || (h != nil && !strings.Contains(h.Error(), tc.want)) {
 			t.Errorf("%s: health %v, want %q", tc.name, h, tc.want)
-		}
-	}
-}
-
-const rowOK = `{"time":"2026-11-06T12:00:01Z","event":"row","engine":"postgres","conn":1,"dest":"127.0.0.1:5432","statement":"INSERT INTO users VALUES (1)","verb":"INSERT","tables":["users"],"opaque":false,"rows":1,"outcome":"committed","attribution":"destination"}`
-
-func rowFile(lines ...string) string {
-	return `{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}` + "\n" +
-		strings.Join(lines, "\n") + "\n" + `{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":true}` + "\n"
-}
-
-func TestReadLogRows(t *testing.T) {
-	l, err := ReadLog(strings.NewReader(rowFile(rowOK,
-		strings.Replace(rowOK, `"committed"`, `"rolled_back"`, 1),
-		strings.Replace(rowOK, `"committed"`, `"read"`, 1))))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := l.Health(); err != nil {
-		t.Fatal(err)
-	}
-	if len(l.Rows()) != 3 || l.Len() != 0 {
-		t.Fatalf("rows %d, execs %d", len(l.Rows()), l.Len())
-	}
-	for _, trace := range []string{"a", "b", ""} {
-		got := l.Committed(trace)
-		if len(got) != 1 || got[0].Rows != 1 || got[0].Tables[0] != "users" || got[0].Attribution != ByDestination || got[0].Dest.Port() != 5432 {
-			t.Fatalf("trace %q: %+v", trace, got)
-		}
-	}
-}
-
-func TestReadLogRefusesRowsItCannotRead(t *testing.T) {
-	for name, line := range map[string]string{
-		"unknown event":          strings.Replace(rowOK, `"event":"row"`, `"event":"file"`, 1),
-		"unknown outcome":        strings.Replace(rowOK, `"committed"`, `"maybe"`, 1),
-		"no outcome":             strings.Replace(rowOK, `"outcome":"committed",`, ``, 1),
-		"no time":                strings.Replace(rowOK, `"time":"2026-11-06T12:00:01Z",`, ``, 1),
-		"no rows":                strings.Replace(rowOK, `"rows":1,`, ``, 1),
-		"null rows":              strings.Replace(rowOK, `"rows":1`, `"rows":null`, 1),
-		"impossible rows":        strings.Replace(rowOK, `"rows":1`, `"rows":-2`, 1),
-		"rows of the wrong type": strings.Replace(rowOK, `"rows":1`, `"rows":"1"`, 1),
-		"case variant":           strings.Replace(rowOK, `"outcome"`, `"Outcome"`, 1),
-	} {
-		if _, err := ReadLog(strings.NewReader(rowFile(line))); err == nil {
-			t.Errorf("%s: read without error", name)
-		}
-	}
-}
-
-func TestReadLogRowFaults(t *testing.T) {
-	outside := `{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}` + "\n" +
-		`{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":true}` + "\n" + rowOK + "\n"
-	for name, file := range map[string]string{
-		"outside a window": outside,
-		"unknown outcome":  rowFile(strings.Replace(rowOK, `"committed"`, `"unknown"`, 1)),
-	} {
-		l, err := ReadLog(strings.NewReader(file))
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		if l.Health() == nil {
-			t.Errorf("%s: healthy", name)
 		}
 	}
 }

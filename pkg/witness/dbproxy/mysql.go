@@ -339,8 +339,6 @@ func (s *mySession) server(r *bufio.Reader, back io.Writer) error {
 
 // onServer updates the session for one server packet, before it is forwarded, so
 // a client that has its answer finds the outcome recorded. p may be changed.
-//
-//subpoena:enforcement_point
 func (s *mySession) onServer(p []byte) error {
 	cont := s.serverCont
 	s.serverCont = len(p) == myMaxPacket

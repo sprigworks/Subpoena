@@ -20,7 +20,7 @@ def test_the_cases_are_there():
     assert set(DOC) == {"traces", "cases"}
 
 
-KEYS = {"name", "lines", "read_error", "health", "spawned", "no_spawn"}
+KEYS = {"name", "lines", "read_error", "health", "spawned", "no_spawn", "committed"}
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
@@ -43,3 +43,5 @@ def test_witness_case(case):
     for name, want in (case.get("no_spawn") or {}).items():
         v, _ = no_spawn(log, TRACES[name])
         assert str(v) == want, name
+    for name, verbs in (case.get("committed") or {}).items():
+        assert [e.verb for e in log.committed(TRACES[name])] == verbs, name

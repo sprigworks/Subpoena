@@ -11,7 +11,7 @@ progress, and it says so.
 
 | Port | Status |
 | --- | --- |
-| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader, spawn and network absence checks with the loopback sinkhole, Python AST lint, cross-examination for pytest with groups, selection and parallel runs. Not ported: running a witness (it reads the file `subpoena-witness` writes) and registry-drift |
+| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader with row lines, spawn and network absence checks with the loopback sinkhole, Python AST lint, cross-examination for pytest with groups, selection and parallel runs. Not ported: running a witness (it reads the file `subpoena-witness` writes) and registry-drift |
 | TypeScript | generated names only (`generated/ts/semconv.ts`: `SPAN_AGENT_SESSION_EXEC`, `ATTR_SESSION_ID`, `ATTRIBUTE_TIERS`). Harness not started |
 
 ## What a port is, and what it reuses
@@ -184,6 +184,36 @@ also pass.
 
 Check: `pkg/witness/sinkhole_test.go` and `pkg/harness/network_test.go`
 hold the cases; the Python runner is `python/tests/test_network.py`.
+
+- **W7. Row lines.** The database witness (`pkg/witness/dbproxy`) is not ported;
+  `subpoena-witness db` runs it and writes the same file format, with one line
+  per statement. A line with no `record` field and a non-null `event` field is
+  a row line; `event` is `row`, and any other value is a read error.
+
+  | Field | Type | Meaning |
+  | --- | --- | --- |
+  | `engine` | `"postgres"` or `"mysql"` | the wire protocol |
+  | `conn` | integer | the witness's number for the connection |
+  | `dest` | string | the address the application connected to |
+  | `statement`, `verb` | string | SQL as sent, cut at 8 KiB; first keyword. Never bound values |
+  | `tables` | array of strings | tables written |
+  | `opaque`, `reason` | boolean, string | it may have written anything, and why |
+  | `rows` | integer | rows changed, -1 if unknown |
+  | `outcome` | string | `read`, `committed`, `rolled_back`, `failed` or `unknown` |
+  | `attribution` | `"destination"` | it holds for every trace |
+
+  `committed(trace_id)` returns every line with outcome `committed`, for every
+  trace, the empty ID included. A line is an effect if it is committed and `rows`
+  is not 0. It counts against a table if it is opaque, names no table, or a name
+  matches without case on its dotted parts from the right. A line with `rows`
+  missing, null or below -1 is a read error, never a skip: read as 0, it would be
+  no effect. So is an `outcome` outside the five. A row outside the capture
+  window, or with outcome `unknown`, is a capture fault. W4's other rules apply.
+  A port ships the reader; a `no_row` check over it is not in Python yet, so a
+  Python test reads `committed` and `health` itself.
+
+Check: the row cases in `conformance/witness.yaml`, through both runners, and
+`pkg/witness/logrow_test.go`, which `python/tests/test_witness.py` ports.
 
 ## L and G: lint and cross-examination
 

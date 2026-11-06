@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/sprigworks/subpoena/docs/witness-event.schema.json",
   "title": "subpoena-witness line",
-  "description": "One line of subpoena-witness output: one exec as the kernel saw it, or a record that opens or closes a capture window. A line with a record field is a record; any other line is an exec. See docs/ports.md (W). Readers ignore fields they do not know; existing fields keep their name and meaning.",
+  "description": "One line of a witness file: one exec as the kernel saw it, one statement a database witness saw, or a record that opens or closes a capture window. A line with a record field is a record; otherwise a line with an event field is a row line; any other line is an exec. See docs/ports.md (W). Readers ignore fields they do not know; existing fields keep their name and meaning.",
   "type": "object",
   "additionalProperties": true,
   "properties": {
     "time": {
       "type": "string",
       "format": "date-time",
-      "description": "When the exec was seen, or the record written (RFC 3339, UTC)."
+      "description": "When the exec was seen, when the statement's outcome became known, or when the record was written (RFC 3339, UTC)."
     },
     "pid": {
       "type": "integer",
@@ -59,9 +59,10 @@
     "attribution": {
       "type": "string",
       "enum": [
-        "cgroup"
+        "cgroup",
+        "destination"
       ],
-      "description": "How the exec was tied to trace_id. Present exactly when trace_id is."
+      "description": "How the line was tied to a trace. On an exec, present exactly when trace_id is. On a row line always destination: it holds for every trace."
     },
     "record": {
       "type": "string",
@@ -78,6 +79,68 @@
     "error": {
       "type": "string",
       "description": "On an unhealthy stop record: what went wrong."
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "row"
+      ],
+      "description": "Row lines only: the kind of event."
+    },
+    "engine": {
+      "type": "string",
+      "enum": [
+        "postgres",
+        "mysql"
+      ],
+      "description": "The wire protocol."
+    },
+    "conn": {
+      "type": "integer",
+      "description": "The witness's number for the connection, from 1."
+    },
+    "dest": {
+      "type": "string",
+      "description": "The address the application connected to."
+    },
+    "statement": {
+      "type": "string",
+      "description": "SQL text as sent, cut at 8 KiB; empty when none was seen. Never bound values."
+    },
+    "verb": {
+      "type": "string",
+      "description": "First keyword, upper case."
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Tables written, as named, with quotes removed and unquoted parts lower case. A reader must treat an empty list on a write as every table."
+    },
+    "opaque": {
+      "type": "boolean",
+      "description": "The witness could not tell what the statement writes: it counts against every table."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why the statement is opaque."
+    },
+    "rows": {
+      "type": "integer",
+      "minimum": -1,
+      "description": "Rows the server said it changed, or -1 if its reply gave no usable count. Zero is no effect; a line without this field is an error."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "read",
+        "committed",
+        "rolled_back",
+        "failed",
+        "unknown"
+      ],
+      "description": "read: writes nothing. committed: the server committed it. rolled_back and failed: not an effect. unknown: its fate was not seen, and the file is a capture fault."
     }
   },
   "if": {
@@ -93,17 +156,40 @@
     ]
   },
   "else": {
-    "required": [
-      "time",
-      "pid",
-      "ppid",
-      "host_pid",
-      "comm",
-      "exe",
-      "command",
-      "args",
-      "cgroup_id",
-      "cgroup"
-    ]
+    "if": {
+      "required": [
+        "event"
+      ]
+    },
+    "then": {
+      "required": [
+        "time",
+        "event",
+        "engine",
+        "conn",
+        "dest",
+        "statement",
+        "verb",
+        "tables",
+        "opaque",
+        "rows",
+        "outcome",
+        "attribution"
+      ]
+    },
+    "else": {
+      "required": [
+        "time",
+        "pid",
+        "ppid",
+        "host_pid",
+        "comm",
+        "exe",
+        "command",
+        "args",
+        "cgroup_id",
+        "cgroup"
+      ]
+    }
   }
 }

@@ -77,6 +77,80 @@ def test_the_schema_names_the_fields_the_reader_checks():
     from subpoena import witness
     exec_fields = set(witness._INT_FIELDS) | set(witness._STR_FIELDS) | {"time", "args"}
     record_fields = {"time", "record", "healthy", "error"}
-    assert exec_fields | record_fields == set(schema["properties"])
+    row_fields = set(witness._ROW_STR_FIELDS) | {"time", "event", "conn", "tables", "opaque", "rows", "outcome"}
+    assert exec_fields | record_fields | row_fields == set(schema["properties"])
     assert schema["if"] == {"required": ["record"]}
+    assert schema["else"]["if"] == {"required": ["event"]}
+    assert tuple(schema["properties"]["outcome"]["enum"]) == witness.OUTCOMES
     assert schema["additionalProperties"] is True
+
+
+ROW = {"time": "2026-11-06T12:00:01Z", "event": "row", "engine": "postgres", "conn": 1, "dest": "127.0.0.1:5432",
+       "statement": "INSERT INTO users VALUES (1)", "verb": "INSERT", "tables": ["users"], "opaque": False,
+       "rows": 1, "outcome": "committed", "attribution": "destination"}
+START = '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}'
+STOP = '{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":true}'
+
+
+def row_file(*rows):
+    return io.StringIO("\n".join([START, *[json.dumps(r) for r in rows], STOP]) + "\n")
+
+
+def test_rows_are_read_and_filtered_by_outcome():
+    log = read_log(row_file(ROW, {**ROW, "outcome": "rolled_back"}, {**ROW, "outcome": "read"}))
+    assert log.health() is None
+    assert len(log.rows()) == 3 and len(log) == 0
+    for trace in (A, B, ""):
+        got = log.committed(trace)
+        assert [e.tables for e in got] == [["users"]] and got[0].attribution == "destination"
+
+
+@pytest.mark.parametrize("rows,effect", [(1, True), (-1, True), (0, False)])
+def test_row_effect(rows, effect):
+    assert read_log(row_file({**ROW, "rows": rows})).committed()[0].effect is effect
+
+
+def test_only_committed_is_an_effect():
+    assert not read_log(row_file({**ROW, "outcome": "rolled_back"})).rows()[0].effect
+
+
+@pytest.mark.parametrize("event,table,want", [
+    (ROW, "users", True),
+    (ROW, "USERS", True),
+    (ROW, "orders", False),
+    (ROW, "public.users", True),
+    (ROW, "", True),
+    ({**ROW, "tables": ["public.users"]}, "users", True),
+    ({**ROW, "tables": ["public.users"]}, "other.users", False),
+    ({**ROW, "tables": ["superusers"]}, "users", False),
+    ({**ROW, "opaque": True}, "orders", True),
+    ({**ROW, "tables": []}, "orders", True),
+])
+def test_row_touches(event, table, want):
+    assert read_log(row_file(event)).rows()[0].touches(table) is want
+
+
+@pytest.mark.parametrize("bad", [
+    {"event": "file"},
+    {"outcome": "maybe"},
+    {"rows": None},
+    {"rows": -2},
+    {"rows": "1"},
+    {"rows": True},
+    {"conn": "1"},
+    {"tables": "users"},
+    {"tables": [1]},
+    {"opaque": "no"},
+    {"statement": 1},
+    {"time": None},
+])
+def test_rows_it_cannot_read_are_errors(bad):
+    with pytest.raises(WitnessError):
+        read_log(row_file({**ROW, **bad}))
+
+
+def test_row_with_no_count_is_an_error():
+    r = dict(ROW)
+    del r["rows"]
+    with pytest.raises(WitnessError, match="no usable rows field"):
+        read_log(row_file(r))

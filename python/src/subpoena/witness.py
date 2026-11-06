@@ -1,6 +1,6 @@
 """The witness, read from the file subpoena-witness writes (docs/ports.md, W;
-schema: docs/witness-event.schema.json). A port of witness.ReadLog, and of
-the Sinkhole network witness."""
+schema: docs/witness-event.schema.json). A port of witness.ReadLog, including
+the database witness's row lines, and of the Sinkhole network witness."""
 
 from __future__ import annotations
 
@@ -41,6 +41,47 @@ class ProcessEvent:
         return self.command_source == "comm"
 
 
+ROWS_UNKNOWN = -1  # the server's reply gave no usable count
+OUTCOMES = ("read", "committed", "rolled_back", "failed", "unknown")
+
+
+@dataclass
+class RowEvent:
+    """One statement a database witness saw. It has no trace ID: attribution is
+    by destination, so it holds for every trace."""
+    engine: str
+    conn: int
+    dest: str
+    statement: str
+    verb: str
+    tables: List[str]
+    opaque: bool
+    reason: str
+    rows: int
+    outcome: str
+    attribution: str
+    seen_at: datetime
+
+    @property
+    def effect(self) -> bool:
+        """A committed write of any number of rows other than zero. An unknown
+        count is an effect."""
+        return self.outcome == "committed" and self.rows != 0
+
+    def touches(self, table: str) -> bool:
+        """Whether this counts against table. The empty table is every table.
+        An opaque event, or one naming no table, counts against every table.
+        Names compare without case, on their dotted parts from the right, so
+        users and public.users match each other."""
+        if not table or self.opaque or not self.tables:
+            return True
+        return any(_same_table(t, table) for t in self.tables)
+
+
+def _same_table(a: str, b: str) -> bool:
+    return all(x == y for x, y in zip(reversed(a.lower().split(".")), reversed(b.lower().split("."))))
+
+
 class WitnessError(ValueError):
     pass
 
@@ -51,15 +92,17 @@ class WitnessError(ValueError):
 _INT_FIELDS = {"pid": (-(2**63), 2**63 - 1), "ppid": (-(2**63), 2**63 - 1),
                "host_pid": (-(2**63), 2**63 - 1), "cgroup_id": (0, 2**64 - 1)}
 _STR_FIELDS = ("comm", "exe", "command", "cgroup", "trace_id", "attribution")
+_ROW_STR_FIELDS = ("engine", "dest", "statement", "verb", "reason", "attribution")
 
 
 _RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
 _ZERO = datetime(1, 1, 1, tzinfo=timezone.utc)
 
-# Every field name of an exec line or a record. A key that differs from one
-# only by case is refused: Go's decoder would read it as that field.
+# Every field name of an exec line, a record or a row line. A key that differs
+# from one only by case is refused: Go's decoder would read it as that field.
 _KNOWN = ("time", "pid", "ppid", "host_pid", "comm", "exe", "command", "args", "cgroup_id", "cgroup",
-          "trace_id", "attribution", "record", "healthy", "error")
+          "trace_id", "attribution", "record", "healthy", "error",
+          "event", "engine", "conn", "dest", "statement", "verb", "tables", "opaque", "reason", "rows", "outcome")
 
 
 def _no_constant(name: str):
@@ -97,8 +140,8 @@ _NO_RECORDS = ("witness: the file has no start or stop records, so its capture h
 class Log:
     """What subpoena-witness wrote, as a witness."""
 
-    def __init__(self, lines: List[dict], health: Optional[str] = None):
-        self._lines, self._health = lines, health
+    def __init__(self, lines: List[dict], health: Optional[str] = None, rows: Optional[List[dict]] = None):
+        self._lines, self._health, self._rows = lines, health, rows or []
 
     def health(self) -> Optional[str]:
         """The first capture fault in the file, or None: no start or stop
@@ -121,6 +164,26 @@ class Log:
             return []
         return [self._event(l) for l in self._lines if (l.get("trace_id") or "") == trace_id]
 
+    def rows(self) -> List[RowEvent]:
+        """Every row line, in file order, whatever its outcome."""
+        return [self._row(l) for l in self._rows]
+
+    def committed(self, trace_id: str = "") -> List[RowEvent]:
+        """Every committed row line, for every trace: a database witness
+        attributes by destination, and a row line has no trace ID. A rolled-back
+        or refused write is not here. Zero-row writes are: see RowEvent.effect.
+        Absence rests on these only when health() is None."""
+        return [e for e in self.rows() if e.outcome == "committed"]
+
+    @staticmethod
+    def _row(l: dict) -> RowEvent:
+        g = lambda k, zero: l.get(k) if l.get(k) is not None else zero  # noqa: E731
+        return RowEvent(
+            engine=g("engine", ""), conn=g("conn", 0), dest=g("dest", ""), statement=g("statement", ""),
+            verb=g("verb", ""), tables=list(g("tables", [])), opaque=g("opaque", False), reason=g("reason", ""),
+            rows=l["rows"], outcome=l["outcome"], attribution=g("attribution", ""), seen_at=_parse_time(l["time"]),
+        )
+
     @staticmethod
     def _event(l: dict) -> ProcessEvent:
         # subpoena-witness writes argv as the command. Without it, the task
@@ -139,13 +202,40 @@ class Log:
         )
 
 
+def _check_row(l: dict) -> None:
+    """A row line it cannot read could be a write, so anything out of shape is an
+    error, as in Go's reader, and never a skip. A missing count would read as
+    zero rows, which is no effect."""
+    if l["event"] != "row":
+        raise ValueError(f"unknown event {l['event']!r}")
+    rows = l.get("rows")
+    if rows is None or isinstance(rows, bool) or not isinstance(rows, int) or not ROWS_UNKNOWN <= rows <= 2**63 - 1:
+        raise ValueError("no usable rows field")
+    if l.get("outcome") not in OUTCOMES:
+        raise ValueError(f"unknown outcome {l.get('outcome')!r}")
+    conn = l.get("conn")
+    if conn is not None and (isinstance(conn, bool) or not isinstance(conn, int) or not -(2**63) <= conn <= 2**63 - 1):
+        raise ValueError("conn is not an integer")
+    for k in _ROW_STR_FIELDS:
+        if l.get(k) is not None and not isinstance(l[k], str):
+            raise ValueError(f"{k} is not a string")
+    tables = l.get("tables")
+    if tables is not None and (not isinstance(tables, list) or not all(isinstance(t, str) for t in tables)):
+        raise ValueError("tables is not a list of strings")
+    if l.get("opaque") is not None and not isinstance(l["opaque"], bool):
+        raise ValueError("opaque is not a boolean")
+    if not l.get("time"):
+        raise ValueError("no time")
+    _parse_time(l["time"])
+
+
 def read_log(f: IO[str]) -> Log:
     """Read subpoena-witness JSON lines. Blank lines and unknown fields are
     ignored. A line that does not decode, or has no time, raises WitnessError
     naming its line number: skipping it could turn an exec into an absence.
     Capture faults (see Log.health) do not stop the read: the execs are still
     evidence that something ran."""
-    lines = []
+    lines, rows = [], []
     health: Optional[str] = None
     open_at, records, windows = 0, 0, 0  # open_at: line of the open window's start record
 
@@ -192,6 +282,14 @@ def read_log(f: IO[str]) -> Log:
                     raise ValueError(f"unknown record {rec!r}")
                 records += 1
                 continue
+            if l.get("event") is not None:
+                _check_row(l)
+                if not open_at:
+                    fault(f"witness: line {n}: a row outside any capture window")
+                if l["outcome"] == "unknown":
+                    fault(f"witness: line {n}: a write whose outcome was not seen")
+                rows.append(l)
+                continue
             for k, (lo, hi) in _INT_FIELDS.items():
                 v = l.get(k)
                 if v is None:
@@ -225,7 +323,7 @@ def read_log(f: IO[str]) -> Log:
         # neither, so nothing vouches for its absence.
         fault(f"witness: the file holds {windows} capture windows, and nothing watched between them; "
               "use one witness run per file")
-    return Log(lines, health)
+    return Log(lines, health, rows)
 
 
 # The network witness (pkg/witness's NetworkEvent and Sinkhole). Go's eBPF

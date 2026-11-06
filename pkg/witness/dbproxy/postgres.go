@@ -75,8 +75,6 @@ func newPostgresSession(c *capture, id int) *pgSession {
 
 // unreadable faults the connection and stops reading it: it goes on as a raw
 // copy, so the application keeps working, and absence can no longer rest on it.
-//
-//subpoena:enforcement_point
 func (s *pgSession) unreadable(format string, a ...any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
