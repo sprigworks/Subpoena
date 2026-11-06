@@ -2,12 +2,15 @@
 //
 // netbpf: report every outbound inet connection attempt (connect, and sends
 // that carry a destination) with the calling process's cgroup, read in the
-// kernel at the moment of the call.
+// kernel at the moment of the call. A second hook reports sends on connected
+// sockets, delivery to a peer that dialled in, from session cgroups only.
 //
 // The hooks are the LSM entry points security_socket_connect and
 // security_socket_sendmsg, traced with fentry (no LSM boot parameter needed).
 // Every path that connects or sends from user space goes through them,
 // including io_uring, and the destination address is a kernel copy by then.
+// write() on a socket is one of those paths: sock_write_iter sends through
+// security_socket_sendmsg.
 //
 // The kernel requires a GPL-compatible license string for the tracing helpers
 // used here; this file is dual-licensed MIT or GPL-2.0 so that it can be. It is
@@ -80,8 +83,19 @@ struct task_struct {
 	struct css_set *cgroups;
 } __attribute__((preserve_access_index));
 
+// Only the size matters: these are read whole, as bytes.
+struct in6_addr {
+	u8 bytes[16];
+};
+
 struct sock_common {
+	__be32 skc_daddr;
+	__be32 skc_rcv_saddr;
+	__be16 skc_dport;
+	u16 skc_num; // host byte order
 	unsigned short skc_family;
+	struct in6_addr skc_v6_daddr;     // only with CONFIG_IPV6
+	struct in6_addr skc_v6_rcv_saddr; // only with CONFIG_IPV6
 } __attribute__((preserve_access_index));
 
 struct sock {
@@ -105,6 +119,7 @@ struct msghdr {
 
 #define OP_CONNECT 1
 #define OP_SENDMSG 2
+#define OP_DELIVER 3
 
 #define NAME_LEN 64   // one cgroup path element (a trace ID is 32)
 #define DEPTH 8       // cgroup path elements kept, leaf first
@@ -113,6 +128,7 @@ struct msghdr {
 struct event {
 	u64 cgroup_id; // bpf_get_current_cgroup_id()
 	u64 kn_id;     // the cgroup's kernfs node id (equal to cgroup_id on cgroup v2)
+	u64 bytes;     // on a send, the bytes the caller asked to send
 	u32 op;
 	u32 pid;      // process ID in the witness's PID namespace (0: not visible there)
 	u32 host_pid; // process ID in the initial PID namespace
@@ -121,8 +137,9 @@ struct event {
 	u32 protocol;  // sk_protocol: IPPROTO_TCP, IPPROTO_UDP, ...
 	u32 depth;     // number of valid entries in cgroup
 	u16 port;      // destination port, network byte order
-	u16 pad;
+	u16 local_port; // this end's port, host byte order
 	u8 addr[16];   // destination address: 4 bytes for AF_INET, 16 for AF_INET6
+	u8 local_addr[16]; // this end's address: always 16, IPv4 as ::ffff:a.b.c.d
 	char comm[16];
 	char cgroup[DEPTH][NAME_LEN]; // cgroup path elements: [0] is the leaf
 };
@@ -153,10 +170,24 @@ static __always_inline void record_loss(void)
 		__sync_fetch_and_add(count, 1);
 }
 
+// Sends from a session cgroup on a socket that is not inet: no address to
+// report, so they are counted for the coverage report instead. Read like lost.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u64);
+} other_sends SEC(".maps");
+
 // Set from Go before loading: the inode of the witness's PID namespace
 // (/proc/self/ns/pid), so PIDs are reported as the witness sees them.
 // 0 reports initial-namespace PIDs.
 const volatile u32 pidns_inum = 0;
+
+// Set from Go before loading: the last element of the session cgroup root,
+// NUL-terminated. Connected sends are too many to report host-wide, so
+// handle_deliver keeps only callers with this element in their cgroup path.
+const volatile char session_base[NAME_LEN] = {};
 
 // ns_tgid returns t's process ID as seen in the namespace pidns_inum, or 0
 // when t is not visible there. The same walk as execbpf.
@@ -188,10 +219,50 @@ static __always_inline struct kernfs_node *kn_parent(struct kernfs_node *kn)
 	return BPF_CORE_READ(kn, parent);
 }
 
+// fill_caller sets the fields every event carries about the calling task.
+static __always_inline void fill_caller(struct event *e, struct task_struct *t)
+{
+	e->pid = ns_tgid(t);
+	e->host_pid = bpf_get_current_pid_tgid() >> 32;
+	e->cgroup_id = bpf_get_current_cgroup_id();
+	bpf_get_current_comm(e->comm, sizeof(e->comm));
+
+	struct kernfs_node *kn = BPF_CORE_READ(t, cgroups, dfl_cgrp, kn);
+	e->kn_id = kn ? BPF_CORE_READ(kn, id) : 0;
+	e->depth = 0;
+#pragma unroll
+	for (int i = 0; i < DEPTH; i++) {
+		e->cgroup[i][0] = 0;
+		if (!kn)
+			continue;
+		const char *name = BPF_CORE_READ(kn, name);
+		if (bpf_probe_read_kernel_str(e->cgroup[i], NAME_LEN, name) < 0)
+			e->cgroup[i][0] = 0;
+		e->depth = i + 1;
+		kn = kn_parent(kn);
+	}
+}
+
+// fill_local sets this end of the socket, and clears nothing else.
+static __always_inline void fill_local(struct event *e, struct sock *sk)
+{
+	__builtin_memset(e->local_addr, 0, sizeof(e->local_addr));
+	e->local_port = BPF_CORE_READ(sk, __sk_common.skc_num);
+	u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	if (family == AF_INET) {
+		e->local_addr[10] = 0xff;
+		e->local_addr[11] = 0xff;
+		__be32 a = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+		__builtin_memcpy(&e->local_addr[12], &a, 4);
+	} else if (family == AF_INET6 && bpf_core_field_exists(sk->__sk_common.skc_v6_rcv_saddr)) {
+		BPF_CORE_READ_INTO((struct in6_addr *)e->local_addr, sk, __sk_common.skc_v6_rcv_saddr);
+	}
+}
+
 // report sends one event for a destination at addr (a kernel sockaddr). Only
 // inet families are reported; anything else (AF_UNIX, AF_NETLINK) is not a
 // network destination.
-static __always_inline void report(u32 op, struct socket *sock, const void *addr, int addrlen)
+static __always_inline void report(u32 op, struct socket *sock, const void *addr, int addrlen, int size)
 {
 	if (!addr || addrlen < (int)sizeof(u16))
 		return;
@@ -218,7 +289,8 @@ static __always_inline void report(u32 op, struct socket *sock, const void *addr
 	e->family = family;
 	e->sock_type = (u16)BPF_CORE_READ(sock, type);
 	e->protocol = BPF_CORE_READ(sock, sk, sk_protocol);
-	e->pad = 0;
+	e->bytes = (u32)size;
+	fill_local(e, BPF_CORE_READ(sock, sk));
 	__builtin_memset(e->addr, 0, sizeof(e->addr));
 	e->port = 0;
 	// sockaddr_in and sockaddr_in6 both keep the port at offset 2. The
@@ -231,26 +303,7 @@ static __always_inline void report(u32 op, struct socket *sock, const void *addr
 	if (family == AF_INET6 && addrlen >= 24)
 		bpf_probe_read_kernel(e->addr, 16, addr + 8);
 
-	struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-	e->pid = ns_tgid(t);
-	e->host_pid = bpf_get_current_pid_tgid() >> 32;
-	e->cgroup_id = bpf_get_current_cgroup_id();
-	bpf_get_current_comm(e->comm, sizeof(e->comm));
-
-	struct kernfs_node *kn = BPF_CORE_READ(t, cgroups, dfl_cgrp, kn);
-	e->kn_id = kn ? BPF_CORE_READ(kn, id) : 0;
-	e->depth = 0;
-#pragma unroll
-	for (int i = 0; i < DEPTH; i++) {
-		e->cgroup[i][0] = 0;
-		if (!kn)
-			continue;
-		const char *name = BPF_CORE_READ(kn, name);
-		if (bpf_probe_read_kernel_str(e->cgroup[i], NAME_LEN, name) < 0)
-			e->cgroup[i][0] = 0;
-		e->depth = i + 1;
-		kn = kn_parent(kn);
-	}
+	fill_caller(e, (struct task_struct *)bpf_get_current_task());
 	bpf_ringbuf_submit(e, 0);
 }
 
@@ -258,7 +311,7 @@ static __always_inline void report(u32 op, struct socket *sock, const void *addr
 SEC("fentry/security_socket_connect")
 int handle_connect(u64 *ctx)
 {
-	report(OP_CONNECT, (struct socket *)ctx[0], (const void *)ctx[1], (int)ctx[2]);
+	report(OP_CONNECT, (struct socket *)ctx[0], (const void *)ctx[1], (int)ctx[2], 0);
 	return 0;
 }
 
@@ -272,7 +325,97 @@ int handle_sendmsg(u64 *ctx)
 	struct msghdr *msg = (struct msghdr *)ctx[1];
 	void *name = BPF_CORE_READ(msg, msg_name);
 	int namelen = BPF_CORE_READ(msg, msg_namelen);
-	report(OP_SENDMSG, sock, name, namelen);
+	report(OP_SENDMSG, sock, name, namelen, (int)ctx[2]);
+	return 0;
+}
+
+// is_base reports whether name equals session_base.
+static __always_inline int is_base(const char *name)
+{
+	for (int i = 0; i < NAME_LEN; i++) {
+		if (name[i] != session_base[i])
+			return 0;
+		if (!name[i])
+			return 1;
+	}
+	return 1;
+}
+
+// in_session reports whether t's cgroup path has the session root in it, within
+// the DEPTH elements fill_caller reports. Go decides the trace from those; this
+// only keeps every other process's sends out of the ring buffer, so it must
+// match whenever Go's attribution could.
+static __always_inline int in_session(struct task_struct *t)
+{
+	char name[NAME_LEN];
+	struct kernfs_node *kn = BPF_CORE_READ(t, cgroups, dfl_cgrp, kn);
+	for (int i = 0; i < DEPTH; i++) {
+		if (!kn)
+			return 0;
+		if (bpf_probe_read_kernel_str(name, NAME_LEN, BPF_CORE_READ(kn, name)) < 0) {
+			record_loss(); // unreadable: cannot rule the session out
+			return 0;
+		}
+		if (is_base(name))
+			return 1;
+		kn = kn_parent(kn);
+	}
+	return 0;
+}
+
+// Delivery: every send on an inet socket from a session cgroup, to the peer the
+// socket holds. An accepted socket had no connect here to report, which is why
+// this hook exists. A socket with no peer that named a destination is left to
+// handle_sendmsg, whose event Go counts as a delivery too. One with no peer and
+// no name goes out with a zero peer: raw and SCTP sockets can send that way, and
+// only the reader can say a rule may be hit by it.
+SEC("fentry/security_socket_sendmsg")
+int handle_deliver(u64 *ctx)
+{
+	struct socket *sock = (struct socket *)ctx[0];
+	struct msghdr *msg = (struct msghdr *)ctx[1];
+	struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+	if (!in_session(t))
+		return 0;
+
+	struct sock *sk = BPF_CORE_READ(sock, sk);
+	u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	if (family != AF_INET && family != AF_INET6) {
+		u32 key = 0;
+		u64 *count = bpf_map_lookup_elem(&other_sends, &key);
+		if (count)
+			__sync_fetch_and_add(count, 1);
+		return 0;
+	}
+
+	u8 peer[16] = {};
+	__be16 port = BPF_CORE_READ(sk, __sk_common.skc_dport);
+	if (family == AF_INET) {
+		__be32 a = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+		__builtin_memcpy(peer, &a, 4);
+	} else if (bpf_core_field_exists(sk->__sk_common.skc_v6_daddr)) {
+		BPF_CORE_READ_INTO((struct in6_addr *)peer, sk, __sk_common.skc_v6_daddr);
+	}
+	u64 half[2];
+	__builtin_memcpy(half, peer, 16);
+	if (!port && !half[0] && !half[1] && BPF_CORE_READ(msg, msg_name))
+		return 0;
+
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		record_loss();
+		return 0;
+	}
+	e->op = OP_DELIVER;
+	e->family = family;
+	e->sock_type = (u16)BPF_CORE_READ(sock, type);
+	e->protocol = BPF_CORE_READ(sk, sk_protocol);
+	e->bytes = (u32)(int)ctx[2];
+	e->port = port;
+	__builtin_memcpy(e->addr, peer, 16);
+	fill_local(e, sk);
+	fill_caller(e, t);
+	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
 

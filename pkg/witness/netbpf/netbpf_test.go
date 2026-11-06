@@ -7,6 +7,7 @@ package netbpf
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/sprigworks/subpoena/pkg/witness"
@@ -61,6 +62,59 @@ func TestOnEventSeesEverythingAndNoRetainKeepsNothing(t *testing.T) {
 	}
 	if len(w.Events()) != 0 || len(w.Dialed(tidA)) != 0 {
 		t.Fatal("NoRetain kept events")
+	}
+}
+
+func deliverEv(pid int, cg string, peer netip.AddrPort) Event {
+	return Event{Op: witness.OpDeliver, PID: pid, Comm: "broker", Protocol: "tcp", Dest: peer,
+		Local: netip.MustParseAddrPort("127.0.0.1:1883"), Bytes: 12, Cgroup: cg, CgroupID: 42}
+}
+
+// A send on a connected socket is a delivery and not a dial; a send that names
+// its destination is both.
+func TestDeliveriesAreAttributedApartFromDials(t *testing.T) {
+	sub := netip.MustParseAddrPort("127.0.0.1:40001")
+	w := New(Config{CgroupRoot: "/sys/fs/cgroup/subpoena"})
+	w.handle(deliverEv(10, "subpoena/"+tidA, sub))
+	w.handle(deliverEv(11, "subpoena/"+tidB, sub))
+	w.handle(deliverEv(12, "user.slice/session-1.scope", sub)) // not a session: not kept
+	named := dialEv(13, "subpoena/"+tidA)
+	named.Op, named.Bytes = witness.OpSendmsg, 3
+	w.handle(named)
+	w.handle(dialEv(14, "subpoena/"+tidA)) // a connect sends nothing
+
+	got := w.Delivered(tidA)
+	if len(got) != 2 || got[0].PID != 10 || got[1].PID != 13 {
+		t.Fatalf("Delivered(A) = %+v", got)
+	}
+	e := got[0]
+	if e.Attribution != witness.ByCgroup || e.TraceID != tidA || e.Op != witness.OpDeliver || e.Protocol != "tcp" ||
+		e.Peer != sub || e.Local.Port() != 1883 || e.Bytes != 12 || e.Comm != "broker" || e.CgroupID != 42 {
+		t.Fatalf("event fields not carried over: %+v", e)
+	}
+	if got[1].Op != witness.OpSendmsg || got[1].Peer != dest || got[1].Bytes != 3 {
+		t.Fatalf("a named send is delivery to its destination: %+v", got[1])
+	}
+	if got := w.Delivered(strings.ToUpper(tidB)); len(got) != 1 || got[0].PID != 11 {
+		t.Fatalf("Delivered(B) = %+v", got)
+	}
+	dials := w.Dialed(tidA)
+	if len(dials) != 2 || dials[0].PID != 13 || dials[1].PID != 14 {
+		t.Fatalf("Dialed(A) = %+v: a connected send is not a connection attempt", dials)
+	}
+}
+
+func TestDeliveryCoverageCountsEvenWithoutRetaining(t *testing.T) {
+	w := New(Config{CgroupRoot: "/x/subpoena", NoRetain: true})
+	w.handle(deliverEv(10, "subpoena/"+tidA, netip.MustParseAddrPort("127.0.0.1:40001")))
+	w.handle(deliverEv(11, "subpoena/"+tidA, netip.AddrPort{}))
+	w.handle(deliverEv(12, "user.slice", netip.AddrPort{}))
+	w.handle(dialEv(13, "subpoena/"+tidA))
+	if c := w.DeliveryCoverage(); c.Sends != 2 || c.UnknownPeers != 1 {
+		t.Fatalf("coverage = %+v", c)
+	}
+	if len(w.Delivered(tidA)) != 0 {
+		t.Fatal("NoRetain kept deliveries")
 	}
 }
 
