@@ -33,6 +33,15 @@
   that never ran, in a package whose `m.Run` said `PASS`. A suite that hides that `PASS` by
   swapping `os.Stdout` around `m.Run` is not caught: such a fail still reads as a plain kill, as
   no output can show it, and only `--require-witness` stops it.
+- **A second `m.Run` does not cost a real kill.** Under `-test.failfast` it runs nothing and says
+  `PASS` after a real failure, so the failure was dropped and the run read unconfirmed. Such a run
+  now takes its failed tests from a run without that flag. A suite whose second `m.Run` truly
+  passes still reads unconfirmed.
+- **Under `--require-witness`, a crash line is a crash in any test.** A framed `=== NAME` line could
+  move a recovered panic's line onto a test that passed, and a witness failure then read as a
+  witness kill. A passing test that prints such a line beside a witness failure now reads crashed.
+  Without the flag the moved line is still a log line, and that plain kill stands: a plain kill
+  assumes the suite is not forging test-runner output. See `docs/architecture.md`.
 - **A printed pass does not hide a crash line.** A test that recovers a panic stays a crash, as
   Ginkgo's does, and a printed pass switched that off for a test that really failed. A crash line
   now counts in any test with a fail event, whatever pass sits beside it.

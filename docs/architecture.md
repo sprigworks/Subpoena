@@ -194,7 +194,8 @@ overrides the wrapper's own flag, so on a single-package target every kill is a
 crash: unset it for a cross run. A `panic:` line also voids a package's kills when it
 sits in a test that did not pass, so a panic something recovered, with the
 binary exiting 1, stays a crash. In a test that passed it is a log line, and
-order does not matter: the binary lived. A test with a `fail` event has not passed here,
+order does not matter: the binary lived. Under `--require-witness` it is a crash there too (see
+What forged output can do). A test with a `fail` event has not passed here,
 whatever `pass` sits beside it, so a printed pass does not make a crash a log line. Ginkgo reports a recovered panic as `[PANICKED]`,
 which counts as a crash wherever it falls in the suite, since Ginkgo runs a suite
 as one test in random order. Failures outside any test never count: a line
@@ -211,7 +212,10 @@ skips packages not yet started as soon as one fails. So a package can hang on th
 after another has caught it: a run that timed out with a clean failure in a package that
 finished goes to the repeat, and with none it is a timeout. That flag can also turn a
 `TestMain` that calls `m.Run` a second time green, since the second run skips every test, so a
-green run holding a test's `fail` event goes again without it. Each kill reports its first evidence, the
+green run holding a test's `fail` event goes again without it. A red one can also say `PASS` after
+a real failure, so when that leaves no failed test, the failed tests come from a run without the
+flag. A suite whose second `m.Run` truly passes says `PASS` there too, and that kill reads
+unconfirmed. Each kill reports its first evidence, the
 first failure message of a failed test, and in Go the first of each package, witness
 if any is, since packages finish in any order: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
@@ -272,6 +276,21 @@ with the same verdicts. An enforcement point
 with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.
+
+### What forged output can do
+
+Cross reads `go test` output, and the code under test can write that output: the lines go test
+frames, `PASS`, and what they turn into events. So a plain kill assumes the suite is not forging
+test-runner output. The rules above stop what a suite prints by accident or in the ordinary way,
+and where they cannot tell, they cost a kill and not make one. They are no defence against a suite
+built to fool them. Only a verified witness mark under `--require-witness` holds against forged
+output, and there a crash line counts as a crash in any test of a failed package, passed or not. A
+passing test that prints such a line beside a witness failure so reads crashed.
+
+Two forgeries read as plain kills and stay open. A suite that hides `m.Run`'s `PASS` is above. In
+the other, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test
+that passed, which takes the crash rule off it: without `--require-witness` that line is a log line,
+and the test's plain failure is a kill. Forging through `/proc` is out of scope, as stated above.
 
 ### What a kill does not prove
 
