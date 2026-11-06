@@ -62,6 +62,11 @@ var (
 // drain is drainAccepts, replaceable in tests to inject a failed drain.
 var drain = drainAccepts
 
+// DrainAccepts accepts and closes every connection already queued on ln, without
+// waiting, and says how many there were. It is for a witness with its own
+// listener: a connection in the queue at Stop arrived, and nothing has read it.
+func DrainAccepts(ln *net.TCPListener) (int, error) { return drainAccepts(ln) }
+
 // NewSinkhole listens on a free port on 127.0.0.1 and starts recording.
 func NewSinkhole() (*Sinkhole, error) {
 	return NewSinkholeAt(netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 0))

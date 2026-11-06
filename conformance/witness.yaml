@@ -9,6 +9,8 @@
 # delivered: peers per trace ID, in file order ("" is an unknown peer).
 # no_delivery: the verdict of the no-delivery check for that trace ID, about the
 # peers in no_delivery_peers (none named: every send).
+# committed: the verbs of the committed row lines (a database witness), per trace
+# ID, in file order.
 traces: {A: c0de00000000000000000000000000a1, B: c0de00000000000000000000000000b2, C: c0de00000000000000000000000000c3}
 cases:
   # One capture window closed by a healthy stop: absence rests on it.
@@ -626,3 +628,74 @@ cases:
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","Peer":"127.0.0.1:40001"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
+
+  # Row lines: only what committed is committed, and it holds for every trace.
+  - name: rows_committed_for_every_trace
+    lines:
+      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-11-06T12:00:01Z","event":"row","engine":"postgres","conn":1,"dest":"127.0.0.1:5432","statement":"INSERT INTO users VALUES (1)","verb":"INSERT","tables":["users"],"opaque":false,"rows":1,"outcome":"committed","attribution":"destination"}'
+      - '{"time":"2026-11-06T12:00:02Z","event":"row","engine":"postgres","conn":1,"dest":"127.0.0.1:5432","statement":"DELETE FROM users","verb":"DELETE","tables":["users"],"opaque":false,"rows":3,"outcome":"rolled_back","attribution":"destination"}'
+      - '{"time":"2026-11-06T12:00:03Z","event":"row","engine":"postgres","conn":1,"dest":"127.0.0.1:5432","statement":"UPDATE users SET a = 1","verb":"UPDATE","tables":["users"],"opaque":false,"rows":-1,"outcome":"failed","attribution":"destination"}'
+      - '{"time":"2026-11-06T12:00:04Z","event":"row","engine":"postgres","conn":1,"dest":"127.0.0.1:5432","statement":"SELECT 1","verb":"SELECT","tables":[],"opaque":false,"rows":-1,"outcome":"read","attribution":"destination"}'
+      - '{"time":"2026-11-06T12:00:05Z","event":"row","engine":"mysql","conn":2,"dest":"127.0.0.1:3306","statement":"CALL p()","verb":"CALL","tables":[],"opaque":true,"reason":"unrecognised statement","rows":-1,"outcome":"committed","attribution":"destination"}'
+      - '{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    committed:
+      A: [INSERT, CALL]
+      B: [INSERT, CALL]
+    spawned:
+      A: []
+
+  # A write with no seen outcome is not committed, and no absence rests on the file.
+  - name: row_with_unknown_outcome
+    lines:
+      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-11-06T12:00:01Z","event":"row","engine":"mysql","conn":1,"dest":"127.0.0.1:3306","statement":"INSERT INTO a VALUES (1)","verb":"INSERT","tables":["a"],"opaque":false,"rows":1,"outcome":"unknown","attribution":"destination"}'
+      - '{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":true}'
+    health: "outcome was not seen"
+    committed:
+      A: []
+
+  - name: row_outside_a_window
+    lines:
+      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":true}'
+      - '{"time":"2026-11-06T12:00:10Z","event":"row","engine":"mysql","conn":1,"dest":"127.0.0.1:3306","statement":"INSERT INTO a VALUES (1)","verb":"INSERT","tables":["a"],"opaque":false,"rows":1,"outcome":"committed","attribution":"destination"}'
+    health: "outside any capture window"
+    committed:
+      A: [INSERT]
+
+  # The witness's own verdict on a blind connection reaches the reader.
+  - name: rows_from_an_unhealthy_capture
+    lines:
+      - '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":false,"error":"connection 1: unreadable: client message type 64"}'
+    health: "capture unhealthy"
+    committed:
+      A: []
+
+  # A missing count would read as zero rows, which is no effect.
+  - name: row_without_a_count
+    lines:
+      - '{"time":"2026-11-06T12:00:01Z","event":"row","engine":"mysql","conn":1,"dest":"127.0.0.1:3306","statement":"INSERT INTO a VALUES (1)","verb":"INSERT","tables":["a"],"opaque":false,"outcome":"committed","attribution":"destination"}'
+    read_error: "no usable rows field"
+
+  - name: row_with_an_impossible_count
+    lines:
+      - '{"time":"2026-11-06T12:00:01Z","event":"row","engine":"mysql","conn":1,"dest":"127.0.0.1:3306","statement":"INSERT INTO a VALUES (1)","verb":"INSERT","tables":["a"],"opaque":false,"rows":-2,"outcome":"committed","attribution":"destination"}'
+    read_error: "no usable rows field"
+
+  - name: row_with_an_unknown_outcome_word
+    lines:
+      - '{"time":"2026-11-06T12:00:01Z","event":"row","engine":"mysql","conn":1,"dest":"127.0.0.1:3306","statement":"INSERT INTO a VALUES (1)","verb":"INSERT","tables":["a"],"opaque":false,"rows":1,"outcome":"maybe","attribution":"destination"}'
+    read_error: "unknown outcome"
+
+  - name: unknown_event_kind
+    lines:
+      - '{"time":"2026-11-06T12:00:01Z","event":"file","rows":1,"outcome":"committed"}'
+    read_error: "unknown event"
+
+  - name: row_key_in_another_case
+    lines:
+      - '{"time":"2026-11-06T12:00:01Z","event":"row","Rows":1,"rows":1,"outcome":"committed"}'
+    read_error: "in another case"

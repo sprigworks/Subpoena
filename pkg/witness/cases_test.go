@@ -36,6 +36,7 @@ func TestReadLogPassesTheSharedCases(t *testing.T) {
 			Delivered       map[string][]string `yaml:"delivered"`
 			NoDelivery      map[string]string   `yaml:"no_delivery"`
 			NoDeliveryPeers []string            `yaml:"no_delivery_peers"`
+			Committed       map[string][]string `yaml:"committed"`
 		} `yaml:"cases"`
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(b))

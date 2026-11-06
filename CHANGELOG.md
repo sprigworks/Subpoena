@@ -17,6 +17,19 @@
 - **A failed `netbpf` start says why.** `Health` already failed, as "capture has
   not stopped"; it now keeps the load or attach error. `Start` also refuses a
   cgroup root name the kernel can never match, which read as silence.
+- **A database witness, for Postgres and MySQL.** `pkg/witness/dbproxy` is a
+  wire-protocol proxy: point the application's DSN at its loopback listener and
+  it forwards to the real server, logging statements and commits per connection.
+  `harness.RequireNoRow(t, w, traceID, table)`, `NoRow`, `CheckNoRow` and
+  `WatchRows` ask it, and the lint counts them with no new rule. It reports what
+  the server committed: a rolled-back write is not an effect, an autocommit write
+  is. A statement it cannot parse counts against every table, and an unreadable
+  frame, a transaction dropped open, a connection it could not proxy and a client
+  that insists on TLS are Inconclusive. Attribution is by destination, as with
+  Sinkhole. It has no SQLite or MongoDB support. Python reads its row lines
+  (`Log.committed`), from the file `subpoena-witness db` writes. Running it stays
+  Go-only. The module now requires pgx and go-sql-driver/mysql, for its
+  integration tests only.
 - **A Go kill needs a failed test that links the mutant.** go-kratos/gateway got a
   kill from a test whose binary did not contain the mutated package. Cross checks
   with `go list -deps -test`, and such a kill is `unconfirmed`. A suite that runs

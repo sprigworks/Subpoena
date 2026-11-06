@@ -80,7 +80,9 @@ func TestHarnessAbsenceChecksCountAsWitnessed(t *testing.T) {
 		"harness.WatchWrites(t, w, id, harness.WriteRule{})",
 		"harness.NoCommit(w, db, id)", "harness.RequireNoCommit(t, w, db, id, tbl)", "harness.CheckNoCommit(t, w, db, id)",
 		"w.Delivered(id)", "harness.NoDelivery(w, id, nil)", "harness.RequireNoDelivery(t, w, id, nil)",
-		"harness.CheckNoDelivery(t, w, id, nil)", "harness.WatchDeliveries(t, w, id, harness.DeliveryRule{})"} {
+		"harness.CheckNoDelivery(t, w, id, nil)", "harness.WatchDeliveries(t, w, id, harness.DeliveryRule{})",
+		"harness.RequireNoRow(t, w, id, \"users\")", "harness.NoRow(w, id, \"users\")", "w.Committed(id)",
+		"harness.CheckNoRow(t, w, id, \"users\")", "harness.WatchRows(t, w, id, harness.RowRule{})"} {
 		imp := `"x/pkg/harness"`
 		if strings.HasPrefix(call, "w.") {
 			imp = `"x/pkg/harness"; "x/pkg/witness"`

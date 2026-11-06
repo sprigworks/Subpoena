@@ -5,11 +5,16 @@
 //	subpoena-witness [-cgroup-root dir] [-all] [-deliveries] [-out file] [-ready file]
 //	subpoena-witness -check-ready file   # exit 0 once the witness is attached
 //	subpoena-witness -file-root dir [-file-root dir ...] [-out file] [-ready file]
+//	subpoena-witness db -engine postgres|mysql -upstream host:port [-listen addr:port] [-out file] [-ready file]
 //
 // With -file-root it runs the tier-1 file witness (witness.FileWatch) in place
 // of the eBPF one, and needs no privilege. It writes its lines when told to
 // stop (SIGTERM or SIGINT), so a witness killed outright leaves no file, which
 // proves nothing, as it should.
+//
+// The db form runs the database witness (pkg/witness/dbproxy) instead, for a suite
+// in another language: point the application at the address it prints and writes
+// to -ready, stop it with SIGTERM, then read -out. It needs no privileges.
 //
 // By default only execs inside a session cgroup are written; -all writes every
 // exec on the machine, which an argument-based witness query needs. The line
@@ -42,6 +47,15 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "db" {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		if err := runDB(os.Args[2:], sig); err != nil {
+			fmt.Fprintln(os.Stderr, "subpoena-witness:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	root := flag.String("cgroup-root", "", "parent of the session cgroups (default $SUBPOENA_CGROUP_ROOT or /sys/fs/cgroup/subpoena)")
 	all := flag.Bool("all", false, "write every exec, not only those in a session cgroup")
 	deliveries := flag.Bool("deliveries", false, "also write every send from a session cgroup (needs the network witness's programs)")

@@ -92,6 +92,42 @@ const (
 	RecordStop  = "stop"
 )
 
+// EventRow is RowLine.Event. A line with an event field that is not a record is
+// a database witness's row line.
+const EventRow = "row"
+
+// RowLine is one line a database witness writes: one statement and what became
+// of it. Rows is -1 when the server gave no usable count. Unlike an exec line it
+// has no trace ID: it holds for every trace (Attribution "destination").
+type RowLine struct {
+	Time        time.Time `json:"time"`
+	Event       string    `json:"event"`
+	Engine      string    `json:"engine"`
+	Conn        int       `json:"conn"`
+	Dest        string    `json:"dest"`
+	Statement   string    `json:"statement"`
+	Verb        string    `json:"verb"`
+	Tables      []string  `json:"tables"`
+	Opaque      bool      `json:"opaque"`
+	Reason      string    `json:"reason,omitempty"`
+	Rows        int64     `json:"rows"`
+	Outcome     Outcome   `json:"outcome"`
+	Attribution string    `json:"attribution"`
+}
+
+// RowLineOf is e as a line of the witness file.
+func RowLineOf(e RowEvent) RowLine {
+	tables := e.Tables
+	if tables == nil {
+		tables = []string{} // the schema requires an array, never null
+	}
+	return RowLine{
+		Time: e.SeenAt, Event: EventRow, Engine: e.Engine, Conn: e.Conn, Dest: e.Dest.String(),
+		Statement: e.Statement, Verb: e.Verb, Tables: tables, Opaque: e.Opaque, Reason: e.Reason,
+		Rows: e.Rows, Outcome: e.Outcome, Attribution: string(e.Attribution),
+	}
+}
+
 // Log is a witness file read back: a Witness over what subpoena-witness
 // wrote, for tests that run the witness as a separate process.
 type Log struct {
@@ -99,6 +135,7 @@ type Log struct {
 	files      []FileLine
 	roots      []string
 	deliveries []DeliveryEvent
+	rows       []RowLine
 	coverage   string
 	health     error // the first capture fault in the file, or nil
 }
@@ -107,6 +144,7 @@ var (
 	_ Witness         = (*Log)(nil)
 	_ FileWitness     = (*Log)(nil)
 	_ DeliveryWitness = (*Log)(nil)
+	_ DBWitness       = (*Log)(nil)
 	_ HealthReporter  = (*Log)(nil)
 )
 
@@ -207,6 +245,20 @@ func ReadLog(r io.Reader) (*Log, error) {
 			l.deliveries = append(l.deliveries, e)
 			continue
 		}
+		if ev, ok := keys["event"]; ok && string(ev) != "null" {
+			row, err := readRow(b, keys)
+			if err != nil {
+				return nil, fmt.Errorf("witness: line %d: %w", n, err) //subpoena:enforcement
+			}
+			if open == 0 {
+				fault(fmt.Errorf("witness: line %d: a row outside any capture window", n)) //subpoena:enforcement
+			}
+			if row.Outcome == OutcomeUnknown {
+				fault(fmt.Errorf("witness: line %d: a write whose outcome was not seen", n)) //subpoena:enforcement
+			}
+			l.rows = append(l.rows, row)
+			continue
+		}
 		var ln Line
 		if err := json.Unmarshal(b, &ln); err != nil {
 			return nil, fmt.Errorf("witness: line %d: %w", n, err)
@@ -272,10 +324,37 @@ func readDelivery(b []byte) (DeliveryEvent, error) {
 	return e, nil
 }
 
-// knownKeys are the field names of Line, Record and DeliveryLine.
+// readRow decodes a row line. A row it cannot read could be a write, so anything
+// out of shape is an error, as for an exec, and never a skip.
+//
+//subpoena:enforcement_point
+func readRow(b []byte, keys map[string]json.RawMessage) (RowLine, error) {
+	var row RowLine
+	if err := json.Unmarshal(b, &row); err != nil {
+		return row, err
+	}
+	// A missing count would decode as zero rows, which is no effect at all.
+	if rows, ok := keys["rows"]; !ok || string(rows) == "null" || row.Rows < RowsUnknown {
+		return row, errors.New("no usable rows field") //subpoena:enforcement
+	}
+	if row.Event != EventRow {
+		return row, fmt.Errorf("unknown event %q", row.Event) //subpoena:enforcement
+	}
+	if row.Time.IsZero() {
+		return row, errors.New("no time") //subpoena:enforcement
+	}
+	switch row.Outcome {
+	case OutcomeRead, OutcomeCommitted, OutcomeRolledBack, OutcomeFailed, OutcomeUnknown:
+	default:
+		return row, fmt.Errorf("unknown outcome %q", row.Outcome) //subpoena:enforcement
+	}
+	return row, nil
+}
+
+// knownKeys are the field names of Line, Record, FileLine, DeliveryLine and RowLine.
 var knownKeys = func() []string {
 	var out []string
-	for _, v := range []any{Line{}, Record{}, FileLine{}, DeliveryLine{}} {
+	for _, v := range []any{Line{}, Record{}, FileLine{}, DeliveryLine{}, RowLine{}} {
 		t := reflect.TypeOf(v)
 		for i := 0; i < t.NumField(); i++ {
 			name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
@@ -368,6 +447,24 @@ func (l *Log) Wrote(traceID string) []FileEvent {
 	return out
 }
 
+// Committed returns every committed row line, for every trace: a database witness
+// attributes by destination, and a row line has no trace ID.
+func (l *Log) Committed(traceID string) []RowEvent {
+	var out []RowEvent
+	for _, r := range l.rows {
+		if r.Outcome != OutcomeCommitted {
+			continue
+		}
+		dest, _ := netip.ParseAddrPort(r.Dest)
+		out = append(out, RowEvent{
+			Engine: r.Engine, Conn: r.Conn, Dest: dest, Statement: r.Statement, Verb: r.Verb,
+			Tables: r.Tables, Opaque: r.Opaque, Reason: r.Reason, Rows: r.Rows, Outcome: r.Outcome,
+			Attribution: Attribution(r.Attribution), SeenAt: r.Time,
+		})
+	}
+	return out
+}
+
 // Delivered returns every send whose trace ID, read by the kernel side from its
 // cgroup, is traceID. Nothing the application controls is consulted. The empty
 // trace ID matches nothing.
@@ -392,3 +489,6 @@ func (l *Log) Covers(path string) bool {
 // Coverage is the stop record's account of what the capture might have
 // missed, or "" if it gives none.
 func (l *Log) Coverage() string { return l.coverage }
+
+// Rows returns the row lines read, in file order, whatever their outcome.
+func (l *Log) Rows() []RowLine { return append([]RowLine(nil), l.rows...) }
