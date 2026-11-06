@@ -204,7 +204,10 @@ There it is a crash. The cost is a passing parallel test that logs such a line a
 line beside a real failure: that kill reads crashed, and the run fails. Sequential tests keep the
 rule, and so do subtests in turn inside one parallel test. Under `--require-witness` it is a crash there too (see
 What forged output can do). A test with a `fail` event has not passed here,
-whatever `pass` sits beside it, so a printed pass does not make a crash a log line. Ginkgo reports a recovered panic as `[PANICKED]`,
+whatever `pass` sits beside it, so a printed pass does not make a crash a log line. testify's `suite` reports one it recovered through `t.Errorf`, as `test panicked:` after a
+file and line, and in a test that did not pass that counts as a crash too, wherever it falls on the
+line. A failed test that logs those words so reads crashed. Other frameworks that recover a panic
+and report it as a plain failure are not known to cross, and read as plain kills. Ginkgo reports a recovered panic as `[PANICKED]`,
 which counts as a crash wherever it falls in the suite, since Ginkgo runs a suite
 as one test in random order. Failures outside any test never count: a line
 printed while `TestMain` or `init` ran is package output, whatever its shape. A line a

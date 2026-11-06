@@ -1624,7 +1624,7 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 
 // crashLine reports whether an output event, ANSI colour gone, opens a crash report.
 func crashLine(output string) bool {
-	return crashRE.MatchString(output) || ginkgoPanicRE.MatchString(output)
+	return crashRE.MatchString(output) || ginkgoPanicRE.MatchString(output) || recoveredPanicRE.MatchString(output)
 }
 
 // crashEvents gives an exit event of exitCrashLine for each failed package with a
@@ -1674,6 +1674,13 @@ var exampleRE = regexp.MustCompile(`^Example[^/]*$`)
 
 // crashRE matches the first line of a panic or a runtime fatal error.
 var crashRE = regexp.MustCompile(`^(panic|fatal error): `)
+
+// recoveredPanicRE matches the failure testify's suite makes of a panic it recovered,
+// through t.Errorf, so at go test's indent with a file and line, not at column 0. It
+// has no anchor, so text printed with no newline cannot hide it. As with Ginkgo's
+// [PANICKED], a crash is what it reports, and a failed test's own line saying the same
+// costs a kill.
+var recoveredPanicRE = regexp.MustCompile(`\S+\.go:\d+: test panicked: `)
 
 // Ginkgo v2's failure report. It runs a whole suite as one test, which opens with
 // "Running Suite:", and colours its report, even under go test: a report counts

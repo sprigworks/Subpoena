@@ -357,3 +357,62 @@ func TestParallelTestsThatTookTurnsWereNotBeside(t *testing.T) {
 		t.Fatal("overlapping: not beside")
 	}
 }
+
+// Review 12, H5. testify's suite recovers a panic and reports it with t.Errorf, so the
+// line has no column 0 to read as a crash. This is its shape; a fixture module cannot
+// import testify. A crash is not a kill, whatever the test did with it.
+func TestAPanicAFrameworkRecoveredIsACrash(t *testing.T) {
+	t.Parallel()
+	const recovers = `defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("test panicked: %v\n%s", r, "goroutine 7 [running]:")
+			t.FailNow()
+		}
+	}()
+	if Check("mallory") == nil { var m map[string]int; m["x"] = 1 }`
+	for name, tc := range map[string]struct {
+		body    string
+		witness bool
+		want    Outcome
+	}{
+		"recovered":       {recovers, false, Crashed},
+		"under witness":   {recovers, true, Crashed},
+		"after open text": {`fmt.Print("no newline"); ` + recovers, false, Crashed},
+		"a plain failure": {`if Check("mallory") == nil { t.Fatal("mallory let in") }`, false, Killed},
+		// The cost: the same words logged by a test that fails read crashed.
+		"logged, and failed": {`t.Log("test panicked: a story"); if Check("mallory") == nil { t.Fatal("mallory let in") }`, false, Crashed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import ("fmt"; "testing")
+
+var _ = fmt.Sprint
+
+func TestRefused(t *testing.T) {
+	` + tc.body + `
+}
+`})
+			if r := killOf(t, Options{Target: dir, RequireWitness: tc.witness}); r.Outcome != tc.want {
+				t.Fatalf("got %+v", r)
+			}
+		})
+	}
+}
+
+// The same line in a test that passed is a log line, as any crash line is.
+func TestAPanicLineInAPassingTestIsALogLine(t *testing.T) {
+	t.Parallel()
+	dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import "testing"
+
+func TestLogs(t *testing.T) { t.Log("test panicked: a story") }
+
+func TestRefused(t *testing.T) { if Check("mallory") == nil { t.Fatal("mallory let in") } }
+`})
+	if r := killOf(t, Options{Target: dir}); r.Outcome != Killed {
+		t.Fatalf("got %+v", r)
+	}
+}

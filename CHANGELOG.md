@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A panic testify's `suite` recovered is a crash.** It reports one through `t.Errorf`, with no
+  line at column 0, so it read as a plain kill. `test panicked:` after a file and line, in a test
+  that did not pass, now counts as a crash, as Ginkgo's `[PANICKED]` does. New cost: a failed test
+  that logs those words reads crashed.
 - **A recovered panic in a parallel test is a crash.** Package testing's own frames can put the
   `panic:` line of one parallel test on another that passed, where it read as a log line and the
   test's plain failure as a kill, with nothing forged. A crash line on a passing test now counts if
