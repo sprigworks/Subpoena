@@ -1,6 +1,7 @@
 package witness
 
 import (
+	"fmt"
 	"net/netip"
 	"time"
 )
@@ -72,4 +73,10 @@ type DeliveryCoverage struct {
 	// Lost is failed ring-buffer reservations, host-wide. Above zero, Health
 	// fails as well.
 	Lost uint64
+}
+
+// String is the coverage in one line, as a stop record carries it.
+func (c DeliveryCoverage) String() string {
+	return fmt.Sprintf("%d send(s) reported, %d with an unknown peer; %d send(s) on sockets that are not inet, not reported; %d kernel event(s) lost",
+		c.Sends, c.UnknownPeers, c.OtherFamilySends, c.Lost)
 }

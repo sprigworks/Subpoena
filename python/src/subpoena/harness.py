@@ -506,3 +506,61 @@ def dial_to(*addrs: "witness.AddrPort | str | tuple[str, int]") -> DialMatch:
         d = witness.AddrPort.of(e.dest)
         return any(d.addr == a.addr and (a.port == 0 or a.port == d.port) for a in want)
     return match
+
+
+# Delivery checks: absence of a send to a peer, over the witness file that
+# subpoena-witness -deliveries writes (subpoena.witness.Log, or anything with
+# delivered(trace_id) and health()). A port of pkg/harness's NoDelivery,
+# RequireNoDelivery, CheckNoDelivery and DeliveryTo. There is no tier-1 delivery
+# witness in any language, and running this one stays Go-only.
+
+DeliveryMatch = Callable[[witness.DeliveryEvent], bool]
+
+
+def no_delivery(w: Any, trace_id: str, match: Optional[DeliveryMatch] = None) -> "tuple[Verdict, Optional[str]]":
+    """Fail if the witness saw a send for trace_id that match selects (None:
+    any send, which on a broker includes its acks; delivery_to names a peer),
+    even from an unhealthy capture. With none, missing or bad capture health
+    is Inconclusive; Pass needs a healthy witness."""
+    hits = [e for e in w.delivered(trace_id) if match is None or match(e)]
+    if hits:
+        return Verdict.FAIL, f"witness saw sends for {trace_id}: {hits}"
+    err = _capture_health(w)
+    if err is not None:
+        return Verdict.INCONCLUSIVE, err
+    return Verdict.PASS, None
+
+
+def require_no_delivery(w: Any, trace_id: str, match: Optional[DeliveryMatch] = None) -> None:
+    """Fail the test (AssertionError) unless a healthy witness saw no matching
+    send for trace_id. Inconclusive fails too."""
+    __tracebackhide__ = True
+    _raise(check_no_delivery(w, trace_id, match))
+
+
+def check_no_delivery(w: Any, trace_id: str, match: Optional[DeliveryMatch] = None) -> Optional[str]:
+    """require_no_delivery without failing the test: the failure message, or
+    None if the check passed."""
+    v, err = no_delivery(w, trace_id, match)
+    if v is not Verdict.PASS:
+        return f"{_tag(v)}: no delivery for {trace_id}: {v}: {err}"
+    return None
+
+
+def delivery_to(*peers: "witness.AddrPort | str | tuple[str, int]") -> DeliveryMatch:
+    """Match sends that may have gone to any of the given peers ("host:port",
+    a (host, port) pair, or an AddrPort). A peer is the far end as the sender
+    sees it: for a subscriber, its own socket's address and port, not the
+    broker's listener. Port 0 matches every port of the address, and an
+    unspecified address ("0.0.0.0:40001") the port on any address. A send whose
+    peer the witness could not read matches, because it may have gone there.
+    With no peers it matches every send: a rule naming no one must not pass for
+    lack of a name."""
+    want = [witness.AddrPort.of(p) for p in peers]
+
+    def match(e: witness.DeliveryEvent) -> bool:
+        if not want or e.peer_unknown:
+            return True
+        return any((a.addr.is_unspecified or e.peer.addr == a.addr)
+                   and (a.port == 0 or e.peer.port == 0 or a.port == e.peer.port) for a in want)
+    return match

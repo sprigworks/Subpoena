@@ -35,7 +35,8 @@ class Finding:
 _SKIP = {'testdata', 'vendor', 'node_modules', '__pycache__', 'venv'}
 _FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
 _WITNESS = {'no_spawn', 'require_no_spawn', 'check_no_spawn', 'watch_spawns',
-            'no_dial', 'require_no_dial', 'check_no_dial', 'watch_dials', 'check_spawns'}
+            'no_dial', 'require_no_dial', 'check_no_dial', 'watch_dials', 'check_spawns',
+            'no_delivery', 'require_no_delivery', 'check_no_delivery'}
 _QUERIES = {'require_absent': 1, 'require_exists': 1, 'absent': 0, 'exists': 0, 'query': 0}
 
 
@@ -269,7 +270,7 @@ class _File:
             self.collected = True
         if self.test and fn is not None and self.function_depth == 1:
             if (_harness(symbol) and name in _WITNESS) or (
-                    symbol.startswith('subpoena.witness.') and name in {'spawned', 'dialed'}):
+                    symbol.startswith('subpoena.witness.') and name in {'spawned', 'dialed', 'delivered'}):
                 self.witnessed = True
         query_call = _harness(symbol) or not symbol
         if self.test and query_call and name in {'require_absent', 'absent'} and not guarded:

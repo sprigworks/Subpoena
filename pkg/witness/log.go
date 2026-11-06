@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"reflect"
 	"strings"
 	"time"
@@ -31,6 +32,26 @@ type Line struct {
 	Attribution string    `json:"attribution,omitempty"`
 }
 
+// DeliveryLine is one line of a delivery capture: one send seen by the kernel
+// (netbpf). A line with a delivery_op field is a DeliveryLine; docs/ports.md
+// (W8) has the rest. Peer and Local are "address:port", "[address]:port" for
+// IPv6. An empty Peer means the send's peer could not be read.
+type DeliveryLine struct {
+	Time        time.Time `json:"time"`
+	DeliveryOp  string    `json:"delivery_op"`
+	PID         int       `json:"pid"`
+	HostPID     int       `json:"host_pid"`
+	Comm        string    `json:"comm"`
+	Protocol    string    `json:"protocol"`
+	Peer        string    `json:"peer"`
+	Local       string    `json:"local"`
+	Bytes       uint64    `json:"bytes"`
+	CgroupID    uint64    `json:"cgroup_id"`
+	Cgroup      string    `json:"cgroup"`
+	TraceID     string    `json:"trace_id,omitempty"`
+	Attribution string    `json:"attribution,omitempty"`
+}
+
 // Record is a line that marks a capture window: "start" once the witness is
 // attached, "stop" when it has stopped, with the capture's health. A record
 // line is told from an exec line by its record field.
@@ -39,6 +60,9 @@ type Record struct {
 	Record  string    `json:"record"`
 	Healthy bool      `json:"healthy"`
 	Error   string    `json:"error,omitempty"`
+	// Coverage, on a stop record, says in one line what the capture might have
+	// missed even when healthy.
+	Coverage string `json:"coverage,omitempty"`
 }
 
 // Record kinds.
@@ -50,13 +74,16 @@ const (
 // Log is a witness file read back: a Witness over what subpoena-witness
 // wrote, for tests that run the witness as a separate process.
 type Log struct {
-	lines  []Line
-	health error // the first capture fault in the file, or nil
+	lines      []Line
+	deliveries []DeliveryEvent
+	coverage   string
+	health     error // the first capture fault in the file, or nil
 }
 
 var (
-	_ Witness        = (*Log)(nil)
-	_ HealthReporter = (*Log)(nil)
+	_ Witness         = (*Log)(nil)
+	_ DeliveryWitness = (*Log)(nil)
+	_ HealthReporter  = (*Log)(nil)
 )
 
 // ReadLog reads subpoena-witness JSON lines. Blank lines and unknown fields
@@ -99,6 +126,9 @@ func ReadLog(r io.Reader) (*Log, error) {
 				return nil, fmt.Errorf("witness: line %d: no time", n) //subpoena:enforcement
 			}
 			records++
+			if rec.Coverage != "" {
+				l.coverage = rec.Coverage
+			}
 			switch rec.Record {
 			case RecordStart:
 				if open != 0 {
@@ -117,6 +147,17 @@ func ReadLog(r io.Reader) (*Log, error) {
 			default:
 				return nil, fmt.Errorf("witness: line %d: unknown record %q", n, rec.Record) //subpoena:enforcement
 			}
+			continue
+		}
+		if op, ok := keys["delivery_op"]; ok && string(op) != "null" {
+			e, err := readDelivery(b)
+			if err != nil {
+				return nil, fmt.Errorf("witness: line %d: %w", n, err) //subpoena:enforcement
+			}
+			if open == 0 {
+				fault(fmt.Errorf("witness: line %d: a delivery outside any capture window", n)) //subpoena:enforcement
+			}
+			l.deliveries = append(l.deliveries, e)
 			continue
 		}
 		var ln Line
@@ -150,10 +191,44 @@ func ReadLog(r io.Reader) (*Log, error) {
 	return l, nil
 }
 
-// knownKeys are the field names of Line and Record.
+// readDelivery reads a delivery line. A peer that does not parse is an error,
+// never an unknown peer: an empty one is how the witness says it could not tell.
+func readDelivery(b []byte) (DeliveryEvent, error) {
+	var d DeliveryLine
+	if err := json.Unmarshal(b, &d); err != nil {
+		return DeliveryEvent{}, err
+	}
+	if d.Time.IsZero() {
+		return DeliveryEvent{}, errors.New("no time")
+	}
+	switch Op(d.DeliveryOp) {
+	case OpDeliver, OpSendmsg:
+	default:
+		return DeliveryEvent{}, fmt.Errorf("unknown delivery_op %q", d.DeliveryOp)
+	}
+	e := DeliveryEvent{
+		PID: d.PID, Comm: d.Comm, Op: Op(d.DeliveryOp), Protocol: d.Protocol, Bytes: d.Bytes,
+		Cgroup: d.Cgroup, CgroupID: d.CgroupID, TraceID: d.TraceID, Attribution: Attribution(d.Attribution), SeenAt: d.Time,
+	}
+	var err error
+	if d.Peer != "" {
+		if e.Peer, err = netip.ParseAddrPort(d.Peer); err != nil {
+			return DeliveryEvent{}, fmt.Errorf("peer: %w", err)
+		}
+		e.Peer = netip.AddrPortFrom(e.Peer.Addr().Unmap(), e.Peer.Port())
+	}
+	if d.Local != "" {
+		if e.Local, err = netip.ParseAddrPort(d.Local); err != nil {
+			return DeliveryEvent{}, fmt.Errorf("local: %w", err)
+		}
+	}
+	return e, nil
+}
+
+// knownKeys are the field names of Line, Record and DeliveryLine.
 var knownKeys = func() []string {
 	var out []string
-	for _, v := range []any{Line{}, Record{}} {
+	for _, v := range []any{Line{}, Record{}, DeliveryLine{}} {
 		t := reflect.TypeOf(v)
 		for i := 0; i < t.NumField(); i++ {
 			name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
@@ -193,7 +268,7 @@ func (l *Log) Health() error {
 	return nil
 }
 
-// Len returns the number of lines read.
+// Len returns the number of exec lines read.
 func (l *Log) Len() int { return len(l.lines) }
 
 // Lines returns the lines read, in file order.
@@ -229,3 +304,23 @@ func (l *Log) Spawned(traceID string) []ProcessEvent {
 	}
 	return out
 }
+
+// Delivered returns every send whose trace ID, read by the kernel side from its
+// cgroup, is traceID. Nothing the application controls is consulted. The empty
+// trace ID matches nothing.
+func (l *Log) Delivered(traceID string) []DeliveryEvent {
+	if traceID == "" {
+		return nil
+	}
+	var out []DeliveryEvent
+	for _, e := range l.deliveries {
+		if e.TraceID == traceID {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// Coverage is the stop record's account of what the capture might have missed
+// even when healthy, or "" if it gives none.
+func (l *Log) Coverage() string { return l.coverage }

@@ -76,7 +76,10 @@ def test_the_schema_names_the_fields_the_reader_checks():
     schema = json.loads((ROOT / "docs" / "witness-event.schema.json").read_text())
     from subpoena import witness
     exec_fields = set(witness._INT_FIELDS) | set(witness._STR_FIELDS) | {"time", "args"}
-    record_fields = {"time", "record", "healthy", "error"}
-    assert exec_fields | record_fields == set(schema["properties"])
+    record_fields = {"time", "record", "healthy", "error", "coverage"}
+    delivery_fields = set(witness._DELIVERY_STR_FIELDS) | set(witness._INT_FIELDS) | {"time", "bytes"}
+    assert exec_fields | record_fields | delivery_fields == set(schema["properties"])
+    assert set(witness._KNOWN) == set(schema["properties"])
+    assert schema["else"]["if"] == {"required": ["delivery_op"]}
     assert schema["if"] == {"required": ["record"]}
     assert schema["additionalProperties"] is True

@@ -93,6 +93,22 @@ type Event struct {
 	Attribution witness.Attribution
 }
 
+// DeliveryLine is e as a line of the witness file, for an event that is a send.
+func (e Event) DeliveryLine() witness.DeliveryLine {
+	l := witness.DeliveryLine{
+		Time: e.Time.UTC(), DeliveryOp: string(e.Op), PID: e.PID, HostPID: e.HostPID, Comm: e.Comm,
+		Protocol: e.Protocol, Bytes: e.Bytes, CgroupID: e.CgroupID, Cgroup: e.Cgroup,
+		TraceID: e.TraceID, Attribution: string(e.Attribution),
+	}
+	if e.Dest.IsValid() {
+		l.Peer = e.Dest.String()
+	}
+	if e.Local.IsValid() {
+		l.Local = e.Local.String()
+	}
+	return l
+}
+
 // Witness implements witness.NetworkWitness with the eBPF programs in this
 // package.
 type Witness struct {

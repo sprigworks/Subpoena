@@ -130,7 +130,11 @@ func TestLineMatchesTheSchema(t *testing.T) {
 		AdditionalProperties *bool                     `json:"additionalProperties"`
 		If                   branch                    `json:"if"`
 		Then                 branch                    `json:"then"`
-		Else                 branch                    `json:"else"`
+		Else                 struct {
+			If   branch `json:"if"`
+			Then branch `json:"then"`
+			Else branch `json:"else"`
+		} `json:"else"`
 	}
 	if err := json.Unmarshal(b, &schema); err != nil {
 		t.Fatal(err)
@@ -155,8 +159,16 @@ func TestLineMatchesTheSchema(t *testing.T) {
 	}
 	lineFields, lineReq := fieldsOf(Line{})
 	recFields, recReq := fieldsOf(Record{})
+	delFields, delReq := fieldsOf(DeliveryLine{})
+	if !reflect.DeepEqual(schema.Else.If.Required, []string{"delivery_op"}) {
+		t.Errorf("a line is a delivery exactly when it has a delivery_op field; else.if = %v", schema.Else.If.Required)
+	}
+	sort.Strings(schema.Else.Then.Required)
+	if !reflect.DeepEqual(delReq, schema.Else.Then.Required) {
+		t.Errorf("delivery line required:\n DeliveryLine %v\n schema       %v", delReq, schema.Else.Then.Required)
+	}
 	all := map[string]bool{}
-	for _, f := range append(lineFields, recFields...) {
+	for _, f := range append(append(lineFields, recFields...), delFields...) {
 		all[f] = true
 	}
 	var fields, props []string
@@ -169,12 +181,12 @@ func TestLineMatchesTheSchema(t *testing.T) {
 	sort.Strings(fields)
 	sort.Strings(props)
 	sort.Strings(schema.Then.Required)
-	sort.Strings(schema.Else.Required)
+	sort.Strings(schema.Else.Else.Required)
 	if !reflect.DeepEqual(fields, props) {
 		t.Errorf("fields:\n Line+Record %v\n schema      %v", fields, props)
 	}
-	if !reflect.DeepEqual(lineReq, schema.Else.Required) {
-		t.Errorf("exec line required:\n Line   %v\n schema %v", lineReq, schema.Else.Required)
+	if !reflect.DeepEqual(lineReq, schema.Else.Else.Required) {
+		t.Errorf("exec line required:\n Line   %v\n schema %v", lineReq, schema.Else.Else.Required)
 	}
 	if !reflect.DeepEqual(recReq, schema.Then.Required) {
 		t.Errorf("record required:\n Record %v\n schema %v", recReq, schema.Then.Required)
