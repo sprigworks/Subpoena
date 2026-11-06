@@ -766,7 +766,7 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 	if len(failed) > 0 {
 		narrow = slices.Concat(args[:len(args)-3], failed, args[len(args)-2:])
 	}
-	first := failedTests(raw)
+	first := failedTests(raw, o.key)
 	whole := args[:max(0, len(args)-2)] // without -test.failfast
 	withMutant := func(a []string) (string, error, error) {
 		if err := sb.fresh(); err != nil {
@@ -952,7 +952,7 @@ func notAKill(raw string, err error, key string, first map[testID]bool) string {
 	if _, _, crashed := firstFailure(raw, key); crashed {
 		return "the run with the mutant crashed the second time"
 	}
-	for k := range failedTests(raw) {
+	for k := range failedTests(raw, key) {
 		if first[k] {
 			return ""
 		}
@@ -1011,60 +1011,72 @@ func idOf(pkg, test string) testID {
 // text can name a test that did not fail. A package that gave no clean failure
 // has none here, since the test a crash ended is not a test that noticed.
 //
-// go test makes a fail event of any "--- FAIL:" line that carries the byte the test
-// binary frames its own lines with, and a test can print that byte, so a fail event
-// alone is no proof, and nor is a pass event. A test ran, and its last ending decides:
-// its own printed text comes before its real end, so a printed fail is followed by the
-// real pass, and a printed pass by the real fail. That goes only while the pass is the
-// last thing to happen: once another test has started, a fail event for a test that
-// passed is that test's printing, not a real end, or any later test could fail one
-// that passed. So a printed pass in a test that then runs beside another costs its kill,
-// and so does one in an Example's output, which comes after the real fail. What is left
-// is printed text that gets in before the next test starts, and a test that prints the
-// run line and the fail line of a test that never ran, which go test cannot tell from
-// the real thing. See docs/architecture.md.
+// go test makes a fail or pass event of any "--- FAIL:" or "--- PASS:" line that
+// carries the byte the test binary frames its own lines with, and a test can print
+// that byte, so neither event alone is proof. A fail event counts only for a test
+// that ran, and a pass ends a test: a test with both reads as not failed, in either
+// order, as the two can't be told apart by what is printed where. A printed pass can
+// so cost a real plain kill, which reads unconfirmed, and the run stays red. That is
+// the side to lose on: the other way a fail printed after a real pass, by TestMain
+// say, is a kill no test made. Only a witness failure outlives a pass, as its mark
+// is what printed text does not have. What is left is a test that prints the run line
+// and the fail line of a test that never ran, which go test cannot tell from the real
+// thing. See docs/architecture.md.
 //
 //subpoena:enforcement_point
-func failedTests(raw string) map[testID]bool {
-	clean := map[string]bool{}
+func failedTests(raw, key string) map[testID]bool {
+	clean, marked := map[string]bool{}, map[eventKey]bool{}
 	for _, f := range failures(raw) {
 		clean[f.pkg] = true
+		if harnessWitness(f.head, key) {
+			marked[eventKey{f.pkg, f.test}] = true
+		}
 	}
-	type key [2]string
-	ran, ended, last, failed := map[key]bool{}, map[key]bool{}, map[key]bool{}, map[key]bool{}
+	tests := map[testID]bool{}
+	for k, e := range endings(raw) {
+		if !e.failed || !clean[k[0]] {
+			continue
+		}
+		if !e.ran {
+			continue //subpoena:enforcement
+		}
+		if (e.passed || e.skipped) && !marked[k] {
+			continue //subpoena:enforcement
+		}
+		tests[idOf(k[0], k[1])] = true
+	}
+	return tests
+}
+
+// eventKey is a test by its exact name in its package, subtests apart.
+type eventKey [2]string
+
+// ending is what a test's events say happened to it. Any of it can be printed text.
+type ending struct{ ran, passed, skipped, failed bool }
+
+// endings reads the events of each test in raw.
+func endings(raw string) map[eventKey]ending {
+	all := map[eventKey]ending{}
 	for _, line := range strings.Split(raw, "\n") {
 		var e failEvent
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || e.Test == "" {
 			continue
 		}
-		k := key{e.Package, e.Test}
+		k := eventKey{e.Package, e.Test}
+		end := all[k]
 		switch e.Action {
 		case "run":
-			ran[k] = true
-			for p := range last {
-				if p[0] == e.Package && !strings.HasPrefix(e.Test, p[1]+"/") {
-					delete(last, p) //subpoena:enforcement
-				}
-			}
-		case "pass", "skip":
-			ended[k], last[k] = true, true
-			if failed[k] {
-				delete(failed, k) //subpoena:enforcement
-			}
+			end.ran = true
+		case "pass":
+			end.passed = true
+		case "skip":
+			end.skipped = true
 		case "fail":
-			if !ran[k] || ended[k] && !last[k] {
-				continue //subpoena:enforcement
-			}
-			failed[k] = true
+			end.failed = true
 		}
+		all[k] = end
 	}
-	tests := map[testID]bool{}
-	for k := range failed {
-		if clean[k[0]] {
-			tests[idOf(k[0], k[1])] = true
-		}
-	}
-	return tests
+	return all
 }
 
 // repeatEvidence is the kind and message of a repeat's evidence from the tests of
@@ -1075,7 +1087,7 @@ func failedTests(raw string) map[testID]bool {
 //
 //subpoena:enforcement_point
 func repeatEvidence(raw, key string, first map[testID]bool) (Evidence, string) {
-	failedNow := failedTests(raw)
+	failedNow := failedTests(raw, key)
 	seen := map[testID]bool{}
 	ev, msg := EvidenceOther, emptyFailure
 	found := false

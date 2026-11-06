@@ -54,3 +54,52 @@ func TestOnlyAPackageThatExitedOneFails(t *testing.T) {
 		t.Errorf("failures: %+v", fs)
 	}
 }
+
+// Review 10, H3. Every test passed, TestMain exited 1 on the mutant, and a fail was
+// printed after the real pass. That is no kill, from whichever code printed it.
+func TestAFailPrintedAfterARealPassIsNoKill(t *testing.T) {
+	t.Parallel()
+	const print = `fmt.Print("\x16--- FAIL: TestLast (0.00s)\n    a_test.go:4: mallory let in\n")`
+	for name, printer := range map[string]string{
+		"TestMain": "if mini.Check(\"mallory\") == nil { " + print + "; code = 1 }",
+		"teardown": print + "; if mini.Check(\"mallory\") == nil { code = 1 }",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := module(t, map[string]string{"gate.go": gate3, "a/a_test.go": `package a
+
+import ("fmt"; "os"; "testing"; "mini")
+
+func TestLast(t *testing.T) { if mini.Check("admin") != nil { t.Fatal("admin refused") } }
+func TestMain(m *testing.M) {
+	code := m.Run()
+	` + printer + `
+	os.Exit(code)
+}
+`})
+			if r := killOf(t, Options{Target: dir}); r.Outcome != Unconfirmed {
+				t.Fatalf("no test failed: %+v", r)
+			}
+		})
+	}
+}
+
+// A printed pass costs a plain kill, and says so: red, and no kill. This is the side
+// to lose on, and the test holds it there. A witness failure keeps its kill.
+func TestAPrintedPassCostsAPlainKillLoudly(t *testing.T) {
+	t.Parallel()
+	dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import ("fmt"; "testing")
+
+func TestRefused(t *testing.T) {
+	if Check("mallory") == nil {
+		fmt.Print("\x16--- PASS: TestRefused (0.00s)\n")
+		t.Error("mallory let in")
+	}
+}
+`})
+	if r := killOf(t, Options{Target: dir}); r.Outcome != Unconfirmed {
+		t.Fatalf("got %+v", r)
+	}
+}

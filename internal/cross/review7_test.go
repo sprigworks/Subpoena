@@ -322,7 +322,7 @@ func TestAFailEventNeedsATestThatRanAndDidNotPass(t *testing.T) {
 		event("fail", "p", "TestPassed", "") + event("fail", "p", "TestSkipped", "") +
 		event("fail", "p", "TestNeverRan", "") + event("fail", "p", "TestReal", "") +
 		event("fail", "p", "", "") + exitEvent("p", "1") + "\n"
-	got := failedTests(raw)
+	got := failedTests(raw, testKey)
 	if len(got) != 1 || !got[testID{"p", "TestReal"}] {
 		t.Fatalf("tests %v", got)
 	}

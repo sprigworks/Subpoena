@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sprigworks/subpoena/internal/crossmark"
 )
 
 // Review 9, H1. The test that caught the mutant has its name in a package that
@@ -168,8 +170,7 @@ func TestLater(t *testing.T) {
 	}
 }
 
-// Review 9, M1. A printed pass comes before the real fail, so the test's last ending
-// decides, and the real kill stands, witness evidence included.
+// Review 9, M1. A witness failure outlives a printed pass, so that real kill stands.
 func TestAPrintedPassDoesNotUndoARealWitnessKill(t *testing.T) {
 	t.Parallel()
 	for name, body := range map[string]string{
@@ -194,24 +195,36 @@ func TestRefused(t *testing.T) {
 	}
 }
 
-func TestATestsLastEndingDecides(t *testing.T) {
+// Review 10, H3 undid the rest of review 9's M1: a pass ends a test, whichever way
+// round its events came, and only a mark outlives one.
+func TestAPassEndsATestUnlessAWitnessFailureOutlivesIt(t *testing.T) {
 	const a, b = "TestA", "TestB"
 	end := event("fail", "p", "", "") + exitEvent("p", "1") + "\n"
 	boom := event("output", "p", a, "    a_test.go:1: boom\n")
+	mark := event("output", "p", a, "    a_test.go:1: "+crossmark.Sign(testKey, "witness: boom")+"\n")
+	forged := event("output", "p", a, "    a_test.go:1: "+crossmark.Sign("not the key", "witness: boom")+"\n")
+	bare := event("output", "p", a, "    a_test.go:1: witness: boom\n")
 	real := event("run", "p", b, "") + event("output", "p", b, "    b_test.go:1: boom\n") + event("fail", "p", b, "")
+	run, pass, fail := event("run", "p", a, ""), event("pass", "p", a, ""), event("fail", "p", a, "")
 	for name, tc := range map[string]struct {
 		raw  string
 		want []string
 	}{
-		"printed pass, real fail":        {event("run", "p", a, "") + event("pass", "p", a, "") + boom + event("fail", "p", a, "") + end, []string{a}},
-		"printed fail, real pass":        {event("run", "p", a, "") + event("fail", "p", a, "") + event("pass", "p", a, "") + real + end, []string{b}},
-		"printed fail, real skip":        {event("run", "p", a, "") + event("fail", "p", a, "") + event("skip", "p", a, "") + real + end, []string{b}},
-		"real pass, a later test prints": {event("run", "p", a, "") + event("pass", "p", a, "") + real + event("fail", "p", a, "") + end, []string{b}},
-		"a subtest starts in between":    {event("run", "p", a, "") + event("pass", "p", a, "") + event("run", "p", a+"/s", "") + event("pass", "p", a+"/s", "") + boom + event("fail", "p", a, "") + end, []string{a}},
-		"another package's test starts":  {event("run", "p", a, "") + event("pass", "p", a, "") + event("run", "q", b, "") + boom + event("fail", "p", a, "") + end, []string{a}},
+		"pass then fail, either printed": {run + pass + boom + fail + end, nil},
+		"printed fail, real pass":        {run + fail + pass + real + end, []string{b}},
+		"printed fail, real skip":        {run + fail + event("skip", "p", a, "") + real + end, []string{b}},
+		"real pass, a later test prints": {run + pass + real + fail + end, []string{b}},
+		"a subtest starts in between":    {run + pass + event("run", "p", a+"/s", "") + event("pass", "p", a+"/s", "") + boom + fail + end, nil},
+		"another package's test starts":  {run + pass + event("run", "q", b, "") + boom + fail + end, nil},
+		"witness, printed pass first":    {run + pass + mark + fail + end, []string{a}},
+		"witness, printed pass after":    {run + mark + fail + pass + end, []string{a}},
+		"witness, printed skip first":    {run + event("skip", "p", a, "") + mark + fail + end, []string{a}},
+		"another key's mark":             {run + pass + forged + fail + end, nil},
+		"a tag with no mark":             {run + pass + bare + fail + end, nil},
+		"a witness that never ran":       {pass + mark + fail + end, nil},
 	} {
 		var got []string
-		for k := range failedTests(tc.raw) {
+		for k := range failedTests(tc.raw, testKey) {
 			got = append(got, k.test)
 		}
 		if !slices.Equal(got, tc.want) {

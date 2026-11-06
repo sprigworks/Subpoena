@@ -110,19 +110,18 @@ test stopped the first run. That costs a longer repeat, a whole suite where the
 first run could stop early, and `-failfast` in `GOFLAGS` does not change it. It must be a clean kill, with a test of the first run
 among the failed, read in Go from go test's `fail` events, since a test's output can
 print the line go test prints for a failure. A test can print the byte go test frames
-its own lines with too, and go test then makes a `fail` or `pass` event of that text. So a
-test must have a `run` event, and its last ending decides: its own printed text comes
-before its real end, so a printed pass is followed by the real fail, and a printed fail by the
-real pass. A `fail` after a `pass` counts only until another test starts (a subtest of its
-own aside), since after that it is a later test's printing about one that passed. That leaves
-limits both ways. A printed pass in a test that then runs beside another, such as a parallel
-one, or one in a failing Example's output, which comes after the real fail, still costs a
-real kill: it reads unconfirmed, and the run stays red. Printed fail text that gets in after a
-test's real pass and before the next test starts, from a leaked goroutine, a test beside it or
-`TestMain`, reads as that test's failure. Like a test that
-prints the framed run line and fail line of a test that never ran, go test cannot tell that
-from the real thing, and neither can cross. It still needs a run that is red for a real reason
-twice with the mutant, and green without it. In Go a repeat where
+its own lines with too, and go test then makes a `fail` or `pass` event of that text. So
+printed text must not make a kill, and where that costs a real one, it does. A package counts
+only if its binary exited 1, and the exit code is one thing a test cannot print, so a printed
+fail in a package that went green is nothing, whatever crashed elsewhere. A test must have a
+`run` event, and a pass ends it: a test with both a `pass` and a `fail` event reads as not
+failed, whichever came first, as what is printed and what is real can come in either order.
+Only a witness failure with this run's mark outlives a pass, printed ahead of it or after. That
+has a price, paid on purpose. A printed pass in a test with a plain failure costs that kill,
+wherever it lands: the run reads unconfirmed, and stays red. A lost kill says so, and a false
+one says nothing. What is left is a test that prints the framed run line and fail line of a test
+that never ran, in a package that exits 1: go test cannot tell that from the real thing, and
+neither can cross. In Go a repeat where
 a package crashes, or that hangs, can do so in a test the first run never reached, and
 under `-shuffle` such a test can come first. So the first run's own command goes again,
 as a test can need what ran before it. If that stops short too, each package with a test of

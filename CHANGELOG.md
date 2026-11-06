@@ -23,10 +23,12 @@
   self-report. Such a line now counts only in a test with no other failure message, or when it
   carries the harness's mark.
 - **A printed pass no longer turns a witness kill into unconfirmed.** Code under test could print
-  go test's framed `--- PASS:` line ahead of its real failure, and the test then read as passed.
-  A test's last ending now decides, and a fail after a pass counts only until another test
-  starts. A printed pass in a test running beside another, or in an Example's output, still
-  reads unconfirmed. See `docs/architecture.md`.
+  go test's framed `--- PASS:` line beside its real failure, and the test then read as passed. A
+  witness failure with the run's mark now outlives a pass, wherever the pass lands. A printed
+  pass still costs a plain kill: that reads unconfirmed, and the run stays red.
+- **A fail printed after a real pass is no kill.** Every test passed, `TestMain` exited 1 on the
+  mutant, and text printed after the last test read as that test's failure. A pass ends a test,
+  so only a witness failure's mark counts after one.
 - **A package that hangs no longer costs another package's kill.** Every package runs now, and a
   timed-out run went straight to `enforcement-mutant-timeout`, with a clean failure in the
   output. A run with a clean failure in a package that finished now goes to the repeat, and a

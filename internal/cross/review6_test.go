@@ -188,7 +188,7 @@ func TestFailedTestsComeFromFailEvents(t *testing.T) {
 	if got := failingTests(raw); strings.Join(got, " ") != "TestB/sub TestB" {
 		t.Fatalf("names %v", got)
 	}
-	got := failedTests(raw)
+	got := failedTests(raw, testKey)
 	if len(got) != 1 || !got[testID{"p", "TestB"}] {
 		t.Fatalf("tests %v", got)
 	}
@@ -204,7 +204,7 @@ func TestAFailedTestIsNamedWithItsPackage(t *testing.T) {
 			exitEvent(pkg, "1"),
 		}, "\n")
 	}
-	if why := notAKill(line("b"), fmt.Errorf("exit 1"), "k", failedTests(line("a"))); !strings.Contains(why, "different test") {
+	if why := notAKill(line("b"), fmt.Errorf("exit 1"), "k", failedTests(line("a"), testKey)); !strings.Contains(why, "different test") {
 		t.Fatalf("why = %q", why)
 	}
 }
