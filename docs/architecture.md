@@ -225,7 +225,7 @@ after another has caught it: a run that timed out with a clean failure in a pack
 finished goes to the repeat, and with none it is a timeout. That flag can also turn a
 `TestMain` that calls `m.Run` a second time green, since the second run skips every test, and a
 first `m.Run` whose output was thrown away leaves no `fail` event to show it. So every green run
-goes again without the flag: a mutant reads survived only if that run is green too. This costs a
+goes again without the flag, on a fresh copy: a mutant reads survived only if that run is green too. This costs a
 survivor one more suite run, and gives a flake one more first try at a kill, which still has to
 fail again in the same test and pass three times without the mutant. A red one can also say `PASS` after
 a real failure, so when that leaves no failed test, the failed tests come from a run without the

@@ -681,9 +681,13 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			// Green proves nothing yet. -test.failfast can be why: a TestMain that
 			// calls m.Run again gets a run of nothing, and exit 0, and a first m.Run
 			// that threw its output away leaves no fail event to say so. So every
-			// green run goes again as it would have run. Red there still has to
-			// hold as a kill. The cost is one more test command for a survivor.
+			// green run goes again as it would have run, on a fresh copy, as what the
+			// first run left there must not turn a survivor red. Red there still has
+			// to hold as a kill. The cost is one more test command for a survivor.
 			fmt.Fprintf(o.Log, "  green; running without -test.failfast\n")
+			if err := sb.freshMutant(mutated); err != nil {
+				return res, err
+			}
 			run, err = o.run.test(ctx, o, sb, testArgs[:len(testArgs)-2]...)
 			if ctx.Err() != nil {
 				return res, fmt.Errorf("cross: run stopped: %w", ctx.Err())
@@ -770,13 +774,8 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, run 
 	}
 	whole := args[:max(0, len(args)-2)] // without -test.failfast
 	withMutant := func(a []string) (testRun, error, error) {
-		if err := sb.fresh(); err != nil {
+		if err := sb.freshMutant(mutated); err != nil {
 			return testRun{}, nil, err
-		}
-		for file, b := range mutated {
-			if err := os.WriteFile(filepath.Join(sb.dir, filepath.FromSlash(file)), b, 0o644); err != nil {
-				return testRun{}, nil, err
-			}
 		}
 		out, runErr := o.run.test(ctx, o, sb, a...)
 		if ctx.Err() != nil {
@@ -2650,6 +2649,19 @@ func (sb sandbox) fresh() error {
 	}
 	if err := copyTree(sb.template, sb.dir); err != nil {
 		return fmt.Errorf("cross: copy tree: %w", err)
+	}
+	return nil
+}
+
+// freshMutant is fresh with the mutated files written back.
+func (sb sandbox) freshMutant(mutated map[string][]byte) error {
+	if err := sb.fresh(); err != nil {
+		return err
+	}
+	for file, b := range mutated {
+		if err := os.WriteFile(filepath.Join(sb.dir, filepath.FromSlash(file)), b, 0o644); err != nil {
+			return err
+		}
 	}
 	return nil
 }
