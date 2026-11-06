@@ -404,7 +404,7 @@ func TestStopReturnsWithAGapWhileWritersRun(t *testing.T) {
 	go func() { done <- w.Stop() }()
 	select {
 	case err := <-done:
-		if err == nil || !hasGap(w, GapBound, "") {
+		if err == nil || !hasGapDetail(w, GapBound, "", "writers were still going") {
 			t.Fatalf("Stop = %v, gaps %+v", err, w.Coverage().Gaps)
 		}
 	case <-time.After(5 * time.Second):

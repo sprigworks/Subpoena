@@ -262,6 +262,14 @@ func hasGap(w *FileWatch, kind GapKind, path string) bool {
 	})
 }
 
+// hasGapDetail is hasGap for one guard: the same kind and path can come from
+// two guards, and only the detail says which one spoke.
+func hasGapDetail(w *FileWatch, kind GapKind, path, detail string) bool {
+	return slices.ContainsFunc(w.Coverage().Gaps, func(g FileGap) bool {
+		return g.Kind == kind && (path == "" || g.Path == path) && strings.Contains(g.Detail, detail)
+	})
+}
+
 // The lag bound is what stands between "nothing was seen" and "nothing
 // happened" for a file made and removed before the watch landed.
 func TestCoverageBoundsTheTimeANewDirectoryWentUnwatched(t *testing.T) {
