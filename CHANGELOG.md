@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`subpoena-witness` stops while waiting on a FIFO with no reader.** The open came before the
+  stall guard, so SIGTERM did nothing and only SIGKILL ended it. It now exits 1, with no start
+  record and no ready file, as it did after SIGKILL.
+- **A dangling link cannot put `-out` or `-ready` under a watched root.** `EvalSymlinks` refuses a
+  link to a file not made yet, and the check then passed. Links are now followed one at a time.
 - **A `TestMain` that retries no longer hides a kill.** `-test.failfast` made a second `m.Run` a
   run of nothing that exits 0, so a suite that caught the mutant read as survived. A green run
   with a test's fail event in it now goes again without that flag. Red still has to hold as a

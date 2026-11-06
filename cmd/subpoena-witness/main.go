@@ -34,6 +34,8 @@
 // Stopping the eBPF or file witness does not wait on a stalled output: if a line can make no progress for
 // stallLimit once told to stop, the capture is unhealthy and the process exits
 // non-zero, most likely with no stop record, which proves nothing, as it should.
+// Told to stop while -out is a FIFO with no reader, it exits non-zero with no start
+// record.
 package main
 
 import (
@@ -121,7 +123,7 @@ func runFiles(roots []string, out, ready string, stop <-chan os.Signal) error {
 	}
 	var dst io.Writer = os.Stdout
 	if out != "-" {
-		f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		f, err := openOut(out, stop)
 		if err != nil {
 			w.Stop()
 			return err
@@ -148,9 +150,38 @@ func runFiles(roots []string, out, ready string, stop <-chan os.Signal) error {
 	return errors.Join(stopErr, w.WriteEnd(guard))
 }
 
+// openOut opens the output file. Opening a FIFO waits for its reader, before the
+// stall guard exists, so stop must end that wait: nothing is written and nothing
+// is told the witness is ready. The open left behind ends with the process.
+//
+//subpoena:enforcement_point
+func openOut(out string, stop <-chan os.Signal) (*os.File, error) {
+	open := func() (*os.File, error) {
+		return os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	}
+	if st, err := os.Stat(out); err != nil || st.Mode()&os.ModeNamedPipe == 0 {
+		return open()
+	}
+	type opened struct {
+		f   *os.File
+		err error
+	}
+	done := make(chan opened, 1)
+	go func() {
+		f, err := open()
+		done <- opened{f, err}
+	}()
+	select {
+	case r := <-done:
+		return r.f, r.err
+	case <-stop:
+	}
+	return nil, fmt.Errorf("told to stop while waiting to open %s: a FIFO with no reader", out) //subpoena:enforcement
+}
+
 // ownFileWatched refuses an output or ready file under a watched root, whatever
-// the spelling: its own lines would read as changes there, and fail a claim about
-// the root.
+// the spelling, a link to a file not made yet among them: its own lines would read
+// as changes there, and fail a claim about the root.
 //
 //subpoena:enforcement_point
 func ownFileWatched(roots []string, files ...string) error {
@@ -162,12 +193,7 @@ func ownFileWatched(roots []string, files ...string) error {
 		if err != nil {
 			return err
 		}
-		if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
-			abs = filepath.Join(dir, filepath.Base(abs))
-		}
-		if real, err := filepath.EvalSymlinks(abs); err == nil {
-			abs = real
-		}
+		abs = followLinks(abs)
 		for dir := filepath.Dir(abs); ; dir = filepath.Dir(dir) {
 			for _, root := range roots {
 				if sameDir(dir, root) {
@@ -181,6 +207,29 @@ func ownFileWatched(roots []string, files ...string) error {
 	}
 	return nil
 }
+
+// followLinks is where the open of abs lands. EvalSymlinks refuses a link to a file
+// not made yet, and the open follows one and makes the file, so links are read one
+// at a time. Past the kernel's own limit the open fails anyway.
+func followLinks(abs string) string {
+	for range maxLinks {
+		if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+			abs = filepath.Join(dir, filepath.Base(abs))
+		}
+		link, err := os.Readlink(abs)
+		if err != nil {
+			break
+		}
+		if !filepath.IsAbs(link) {
+			link = filepath.Join(filepath.Dir(abs), link)
+		}
+		abs = link
+	}
+	return abs
+}
+
+// maxLinks is above the 40 links Linux follows in one path.
+const maxLinks = 64
 
 func sameDir(a, b string) bool {
 	x, err := os.Stat(a)
@@ -203,7 +252,10 @@ func startRecord(deliveries bool) witness.Record {
 func run(root string, all, deliveries bool, out, ready string) error {
 	var dst io.Writer = os.Stdout
 	if out != "-" {
-		f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+		f, err := openOut(out, stop)
+		signal.Stop(stop)
 		if err != nil {
 			return err
 		}

@@ -217,3 +217,99 @@ func TestFileRootDoesNotHangOnAStalledOutput(t *testing.T) {
 		t.Fatal("still running after SIGTERM with the output stalled")
 	}
 }
+
+// Review 8 L3: a link to a file not made yet still lands in the root, as the open
+// follows it, and a chain of links does too.
+func TestADanglingLinkIntoAWatchedRootIsRefused(t *testing.T) {
+	root, elsewhere := t.TempDir(), t.TempDir()
+	dangling := filepath.Join(elsewhere, "dangling")
+	if err := os.Symlink(filepath.Join(root, "w.jsonl"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	chain := filepath.Join(elsewhere, "chain")
+	if err := os.Symlink("dangling", chain); err != nil {
+		t.Fatal(err)
+	}
+	deep := filepath.Join(elsewhere, "deep")
+	if err := os.Symlink(filepath.Join(root, "not", "made", "w.jsonl"), deep); err != nil {
+		t.Fatal(err)
+	}
+	for name, out := range map[string]string{"a link": dangling, "a chain": chain, "below the root": deep} {
+		t.Run(name, func(t *testing.T) {
+			stop := make(chan os.Signal, 1)
+			stop <- os.Interrupt
+			err := runFiles([]string{root}, out, "", stop)
+			if err == nil || !strings.Contains(err.Error(), "its own file") {
+				t.Fatalf("runFiles = %v", err)
+			}
+		})
+	}
+	if _, err := os.Stat(filepath.Join(root, "w.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("a refused run must not have made its file")
+	}
+	// A dangling link elsewhere is a file like any other, and a loop is for the
+	// open to refuse.
+	free := filepath.Join(elsewhere, "free")
+	if err := os.Symlink(filepath.Join(elsewhere, "not-yet"), free); err != nil {
+		t.Fatal(err)
+	}
+	loop := filepath.Join(elsewhere, "loop")
+	if err := os.Symlink("loop", loop); err != nil {
+		t.Fatal(err)
+	}
+	if err := ownFileWatched([]string{root}, free, loop); err != nil {
+		t.Fatalf("a link outside the root: %v", err)
+	}
+}
+
+// Review 8 L2: a FIFO that nobody opens holds the open itself, before the stall
+// guard exists, and SIGTERM must still end it. It fails closed: no ready file.
+func TestFileRootDoesNotHangOnAFIFOWithNoReader(t *testing.T) {
+	dir, root := t.TempDir(), t.TempDir()
+	fifo, ready := filepath.Join(dir, "fifo"), filepath.Join(dir, "ready")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The open left behind ends when a reader comes.
+	t.Cleanup(func() {
+		if f, err := os.OpenFile(fifo, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
+			time.Sleep(50 * time.Millisecond)
+			f.Close()
+		}
+	})
+	stop := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	go func() { done <- runFiles([]string{root}, fifo, ready, stop) }()
+	time.Sleep(200 * time.Millisecond)
+	stop <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "no reader") {
+			t.Fatalf("runFiles = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("still in the open after SIGTERM")
+	}
+	if _, err := os.Stat(ready); !os.IsNotExist(err) {
+		t.Fatal("told the world it was ready with no output")
+	}
+}
+
+// A FIFO that gets its reader is an output like any other.
+func TestAFIFOThatGetsAReaderOpens(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		if f, err := os.OpenFile(fifo, os.O_RDONLY, 0); err == nil {
+			defer f.Close()
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
+	f, err := openOut(fifo, make(chan os.Signal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+}
