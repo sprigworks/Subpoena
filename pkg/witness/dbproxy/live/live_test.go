@@ -95,7 +95,8 @@ func (c *container) start(t *testing.T, image string, port int, ready func(addr 
 				return
 			}
 		}
-		run := append([]string{"run", "-d", "--rm", "-p", fmt.Sprintf("127.0.0.1::%d", port)}, args...)
+		reapOnce.Do(reapLeftovers)
+		run := append(append([]string{"run", "-d", "--rm", "-p", fmt.Sprintf("127.0.0.1::%d", port)}, ownerLabels()...), args...)
 		out, err := exec.Command("docker", run...).Output()
 		if err != nil {
 			c.err = fmt.Errorf("docker run %s: %w", image, err)
@@ -634,7 +635,7 @@ func TestPostgresWatchRows(t *testing.T) {
 // witness's loopback listener.
 func dockerClient(t *testing.T, image string, env []string, args ...string) (string, error) {
 	t.Helper()
-	run := []string{"run", "--rm", "--network", "host"}
+	run := append([]string{"run", "--rm", "--network", "host"}, ownerLabels()...)
 	for _, e := range env {
 		run = append(run, "-e", e)
 	}

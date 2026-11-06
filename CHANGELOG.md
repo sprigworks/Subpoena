@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`make test-db` clears up after a killed run.** A killed test binary left its `--rm` database
+  containers running, and they held the host's AIO slots until MySQL could not start. Each
+  container now names its owner in labels, and a run removes those whose owner is gone on this
+  host, leaving any other run's alone.
 - **`subpoena-witness` stops while waiting on a FIFO with no reader.** The open came before the
   stall guard, so SIGTERM did nothing and only SIGKILL ended it. It now exits 1, with no start
   record and no ready file, as it did after SIGKILL.
