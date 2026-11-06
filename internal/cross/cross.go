@@ -937,14 +937,18 @@ const noTestsLine = "testing: warning: no tests to run\n"
 
 // testsSeen is what a run's events say of each package that passed.
 type testsSeen struct {
-	passed bool // it has a pass event of its own: one with no test files has a skip
+	passed bool // it has a pass event of its own: one with no test files has a skip, but under -cover a pass
 	tests  bool // a Test or a Fuzz ran
-	shown  bool // m.Run's output reached go test: an Example ran, or noTestsLine
+	shown  bool // m.Run's output reached go test: an Example or a Benchmark ran, or noTestsLine or a coverage line
 }
 
-// packageTests reads testsSeen from raw. An Example is not a test here: package
-// testing stops Tests and Fuzz seeds under -test.failfast and runs Examples anyway,
-// so a second m.Run after a real failure can show them and nothing else.
+// coverageRE matches the line a package gives under -cover: package testing's, or go
+// test's for a package with no test files, which passes there and has no skip.
+var coverageRE = regexp.MustCompile(`^(\t\S+\t\t)?coverage: (\[no statements\]|[0-9.]+% of statements)`)
+
+// packageTests reads testsSeen from raw. An Example or a Benchmark is not a test
+// here: package testing stops Tests and Fuzz seeds under -test.failfast and runs
+// those anyway, so a second m.Run after a real failure can show them and nothing else.
 func packageTests(raw string) map[string]testsSeen {
 	seen := map[string]testsSeen{}
 	for _, line := range strings.Split(raw, "\n") {
@@ -954,11 +958,11 @@ func packageTests(raw string) map[string]testsSeen {
 		}
 		s := seen[e.Package]
 		switch {
-		case e.Action == "run" && exampleRE.MatchString(e.Test):
+		case e.Action == "run" && (exampleRE.MatchString(e.Test) || strings.HasPrefix(e.Test, "Benchmark")):
 			s.shown = true
 		case e.Action == "run":
 			s.tests = true
-		case e.Action == "output" && e.Test == "" && e.Output == noTestsLine:
+		case e.Action == "output" && e.Test == "" && (e.Output == noTestsLine || coverageRE.MatchString(e.Output)):
 			s.shown = true
 		case e.Action == "pass" && e.Test == "":
 			s.passed = true
@@ -972,11 +976,14 @@ func packageTests(raw string) map[string]testsSeen {
 // passed, no Test or Fuzz ran, and m.Run's output reached go test, so that is not
 // because it went elsewhere. The baseline has no -test.failfast, so a second m.Run
 // runs what a first one did. A package whose m.Run says nothing is not among them,
-// so it pays for a run it may not need. That is the side to lose on.
+// and neither is one whose TestMain never calls it, so every survivor of the target
+// pays for a run it may not need. That is the side to lose on.
+//
+//subpoena:enforcement_point
 func noTestPackages(raw string) map[string]bool {
 	none := map[string]bool{}
 	for pkg, s := range packageTests(raw) {
-		if s.passed && !s.tests && s.shown {
+		if s.passed && !s.tests && s.shown { //subpoena:enforcement_guard false
 			none[pkg] = true
 		}
 	}
@@ -987,9 +994,13 @@ func noTestPackages(raw string) map[string]bool {
 // sorted. That is all a kill looks like when a first m.Run's output went nowhere and
 // -test.failfast stopped the second. Any other package ran its tests where go test
 // could see them, so its green is what it says. A package with no test files has a
-// skip and no pass, and noTests is the baseline's packages with no test: their events
-// are the same as this signature's. A TestMain that prints a framed run line can hide
-// the signature, as it can print a test's whole run: see docs/architecture.md.
+// skip and no pass, or under -cover a pass and a coverage line, and noTests is the
+// baseline's packages with no test: their events are the same as this signature's.
+// This reads the whole run, so any package here that shows no test on a green
+// baseline, a TestMain gate that exits without m.Run included, costs every survivor
+// of the target one more run and a flake one more first try. A TestMain that prints a
+// run line, framed or ahead of a quiet first m.Run plain, can hide the signature, as
+// it can print a test's whole run: see docs/architecture.md.
 //
 //subpoena:enforcement_point
 func quietPackages(raw string, noTests map[string]bool) []string {
@@ -1217,8 +1228,9 @@ func (e ending) began() int {
 
 // beside reports whether the two tests were running at once. Sequential tests do not
 // overlap: one ends before the next starts, and a parallel test continues only after
-// the sequential tests around it. Subtests started from goroutines do, with no pause or
-// cont. A parallel subtest ends a little after the next one continues, so this can say
+// the sequential tests around it, unless a second m.Run repeats their names, as a name
+// has one start and one end. Subtests started from goroutines do, with no pause or
+// cont, and one that pauses after it worked counts from its cont. A parallel subtest ends a little after the next one continues, so this can say
 // yes to subtests that took turns under -parallel 1, which costs a kill and makes none.
 func (e ending) beside(o ending) bool {
 	a, b := e.began(), o.began()
@@ -1230,11 +1242,16 @@ func (e ending) beside(o ending) bool {
 // parent. A name alone does not say: go keeps a slash in a subtest's name, so
 // "read/all" can be the sibling of "read", and a sibling of a parallel test starts
 // while that test is paused.
+//
+//subpoena:enforcement_point
 func (e ending) holds(c ending) bool {
 	if !e.ran || c.start < e.start || c.last() > e.last() || c.failed && !e.failed {
-		return false
+		return false //subpoena:enforcement
 	}
-	return e.paused == 0 || c.start < e.paused || c.start > e.from && e.from > 0
+	if e.paused != 0 && c.start >= e.paused && (e.from == 0 || c.start <= e.from) {
+		return false //subpoena:enforcement
+	}
+	return true
 }
 
 // besideFailure reports whether a test that did not pass ran beside k. Package

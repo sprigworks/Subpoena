@@ -11,15 +11,18 @@
   test's plain failure as a kill, with nothing forged. A crash line on a passing test now counts if
   that test ran beside one that did not pass, read from each test's events from `run`, or `cont` if
   it paused, to its end, whatever slashes the subtests' names hold. That covers subtests started from
-  goroutines, except one whose name goes on from a sibling's, which passes and ends while that sibling runs. Sequential suites
-  keep the log-line rule. New cost: a passing parallel test that logs such a line beside a real
+  goroutines, with three exceptions that stay plain kills and are stated in docs/architecture.md: one whose name goes on from a
+  sibling's, which passes and ends while that sibling runs, one whose parent carries on and recovers the panic in its own
+  body, and one that works and then calls `t.Parallel`. Sequential suites
+  keep the log-line rule, unless a `TestMain` that calls `m.Run` again repeats their names. New cost: a passing test that logs such a line beside a real
   failure reads crashed, and the run fails.
 - **A quiet first `m.Run` no longer reads survived.** A `TestMain` that threw away a first
   `m.Run`'s output left no fail event, and under `-test.failfast` the second `m.Run` ran nothing, so
   a mutant the suite catches read as a survivor. A green first run with a package that has tests and
-  ran none now goes again without that flag, as one with a fail event already did. Ordinary survivors
-  take no extra run. New cost: one more suite run for each survivor of a package that never shows a
-  test on a green run, a `TestMain` that hides `m.Run`'s output and calls it again only on failure.
+  ran none now goes again without that flag, as one with a fail event already did. A target with no such
+  package takes no extra run. New cost: any package under the target that shows no test on a green run, including a `TestMain` that hides
+  `m.Run`'s output and calls it again only on failure and a `TestMain` gate that exits without `m.Run`, costs every
+  survivor of the target one more suite run and one more first try for a flake, so a flake can still turn a true survivor there into a kill, exit 0.
 - **The reruns without the mutant are no longer blind to a second `m.Run`.** They kept
   `-test.failfast`, under which a `TestMain` that calls `m.Run` again exits 0 after a real failure,
   so a test that fails with no mutant at all read as a kill, witness kills included. They now run

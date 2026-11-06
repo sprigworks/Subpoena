@@ -200,16 +200,20 @@ binary exiting 1, stays a crash. So does one printed outside any test, from `Tes
 failed package, in any run. In a test that passed it is a log line, and
 order does not matter: the binary lived. The exception is a test that passed beside one that did
 not, read from each test's events from `run`, or from `cont` if it paused, to its end, which covers subtests
-started from goroutines, as those never pause: package testing's frames carry a line printed with no
+started from goroutines that do not pause: package testing's frames carry a line printed with no
 frame to whichever test printed last, so a parallel test's `panic:` line can land on its neighbour.
 There it is a crash. The cost is a passing test that prints such a line beside a real failure, `panic:`
 or `fatal error:` at the start of a line, or `test panicked:` after a file and line, anywhere on a
 line, as `t.Log` gives it: that kill reads crashed, and the run fails, wherever the line lands. Sequential tests keep the
-rule, and so do subtests in turn inside one parallel test. Which test holds which is read from what ran, not cut
+rule, and so do subtests in turn inside one parallel test, unless a name runs twice: a test's span goes from its first
+start to its last end, so a `TestMain` that calls `m.Run` again after a failure makes sequential tests overlap,
+and a passing test's line beside that failure reads crashed, exit 1. Which test holds which is read from what ran, not cut
 from the names, as go keeps a slash in a subtest's name: `T/GET_/admin` is a subtest of `T`, and `T/read/all` a sibling of `T/read` if it
-started while that test was paused. One shape cannot be read: a subtest started from a goroutine, whose name goes on from a
-sibling's and which passes and ends while that sibling runs, has the same events as a real subtest of a test that failed later. If the
-sibling's recovered panic line lands on it, that line stays a log line and the sibling's failure a plain kill, exit 0. Under `--require-witness` it is a crash there too (see
+started while that test was paused. Three goroutine shapes cannot be read, and nothing need be forged in any of them. In each a recovered
+panic's line lands on a subtest that passes, stays a log line, and the failure beside it is a plain kill, exit 0. A subtest started from a goroutine, whose name goes on from a
+sibling's and which passes and ends while that sibling runs, has the same events as a real subtest of a test that failed later. So has a subtest a parent
+started in a goroutine, when the parent carries on and recovers the panic in its own body: a test does not run beside its own subtest, and no slash is needed.
+And a subtest started from a goroutine that works and then calls `t.Parallel` counts only from its `cont`, so a line that lands on it before it pauses is not beside the failure. Under `--require-witness` all three are a crash (see
 What forged output can do). A test with a `fail` event has not passed here,
 whatever `pass` sits beside it, so a printed pass does not make a crash a log line. testify's `suite` reports one it recovered through `t.Errorf`, as `test panicked:` after a
 file and line, and in a test that did not pass that counts as a crash too, wherever it falls on the
@@ -231,19 +235,21 @@ after another has caught it: a run that timed out with a clean failure in a pack
 finished goes to the repeat, and with none it is a timeout. That flag can also turn a
 `TestMain` that calls `m.Run` a second time green, since the second run skips every test, and a
 first `m.Run` whose output was thrown away leaves no `fail` event to show it. What that leaves is a
-package with tests in which no `Test` or `Fuzz` ran: no `run` event but an `Example`'s, as package testing
-stops the first two under that flag and runs Examples anyway. So a green run with such a package goes again
+package with tests in which no `Test` or `Fuzz` ran: no `run` event but an `Example`'s or a `Benchmark`'s, as package testing
+stops the first two under that flag and runs the others anyway. So a green run with such a package goes again
 without the flag, on a fresh copy, as does one with a `fail` event in it, and the mutant reads survived
-only if that run is green too. Any other green run is a survivor at once, so a flake gets no extra first try there.
-A package with no test files has a `skip`, not a `pass`. A package with test files and no tests (helpers,
+only if that run is green too. That look is at the whole run, so one such package anywhere under the target sends every survivor of
+the target through the extra run, whichever package the survivor is in. Only a target with no such package has its green runs read as survivors at once.
+A package with no test files has a `skip`, not a `pass`, except under `-cover`, where it passes with a `coverage:` line. A package with test files and no tests (helpers,
 benchmarks, a bare `TestMain`) gives the same events as a quiet one, so the baseline tells them apart: there
-`m.Run` runs everything, and a package that passed with no `Test` or `Fuzz` run and showed `m.Run`'s output, through an `Example`
-or package testing's `no tests to run` line, has none. A selected run does not look at all, since a package with no selected test reads the
-same, and the whole-suite run after it does. What is left pays: a `TestMain` that hides `m.Run`'s output
-and calls it again only on failure shows no test on any green run, so each of its package's survivors takes one more suite run,
-and a flake gets that one first try, which still has to fail again in the same test and pass three times
-without the mutant. That run can hang where the first did not, which reads as a timeout and fails the run. A `TestMain` that shows one `m.Run`, hides a later red one, and takes its exit code from a third shows tests on a green run, so it is not seen: that reads survived, and the run fails. A framed `=== RUN` line printed by a `TestMain` can hide the signature, as printed text can
-anything here, and that reads survived, which fails the run. A red one can also say `PASS` after
+`m.Run` runs everything, and a package that passed with no `Test` or `Fuzz` run and showed `m.Run`'s output, through an `Example`, a `Benchmark`,
+package testing's `no tests to run` line or a `coverage:` line, has none. A selected run does not look at all, since a package with no selected test reads the
+same, and the whole-suite run after it does. What is left pays: any package under the target that shows no test on a green baseline costs every survivor of the target
+one more suite run and one more first try for a flake, which still has to fail again in the same test and pass three times
+without the mutant. Where it does, a true survivor reads as a kill, exit 0, in any package of the target. That package need not be rare. It can be a `TestMain` that hides `m.Run`'s output
+and calls it again only on failure, a `TestMain` gate that exits without calling `m.Run`, as an integration suite's does when its service is not there, or a bare `TestMain` that prints
+text with no newline, which runs into the `no tests to run` line. None shows anything to tell it from a quiet package, so all of them pay. That run can hang where the first did not, which reads as a timeout and fails the run. A `TestMain` that shows one `m.Run`, hides a later red one, and takes its exit code from a third shows tests on a green run, so it is not seen: that reads survived, and the run fails. A `=== RUN` line printed by a `TestMain` can hide the signature, as printed text can
+anything here, and that reads survived, which fails the run. It need not be framed: test2json reads plain lines too until it has seen a frame, which a quiet first `m.Run` keeps from it. A red one can also say `PASS` after
 a real failure, so when that leaves no failed test, the failed tests come from a run without the
 flag. A suite whose second `m.Run` truly passes says `PASS` there too, and that kill reads
 unconfirmed. Two more shapes of two `m.Run` calls lose a real kill the same way, and fail the run.
@@ -296,8 +302,8 @@ mutants at once, each in its own copy of the module (group runs stay
 sequential). On cross-self on 2026-10-27 it cut 490 s to 135 s at `-j 8` with
 the same verdicts. Those times are out of date and cross-self has not been timed
 since: a kill then took one suite run and now takes five, a survivor one, or two under `-select`,
-where its selected run comes before the whole suite. A survivor takes one more if a package of its run
-ran no test (see above). A kill takes one more if
+where its selected run comes before the whole suite. A survivor takes one more if any package under the target
+shows no test on a green run (see above). A kill takes one more if
 its first run was green or said `PASS` after a failure, and one more for the first run's command
 plus up to two per package with a failed test if its repeat crashes or hangs, with the repeat a
 whole suite, and `pkg/witness` has gone from
@@ -340,9 +346,9 @@ verify, and the kill reads `self-report`. That costs nothing: one random key per
 copied inside one command still verifies, in another package too. This closes replay only: code
 that can read the key signs a line of its own for the run it is in, as above.
 
-At least three forgeries read as plain kills and stay open. A pair of printed run and fail lines
-beside a real failure is above. Printed run and pass lines round a crash line inside a failing test do not, as
-that printed test ran beside the failure, so it reads crashed. A suite that hides `m.Run`'s `PASS` is above. In
+At least four forgeries read as plain kills and stay open. A pair of printed run and fail lines
+beside a real failure is above. Printed run and pass lines round a crash line inside a failing test are another, if the
+printed name goes on from the failing test's, as that reads as a real subtest of it. With any other name that printed test ran beside the failure, so it reads crashed. A suite that hides `m.Run`'s `PASS` is above. In
 another, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test
 that passed, which takes the crash rule off it: without `--require-witness` that line is a log line,
 and the test's plain failure is a kill. Code that signs, by whatever route, is out of scope, as stated above.
