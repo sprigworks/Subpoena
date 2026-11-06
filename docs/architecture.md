@@ -181,7 +181,10 @@ as one test in random order. Failures outside any test never count: a line
 printed while `TestMain` or `init` ran is package output, whatever its shape. A line a
 test printed with no newline runs into the failure after it, and go test gives the two
 as one line: in a test with a `fail` event the failure is read after that text, at go
-test's own indent. A mutant's first run passes `-test.failfast` to each test binary, so a
+test's own indent. A printed log line can have the same shape, and go test's events cannot
+tell the two apart, so such a line counts only in a test with no failure on a line of its
+own, or with the harness's mark. A plain failure after open text therefore no longer stands
+ahead of a witness failure in the same test. A mutant's first run passes `-test.failfast` to each test binary, so a
 package stops at its first red test and every package runs: go test's own `-failfast`
 skips packages not yet started as soon as one fails. So a package can hang on the mutant
 after another has caught it: a run that timed out with a clean failure in a package that

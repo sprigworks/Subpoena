@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A printed log line after open text takes no witness kill.** A line such as
+  `INFO    server.go:42: handling request` has the shape of a failure after text printed with
+  no newline, and it read as the test's first failure, pushing a witness kill down to
+  self-report. Such a line now counts only in a test with no other failure message, or when it
+  carries the harness's mark.
 - **A package that hangs no longer costs another package's kill.** Every package runs now, and a
   timed-out run went straight to `enforcement-mutant-timeout`, with a clean failure in the
   output. A run with a clean failure in a package that finished now goes to the repeat, and a

@@ -989,7 +989,7 @@ func repeatEvidence(raw, key string, first map[testID]bool) (Evidence, string) {
 	seen := map[testID]bool{}
 	ev, msg := EvidenceOther, emptyFailure
 	found := false
-	for _, f := range inPackageOrder(failures(raw)) {
+	for _, f := range inPackageOrder(settled(failures(raw), key)) {
 		id := idOf(f.pkg, f.test)
 		if !first[id] || !failedNow[id] {
 			continue //subpoena:enforcement
@@ -1106,7 +1106,9 @@ var failMsgRE = regexp.MustCompile(`^\s+[^\s:]+\.go:\d+: (.*)$`)
 // openFailMsgRE matches that message after text a test printed with no newline:
 // go test gives the two as one line, "partial    file_test.go:12: msg". Only a
 // test with a fail event is read, and a line that can be a message's own further
-// text is indented, so this is the line's start, and the indent is go test's.
+// text is indented, so this is the line's start, and the indent is go test's. The
+// open text and the message reach cross as one event, so nothing tells this from a
+// printed "INFO    server.go:42: msg", and such a line counts only as settled says.
 var openFailMsgRE = regexp.MustCompile(`^\S(?:.*?\S)? {4,}[^\s:]+\.go:\d+: (.*)$`)
 
 // maxFailureText bounds the text read from under a blank head line.
@@ -1122,6 +1124,7 @@ type failure struct {
 	head string // text on the file:line, the only place a tag is read
 	text string // what to print: head, or for a blank head the lines under it
 	more bool   // lines still extend text
+	open bool   // read after text on its line: the whole line can be printed text
 }
 
 // addLine reads one line of a failed test's output after a blank head: the
@@ -1160,7 +1163,7 @@ func (f *failure) addLine(line string) {
 // in any order, so one's plain failure hides nothing of another's: ev is witness if
 // any package's first failure is, and otherwise the first failure by package.
 func firstFailure(raw, key string) (ev Evidence, msg string, crashed bool) {
-	fs := inPackageOrder(failures(raw))
+	fs := inPackageOrder(settled(failures(raw), key))
 	if len(fs) == 0 {
 		return "", "", true
 	}
@@ -1174,6 +1177,34 @@ func firstFailure(raw, key string) (ev Evidence, msg string, crashed bool) {
 		}
 	}
 	return ev, msg, false
+}
+
+// settled is fs without the open lines that say nothing. An open line can be a log
+// line the code under test printed, and read as a failure it would stand ahead of
+// the test's real one and push a witness kill down to self-report. It is needed
+// only where a test has no other message, as a failure after open text then has
+// none, so a test with a clean line goes by that, subtests included. The harness's
+// own failure after open text stays: its mark proves it, and printing text ahead of
+// it must not lose it. What this gives up: a plain failure after open text no longer
+// stands ahead of a witness failure in its test, which did happen. See
+// docs/architecture.md.
+//
+//subpoena:enforcement_point
+func settled(fs []failure, key string) []failure {
+	clean := map[testID]bool{}
+	for _, f := range fs {
+		if !f.open {
+			clean[idOf(f.pkg, f.test)] = true
+		}
+	}
+	var out []failure
+	for _, f := range fs {
+		if f.open && clean[idOf(f.pkg, f.test)] && !harnessWitness(f.head, key) {
+			continue //subpoena:enforcement
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // judge is the kind of evidence a failure is, and its message.
@@ -1320,12 +1351,12 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 			} else {
 				fs[n].text = strings.TrimSpace(fs[n].text + " " + strings.TrimSpace(line))
 			}
-		} else if m := failLine(line); m != nil {
+		} else if m, open := failLine(line); m != nil {
 			delete(blank, k)
 			if m[1] == "" {
 				blank[k] = len(fs)
 			}
-			fs = append(fs, failure{pkg: e.Package, test: e.Test, head: m[1], text: m[1], more: true})
+			fs = append(fs, failure{pkg: e.Package, test: e.Test, head: m[1], text: m[1], more: true, open: open})
 		} else if n, ok := blank[k]; ok {
 			fs[n].addLine(line)
 		}
@@ -1340,12 +1371,13 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 	return clean, dead
 }
 
-// failLine is the match of a failure message on line, nil if it holds none.
-func failLine(line string) []string {
+// failLine is the match of a failure message on line, nil if it holds none, and
+// whether it came after open text.
+func failLine(line string) ([]string, bool) {
 	if m := failMsgRE.FindStringSubmatch(line); m != nil {
-		return m
+		return m, false
 	}
-	return openFailMsgRE.FindStringSubmatch(line)
+	return openFailMsgRE.FindStringSubmatch(line), true
 }
 
 // crashRE matches the first line of a panic or a runtime fatal error.
