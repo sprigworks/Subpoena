@@ -149,6 +149,8 @@ func (s *mySession) readable(st *statement) *statement {
 }
 
 // noteStatus reads the one lexing setting the server reports.
+//
+//subpoena:enforcement_point
 func (s *mySession) noteStatus(status uint16) {
 	if status&myStatusNoBackslash != 0 {
 		s.tainted("NO_BACKSLASH_ESCAPES is on") //subpoena:enforcement

@@ -192,6 +192,8 @@ func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 // tokenizeTaint is the taint of text that did not tokenize: it may still have
 // changed how the session reads what comes next.
+//
+//subpoena:enforcement_point
 func tokenizeTaint(text string) string {
 	up := strings.ToUpper(text)
 	for _, w := range []string{"STANDARD_CONFORMING_STRINGS", "CLIENT_ENCODING", "SEARCH_PATH", "SQL_MODE", "NAMES", "CHARSET", "CHARACTER"} {
@@ -615,6 +617,8 @@ func unproven(st *statement, toks []token) string {
 
 // unknownCall returns the first name called in toks that is not known to leave
 // rows alone, or "".
+//
+//subpoena:enforcement_point
 func unknownCall(d dialect, toks []token) string {
 	for i := 0; i+1 < len(toks); i++ {
 		t := toks[i]
@@ -943,6 +947,8 @@ func tokenValue(t token) string {
 // pgSetTaint says why a PostgreSQL SET leaves the session unreadable, or "". The
 // server reports the first two by ParameterStatus too, but not until the next
 // Sync, and a pipelined Parse can get there first.
+//
+//subpoena:enforcement_point
 func pgSetTaint(rest []token) string {
 	name, value := settingValue(rest)
 	switch name {
@@ -991,6 +997,8 @@ func pgReadableEncoding(v string) bool {
 
 // pgPathTaint says why a search path can shadow the built-ins, or "". pg_catalog
 // is searched first unless the path names it somewhere else.
+//
+//subpoena:enforcement_point
 func pgPathTaint(path string) string {
 	parts := strings.Split(strings.ToLower(path), ",")
 	for i, p := range parts {
@@ -1003,6 +1011,8 @@ func pgPathTaint(path string) string {
 
 // mySetTaint says why a MySQL SET leaves the session unreadable, or "". Nothing
 // on the wire reports these two, except NO_BACKSLASH_ESCAPES in the status flags.
+//
+//subpoena:enforcement_point
 func mySetTaint(rest []token) string {
 	for i, t := range rest {
 		switch {
@@ -1360,6 +1370,8 @@ func createBody(toks []token) []token {
 // txCommand reads COMMIT, ROLLBACK, SAVEPOINT and RELEASE, in all their spellings.
 // ROLLBACK PREPARED acts on a transaction already reported at PREPARE TRANSACTION,
 // if this witness saw it, and undoes it either way.
+//
+//subpoena:enforcement_point
 func txCommand(st statement, rest []token) statement {
 	st.class = classTx
 	if len(rest) > 0 && rest[0].is("PREPARED") {

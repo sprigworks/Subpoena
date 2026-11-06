@@ -225,6 +225,8 @@ func (s *pgSession) startup(r *bufio.Reader, up, back io.Writer) error {
 
 // startupParameters looks for a search path set at login. The server reports the
 // lexing settings by ParameterStatus, but not this one before version 18.
+//
+//subpoena:enforcement_point
 func (s *pgSession) startupParameters(b []byte) {
 	for len(b) > 1 {
 		key, rest, ok := cstring(b)
@@ -275,6 +277,8 @@ func (s *pgSession) readable(st *statement) *statement {
 
 // parameterStatus follows the settings that change how text reads. The server
 // sends these whatever set them: SET, set_config, a function, the role's defaults.
+//
+//subpoena:enforcement_point
 func (s *pgSession) parameterStatus(body []byte) error {
 	name, rest, ok := cstring(body)
 	if !ok {
@@ -469,6 +473,8 @@ func (s *pgSession) confirmed(kind pgItemKind, reply string) error {
 	return nil
 }
 
+//
+//subpoena:enforcement_point
 func (s *pgSession) apply(it *pgItem) {
 	switch it.kind {
 	case pgItemParse:
@@ -557,6 +563,8 @@ func (s *pgSession) onServer(typ byte, body []byte) error {
 
 // serverError applies an ErrorResponse. With nothing asked of it the server is
 // saying FATAL at login or at shutdown, and the end of the connection decides.
+//
+//subpoena:enforcement_point
 func (s *pgSession) serverError() {
 	if len(s.queue) == 0 {
 		return
