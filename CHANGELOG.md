@@ -25,11 +25,15 @@
 - **A package that hangs no longer costs another package's kill.** Every package runs now, and a
   timed-out run went straight to `enforcement-mutant-timeout`, with a clean failure in the
   output. A run with a clean failure in a package that finished now goes to the repeat, and a
-  hang with none stays a timeout.
+  hang with none stays a timeout. If the repeat hangs too, each package with a failed test goes
+  alone, so a hang in another package costs nothing, even one its `TestMain` reaches or one in a
+  test of the same name. A hang in the failed package itself can still cost the kill: that reads
+  `enforcement-mutant-unconfirmed`, and cross says it hung, not that it was a flake.
 - **A kill that needs an earlier test survives a repeat that stops short.** When the repeat
   crashed or hung, cross ran the first run's failed tests alone, and a test that needs what ran
   before it then passed, so a real kill read as unconfirmed. The first run's own command now
-  goes first, and the failed tests alone only if that stops short too.
+  goes first, then that command in each failed package alone, and the failed tests alone only
+  if those stop short too.
 - **A routing header on an IPv6 flow label gives an unknown peer.** It was on neither the send
   nor the socket's options, so a packet could reach a hop no rule saw. The delivery hook now
   walks the flow labels the socket holds, however a send names one.

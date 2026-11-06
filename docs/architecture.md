@@ -116,10 +116,12 @@ prints the framed run line and fail line of a test that never ran still gets thr
 go test cannot tell those from the real thing, and neither can cross. In Go a repeat where
 a package crashes, or that hangs, can do so in a test the first run never reached, and
 under `-shuffle` such a test can come first. So the first run's own command goes again,
-as a test can need what ran before it, and if that stops short too, the tests of the first
-run go alone. Each goes by the same rule: a clean kill, in a test of the first run. A test
+as a test can need what ran before it. If that stops short too, each package with a test of
+the first run goes alone: the command in that package, then its failed tests, so a hang
+elsewhere is left out, even one a test name or a `TestMain` reaches. Each goes by the same rule: a clean kill, in a test of the first run. A test
 that needs another to run first can still come back unconfirmed if the command stops short
-as well, as under `-shuffle` it can. With
+in its own package as well, as under `-shuffle` it can. A hang in the failed package itself, on every try, also
+stays unconfirmed: cross says the repeats hung, and does not call it a flake. With
 `--require-witness`, a test of the first run must give witness evidence on the repeat
 too, as its own first failure, wherever it ran: go test gives packages in the order they
 finished, so in Go another package's plain failure takes nothing from it. In Go a package

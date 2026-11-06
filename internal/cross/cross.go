@@ -739,9 +739,8 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 // can need a test in another package, and it has no -failfast because a test that
 // catches the mutant is then sure to run, whatever test stopped the first run:
 // under -shuffle another can come first. If a package of the repeat died or the
-// run hung, that says nothing of the tests it took with it, so the first run's
-// command goes again, then its failed tests alone, each by the same rule: a flake
-// still has to fail twice in one test. Under RequireWitness a test of the first run must give witness evidence
+// run hung, that says nothing of the tests it took with it, so lastTries goes, each
+// by the same rule: a flake still has to fail twice in one test. Under RequireWitness a test of the first run must give witness evidence
 // on the repeat too, wherever it ran, or only one of the two runs had any. Then
 // killReruns runs without the mutant, each on a fresh copy: the first the mutant
 // run's whole command, and the rest the failed packages. One that fails or does
@@ -809,12 +808,16 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 			// what ran before it. Then the test goes alone, with what can crash it
 			// left out, for when the command too reaches that crash.
 			fmt.Fprintf(o.Log, "  %s; running the first run's command again, then its failed tests\n", reason)
-			for _, a := range [][]string{args, onlyTests(whole, first)} {
+			for _, a := range lastTries(args, raw, first) {
 				again, againErr, err := withMutant(a)
 				if err != nil {
 					return err
 				}
-				if notAKill(again, againErr, o.key, first) != "" {
+				if r := notAKill(again, againErr, o.key, first); r != "" {
+					// A try that finished says more than one that hung.
+					if why != "" && r != noFinish {
+						why = r
+					}
 					continue
 				}
 				out, why = again, ""
@@ -826,6 +829,9 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 		if why != "" {
 			res.Why, res.Output = why, tail(testText(out), 20)
 			res.Outcome = Unconfirmed //subpoena:enforcement
+			if why == noFinish {
+				res.Hint = hungHint
+			}
 			return nil
 		}
 		if asked {
@@ -858,9 +864,51 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 	return nil
 }
 
+// lastTries is what runs when a repeat stops short, in order: the first run's own
+// command, then for each package with a test of first, that command in that package
+// alone, then that package's failed tests alone. Every package runs in the first
+// two, so a hang there hangs them both, and a test name reaches any package that has
+// it, as does a TestMain. Going a package at a time leaves all of that out, and no
+// package's hang can cost another's kill. The command goes before the tests, as a
+// test can need what ran before it in its package. With one package, the command
+// in it is the command.
+func lastTries(args []string, raw string, first map[testID]bool) [][]string {
+	whole := args[:len(args)-2]
+	byPackage := map[string]map[testID]bool{}
+	for k := range first {
+		if byPackage[k.pkg] == nil {
+			byPackage[k.pkg] = map[testID]bool{}
+		}
+		byPackage[k.pkg][k] = true
+	}
+	tries := [][]string{args}
+	several := len(packagesIn(raw)) > 1
+	for _, pkg := range slices.Sorted(maps.Keys(byPackage)) {
+		if several {
+			tries = append(tries, slices.Concat(args[:len(args)-3], []string{pkg}, args[len(args)-2:]))
+		}
+		only := onlyTests(whole, byPackage[pkg])
+		tries = append(tries, slices.Concat(only[:len(only)-1], []string{pkg}))
+	}
+	return tries
+}
+
+// packagesIn lists the packages with an event in raw.
+func packagesIn(raw string) []string {
+	seen := map[string]bool{}
+	for _, line := range strings.Split(raw, "\n") {
+		var e struct{ Package string }
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &e) == nil && e.Package != "" {
+			seen[e.Package] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
 // onlyTests is a whole command, its packages last, narrowed to tests. The last
 // -run is the one go reads, so this one replaces a selection's, of which tests is
-// a part. A test name in another package runs there too.
+// a part. A test name in another package runs there too, so lastTries gives it one
+// package at a time.
 func onlyTests(whole []string, tests map[testID]bool) []string {
 	names := map[string]bool{}
 	for k := range tests {
@@ -878,6 +926,13 @@ func onlyTests(whole []string, tests map[testID]bool) []string {
 // mutated code.
 const separateProgramHint = "a suite that runs the code as a separate program links none of it, so cross cannot count its kills"
 
+// noFinish is notAKill's reason for a run that hung.
+const noFinish = "the run with the mutant did not finish the second time"
+
+// hungHint is what to do about a kill whose every repeat hung. Each package that
+// failed went alone, so the hang is in one of them, and that says nothing of a flake.
+const hungHint = "every repeat hung, even with each failed package alone, so nothing here says the red was a flake or the mutant's: find what hangs in the failed package with the mutant, or raise -timeout if it is only slow"
+
 // notAKill says why a repeat with the mutant is not the kill the first run was,
 // or "" if it is: red on a clean failure, in a test that failed the first time.
 func notAKill(raw string, err error, key string, first map[testID]bool) string {
@@ -886,7 +941,7 @@ func notAKill(raw string, err error, key string, first map[testID]bool) string {
 	}
 	out := testText(raw)
 	if timedOut(out, err) {
-		return "the run with the mutant did not finish the second time"
+		return noFinish
 	}
 	if buildFailed(out) {
 		return "the run with the mutant did not build the second time"
