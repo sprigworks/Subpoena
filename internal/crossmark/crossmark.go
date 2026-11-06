@@ -7,8 +7,9 @@
 // reaches the harness in the environment, and the harness takes it out of there as
 // it loads.
 //
-// This raises the bar only. The key is reachable: /proc/<pid>/environ keeps it
-// after the harness unsets it, so the code under test, and any process it starts
+// This raises the bar only. The key is reachable: a test binary that does not link
+// the harness keeps it in its environment, for plain os.Getenv and any child, and
+// /proc/<pid>/environ keeps it after the harness unsets it, so the code under test, and any process it starts
 // or any other process of the same user, can read it and forge a mark. It stops
 // a line printed in the ordinary way, which is what a system's own account of
 // itself is. It does not stop code set on forging one.

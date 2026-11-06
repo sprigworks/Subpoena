@@ -250,12 +250,12 @@ witness itself reports through `harness.WitnessErrorf`, which signs. The output
 outside cross does not change. Only a `*testing.T`, `B` or `F` gets the mark, so
 a `testing.TB` of production code's own gets none, and a wrapper such as
 `GinkgoTB` reads as `other`. Production code set on it can still get a real
-`*testing.T` from `testing.RunTests` and sign with that, though a real test must
-fail too. The key is not a secret
-from the code under test. `/proc/<pid>/environ` keeps it after the harness unsets
-it, so in-process code, a child process, or any process of the same user can read
-it and compute a mark. The mark stops what a system prints in the ordinary way,
-not code set on forging one. In Python the failure's type decides: the harness
+`*testing.T` from `testing.RunTests` and sign with that, and no real test need fail. The key is not
+a secret from the code under test. A suite that does not link the harness keeps it in its
+environment, where plain `os.Getenv` reads it and child processes inherit it. Where the harness
+did unset it, `/proc/<pid>/environ` still keeps it, so in-process code, a child process, or any
+process of the same user can read it and compute a mark. The mark stops what a system prints in
+the ordinary way, not code set on forging one. In Python the failure's type decides: the harness
 raises `WitnessFailure`, a test that asks a witness itself calls
 `harness.witness_fail`, and no text counts, wherever it stands. A call from the
 code under test is a crash, read from the frames; in-process code can still build
@@ -306,7 +306,10 @@ frames, `PASS`, and what they turn into events. So a plain kill assumes the suit
 test-runner output. The rules above stop what a suite prints by accident or in the ordinary way,
 and where they cannot tell, they cost a kill and not make one. They are no defence against a suite
 built to fool them. Only a verified witness mark under `--require-witness` holds against forged
-output, and there a crash line counts as a crash in any test of a failed package, passed or not. A
+output: output that a suite prints. It does not hold against code that signs, which is any code
+that reads the key, by plain `os.Getenv` where the harness is not linked, or that reaches the
+harness with a real `*testing.T`. A false witness kill is open to such code. Under
+`--require-witness` a crash line counts as a crash in any test of a failed package, passed or not. A
 passing test that prints such a line beside a witness failure so reads crashed. Each `go test`
 command signs with a new key, so a signed line kept on disk and printed in a later run does not
 verify, and the kill reads `self-report`. That costs nothing: one random key per command. A line
@@ -316,7 +319,7 @@ that can read the key signs a line of its own for the run it is in, as above.
 Two forgeries read as plain kills and stay open. A suite that hides `m.Run`'s `PASS` is above. In
 the other, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test
 that passed, which takes the crash rule off it: without `--require-witness` that line is a log line,
-and the test's plain failure is a kill. Forging through `/proc` is out of scope, as stated above.
+and the test's plain failure is a kill. Code that signs, by whatever route, is out of scope, as stated above.
 
 ### What a kill does not prove
 
