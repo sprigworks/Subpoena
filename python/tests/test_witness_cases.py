@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from conftest import CONFORMANCE
-from subpoena.harness import no_spawn
+from subpoena.harness import no_spawn, no_write
 from subpoena.witness import WitnessError, read_log
 
 DOC = yaml.safe_load((CONFORMANCE / "witness.yaml").read_text())
@@ -20,7 +20,7 @@ def test_the_cases_are_there():
     assert set(DOC) == {"traces", "cases"}
 
 
-KEYS = {"name", "lines", "read_error", "health", "spawned", "no_spawn"}
+KEYS = {"name", "lines", "read_error", "health", "spawned", "no_spawn", "wrote", "no_write", "no_write_paths"}
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
@@ -42,4 +42,9 @@ def test_witness_case(case):
         assert [e.pid for e in log.spawned(TRACES[name])] == pids
     for name, want in (case.get("no_spawn") or {}).items():
         v, _ = no_spawn(log, TRACES[name])
+        assert str(v) == want, name
+    for name, paths in (case.get("wrote") or {}).items():
+        assert [e.path for e in log.wrote(TRACES[name])] == paths
+    for name, want in (case.get("no_write") or {}).items():
+        v, _ = no_write(log, TRACES[name], *(case.get("no_write_paths") or []))
         assert str(v) == want, name

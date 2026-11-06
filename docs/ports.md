@@ -11,7 +11,7 @@ progress, and it says so.
 
 | Port | Status |
 | --- | --- |
-| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader, spawn and network absence checks with the loopback sinkhole, Python AST lint, cross-examination for pytest with groups, selection and parallel runs. Not ported: running a witness (it reads the file `subpoena-witness` writes) and registry-drift |
+| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader, spawn, network and file absence checks with the loopback sinkhole, Python AST lint, cross-examination for pytest with groups, selection and parallel runs. Not ported: running a witness (it reads the file `subpoena-witness` writes) and registry-drift |
 | TypeScript | generated names only (`generated/ts/semconv.ts`: `SPAN_AGENT_SESSION_EXEC`, `ATTR_SESSION_ID`, `ATTRIBUTE_TIERS`). Harness not started |
 
 ## What a port is, and what it reuses
@@ -110,7 +110,8 @@ The witness is not ported. `subpoena-witness` (Linux, eBPF) runs beside the
 tests in every language and writes one JSON object per line for each exec. A
 port reads that file. The format is a contract: its schema is
 [witness-event.schema.json](witness-event.schema.json), and a Go test keeps
-the command's output and the schema in step.
+the command's output and the schema in step. The table is an exec line; W7 has
+a file line.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -184,6 +185,26 @@ also pass.
 
 Check: `pkg/witness/sinkhole_test.go` and `pkg/harness/network_test.go`
 hold the cases; the Python runner is `python/tests/test_network.py`.
+
+- **W7. File changes.** The file witness is not ported either: Go's
+  `FileWatch` runs beside the tests (`subpoena-witness -file-root dir`, no
+  privilege) and writes the same kind of file. A line with a non-null `file_op`
+  field is one change. `file_op` is `create`, `write`, `rename` or `unlink`;
+  `path` is the absolute path, `root` the watched root, `is_dir` a boolean,
+  `source` `inotify` or `scan`, `attribution` `root`, and `time` when the
+  witness read the event. A rename is two lines, with `rename` `from` and `to`
+  and the same `cookie`. The start record names the watched `roots`; the stop
+  record may carry a `coverage` line. `wrote(trace_id)` returns every line
+  whose `trace_id` is empty or equals it, so a tier-1 line belongs to every
+  trace. `no_write(witness, trace_id, *paths)` follows W5's rule: one line that
+  touches a path (the path, anything below it, or a rename of a directory
+  above it; none: any line) is Fail even from an unhealthy capture. With none,
+  a path under no root is Inconclusive, as are missing or bad health. A read
+  error, as for an exec: an unknown `file_op`, no `path`, and a field of the
+  wrong type. The SQLite reader is Go-only.
+
+Check: the `file_` cases in `conformance/witness.yaml`; the Python runners are
+`python/tests/test_witness_cases.py` and `python/tests/test_witness.py`.
 
 ## L and G: lint and cross-examination
 

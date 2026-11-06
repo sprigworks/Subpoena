@@ -1,11 +1,13 @@
 """The witness, read from the file subpoena-witness writes (docs/ports.md, W;
-schema: docs/witness-event.schema.json). A port of witness.ReadLog, and of
-the Sinkhole network witness."""
+schema: docs/witness-event.schema.json). A port of witness.ReadLog, exec and
+file lines, and of the Sinkhole network witness. Running a witness of files
+stays Go-only."""
 
 from __future__ import annotations
 
 import ipaddress
 import json
+import posixpath
 import re
 import selectors
 import socket
@@ -42,6 +44,47 @@ class ProcessEvent:
         return self.command_source == "comm"
 
 
+FILE_CREATE = "create"
+FILE_WRITE = "write"
+FILE_RENAME = "rename"
+FILE_UNLINK = "unlink"
+BY_ROOT = "root"
+_FILE_OPS = (FILE_CREATE, FILE_WRITE, FILE_RENAME, FILE_UNLINK)
+
+
+def _path_within(p: str, directory: str) -> bool:
+    """Whether p is directory or lies below it, comparing normalized paths."""
+    p, directory = posixpath.normpath(p), posixpath.normpath(directory)
+    return p == directory or directory == "/" or p.startswith(directory + "/")
+
+
+@dataclass
+class FileEvent:
+    """One change under a watched root, as the file witness saw it. There is
+    no PID: inotify has none to give."""
+
+    op: str
+    path: str
+    root: str
+    is_dir: bool
+    source: str  # "inotify", or "scan" for an entry a new directory's scan found
+    rename: str  # "from" or "to" on a rename, else ""
+    cookie: int  # ties a rename's two sides, 0 otherwise
+    trace_id: str
+    attribution: str
+    seen_at: datetime
+
+    def within(self, path: str) -> bool:
+        """The event's path is path, or lies below it."""
+        return _path_within(self.path, path)
+
+    def touches(self, path: str) -> bool:
+        """The event says something happened to path: it is path, lies below
+        it, or renamed a directory above it, which moved path with no event
+        naming it."""
+        return self.within(path) or (self.op == FILE_RENAME and _path_within(path, self.path))
+
+
 class WitnessError(ValueError):
     pass
 
@@ -60,7 +103,9 @@ _ZERO = datetime(1, 1, 1, tzinfo=timezone.utc)
 # Every field name of an exec line or a record. A key that differs from one
 # only by case is refused: Go's decoder would read it as that field.
 _KNOWN = ("time", "pid", "ppid", "host_pid", "comm", "exe", "command", "args", "cgroup_id", "cgroup",
-          "trace_id", "attribution", "record", "healthy", "error")
+          "trace_id", "attribution", "record", "healthy", "error", "roots", "coverage",
+          "file_op", "path", "root", "is_dir", "source", "rename", "cookie")
+_FILE_STR_FIELDS = ("file_op", "path", "root", "source", "rename", "trace_id", "attribution")
 
 
 def _no_constant(name: str):
@@ -98,8 +143,10 @@ _NO_RECORDS = ("witness: the file has no start or stop records, so its capture h
 class Log:
     """What subpoena-witness wrote, as a witness."""
 
-    def __init__(self, lines: List[dict], health: Optional[str] = None):
+    def __init__(self, lines: List[dict], health: Optional[str] = None, files: Optional[List[dict]] = None,
+                 roots: Optional[List[str]] = None, coverage: str = ""):
         self._lines, self._health = lines, health
+        self._files, self._roots, self._coverage = files or [], roots or [], coverage
 
     def health(self) -> Optional[str]:
         """The first capture fault in the file, or None: no start or stop
@@ -121,6 +168,31 @@ class Log:
         if not trace_id:
             return []
         return [self._event(l) for l in self._lines if (l.get("trace_id") or "") == trace_id]
+
+    def wrote(self, trace_id: str) -> List[FileEvent]:
+        """The file changes for trace_id: lines naming it, and every line that
+        names no trace, which a tier-1 witness's never do."""
+        out = []
+        for l in self._files:
+            tid = l.get("trace_id") or ""
+            if tid and tid != trace_id:
+                continue
+            out.append(FileEvent(
+                op=l["file_op"], path=l["path"], root=l.get("root") or "", is_dir=bool(l.get("is_dir")),
+                source=l.get("source") or "", rename=l.get("rename") or "", cookie=l.get("cookie") or 0,
+                trace_id=tid, attribution=l.get("attribution") or "", seen_at=_parse_time(l["time"])))
+        return out
+
+    def covers(self, path: str) -> bool:
+        """Whether path lies under a root the file's start record names. A
+        path that does not could never appear in wrote(), so no absence rests
+        on it."""
+        return posixpath.isabs(path) and any(_path_within(path, r) for r in self._roots)
+
+    def coverage(self) -> str:
+        """The stop record's account of what the capture might have missed,
+        or "" if it gives none."""
+        return self._coverage
 
     @staticmethod
     def _event(l: dict) -> ProcessEvent:
@@ -146,7 +218,8 @@ def read_log(f: IO[str]) -> Log:
     naming its line number: skipping it could turn an exec into an absence.
     Capture faults (see Log.health) do not stop the read: the execs are still
     evidence that something ran."""
-    lines = []
+    lines, files, roots = [], [], []
+    coverage = ""
     health: Optional[str] = None
     open_at, records, windows = 0, 0, 0  # open_at: line of the open window's start record
 
@@ -178,6 +251,13 @@ def read_log(f: IO[str]) -> Log:
                     raise ValueError("error is not a string")
                 if not isinstance(rec, str):
                     raise ValueError(f"record {rec!r} is not a string")
+                rs = l.get("roots")
+                if rs is not None and (not isinstance(rs, list) or not all(isinstance(r, str) for r in rs)):
+                    raise ValueError("roots is not a list of strings")
+                if l.get("coverage") is not None and not isinstance(l["coverage"], str):
+                    raise ValueError("coverage is not a string")
+                roots.extend(rs or [])
+                coverage = l.get("coverage") or coverage
                 if rec == "start":
                     if open_at:
                         fault(f"witness: line {n}: a capture started while the one from line {open_at} was still open")
@@ -192,6 +272,26 @@ def read_log(f: IO[str]) -> Log:
                 else:
                     raise ValueError(f"unknown record {rec!r}")
                 records += 1
+                continue
+            if l.get("file_op") is not None:
+                for k in _FILE_STR_FIELDS:
+                    if l.get(k) is not None and not isinstance(l[k], str):
+                        raise ValueError(f"{k} is not a string")
+                if l.get("is_dir") is not None and not isinstance(l["is_dir"], bool):
+                    raise ValueError("is_dir is not a boolean")
+                c = l.get("cookie")
+                if c is not None and (isinstance(c, bool) or not isinstance(c, int) or not 0 <= c <= 2**32 - 1):
+                    raise ValueError("cookie is not a uint32")
+                if not l.get("time"):
+                    raise ValueError("no time")
+                _parse_time(l["time"])
+                if not l.get("path"):
+                    raise ValueError("no path")
+                if l["file_op"] not in _FILE_OPS:
+                    raise ValueError(f"unknown file_op {l['file_op']!r}")
+                if not open_at:
+                    fault(f"witness: line {n}: a file event outside any capture window")
+                files.append(l)
                 continue
             for k, (lo, hi) in _INT_FIELDS.items():
                 v = l.get(k)
@@ -226,7 +326,7 @@ def read_log(f: IO[str]) -> Log:
         # neither, so nothing vouches for its absence.
         fault(f"witness: the file holds {windows} capture windows, and nothing watched between them; "
               "use one witness run per file")
-    return Log(lines, health)
+    return Log(lines, health, files, roots, coverage)
 
 
 # The network witness (pkg/witness's NetworkEvent and Sinkhole). Go's eBPF

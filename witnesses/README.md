@@ -14,6 +14,9 @@ The Go interface is `pkg/witness.Witness`:
 Spawned(traceID string) []ProcessEvent
 ```
 
+Its siblings are `NetworkWitness` (`Dialed`) and `FileWitness` (`Wrote`), under
+the same rules.
+
 ## Capture health and absence
 
 `Spawned` remains a raw observation API. Zero observations alone cannot certify
@@ -295,6 +298,171 @@ connect in a real session cgroup are attributed with the right cgroup ID; the
 test process's own dial is not attributed; and a burst of sends before `Stop`
 is not lost.
 
+### Files, tier 1: `FileWatch` (runs in `go test`)
+
+`witness.FileWatch` is inotify on directories the test names, recursive, with
+no privilege needed. It implements `witness.FileWitness`:
+
+```go
+Wrote(traceID string) []FileEvent
+Covers(path string) bool
+```
+
+Each event has a kind (`create`, `write`, `rename`, `unlink`), a path, the time
+the witness read it (`SeenAt`, not when it happened), and where it came from
+(`Source`). A rename is two events, `from` and `to`, tied by `Cookie`; a rename
+across the edge of the watched tree has only one. It reports what the kernel
+queued, not a before and after comparison, so a file written and put back is
+still a write.
+
+```go
+w, err := witness.NewFileWatch(root)              // starts recording
+harness.WatchWrites(t, w, traceID, harness.WriteRule{
+	Allowed: []string{filepath.Join(root, "log")}, // nil allows anything not in Never
+	Never:   []string{filepath.Join(root, "data")}, // must not change, whatever Allowed says
+})
+// ... run the code under test, stop it ...
+w.Stop()
+harness.RequireNoWrite(t, w, traceID, filepath.Join(root, "data"))
+```
+
+`NoWrite`, `RequireNoWrite` and `CheckNoWrite` take absolute paths, each with
+everything below it; no paths means anything under the roots. They follow the
+same rule as `RequireNoDial`: a matching event is Fail even from a bad capture,
+and silence is Pass only from a stopped, healthy one. A rename of a directory
+above a path counts as touching it, since it moved the path with no event
+naming it. A path the witness does not cover is Inconclusive. `Covers` goes by
+spelling, so a path that reaches a root through a symlink is not covered: a
+typo must not read as a pass. `WatchWrites` is the cleanup form, with
+`WatchSpawns`' rules. Point a positive control at the root, a test where the
+write is allowed and the witness sees it, so a wrong root cannot pass for the
+wrong reason.
+
+**Attribution is by root.** inotify carries no PID, and unprivileged fanotify
+gives inode marks only and `pid=0` for other processes (Linux 6.17). Nothing ties an
+event to a process or a trace, so `Wrote` returns every event for every trace
+(`ByRoot`), as `Sinkhole` does: safe for an absence claim, exact when one trace
+is in flight.
+
+**New directories.** A new directory gets its watch first and is listed after,
+so a change is in the listing, in the queue, or in both. What the listing finds
+is reported with `Source` `scan` and kind `create`, whatever was done to it,
+and a directory moved in is scanned the same way. A name can therefore appear
+twice: count events, not files. A directory that was gone before its watch
+landed is a gap, because it may have held anything.
+
+**Inconclusive.** `Health` fails, for good, on any of: `IN_Q_OVERFLOW` (events
+were lost anywhere under any root); a directory with no watch because
+`fs.inotify.max_user_watches` ran out; a root deleted, moved, unmounted or
+replaced (a directory above a root moving shows up only at `Stop`, which
+compares the root with the directory it watched); a directory that could not
+be watched or listed; and a read of the queue that failed or did not decode. It
+fails too until `Stop` has drained the queue. The events already seen stand.
+
+`Coverage()` reports the gaps, and what a clean capture still cannot rule out.
+Log it next to an absence claim:
+
+- `MaxWatchLag`: the longest a new directory went unwatched, as an upper bound.
+  **A file created and removed inside a new directory within this long left no
+  trace at all**: inotify had no watch, and the scan came after it was gone.
+  Unprivileged inotify has no way to close this, so it is reported and does not
+  fail `Health`, as `ProcWitness` reports its longest gap between full scans.
+- `SilentCloses`: files closed after being opened for writing with no write
+  seen. Most are harmless, since SQLite opens read-write and may only read, but
+  this is the only sign of a change made through `mmap`, which inotify does not
+  report as a write. An `mmap` write through a descriptor still open at `Stop`
+  leaves no sign.
+
+Not seen at all: a write through a hard link outside the root, changes made on
+another host (NFS) or in a layer below an overlay mount, attribute changes
+(`chmod`, `chown`, `utimes`), and anything reached through a symlink, which is
+not followed. A change made during `Stop` may be missed, so stop the code under
+test first. Linux only: elsewhere `NewFileWatch` is an error.
+
+A test in another language runs `subpoena-witness -file-root dir`, which needs
+no privilege and writes the capture when it gets SIGTERM, or calls
+`FileWatch.WriteLog` itself. `witness.ReadLog` and Python's `read_log` read the
+file (`docs/ports.md`, W7).
+
+### SQLite: `WatchSQLite` and `RequireNoCommit`
+
+A bare "the file was written" cannot carry a claim about a database. A denied
+request can write an audit row to the same file, a read can open it for
+writing, and a rolled-back transaction can write to it. `witness.WatchSQLite`
+reads the database's own files, with no triggers, no connection and no SQLite
+library, and says whether anything was committed, and to which tables:
+
+```go
+db, err := witness.WatchSQLite(path)   // the baseline, before the request
+w, err := witness.NewFileWatch(filepath.Dir(path))
+// ... run the denied request, stop the code under test ...
+w.Stop()
+harness.RequireNoCommit(t, w, db, traceID, "users")  // an audit row may land; users may not change
+```
+
+`NoCommit`, `RequireNoCommit` and `CheckNoCommit` take table names; none means
+nothing at all may be committed. `db.Change(events)` gives the raw answer:
+`no-change`, `committed` or `unknown`, with the page numbers and table names.
+
+| Mode | How a commit is known | How pages are known | Basis |
+| --- | --- | --- | --- |
+| WAL, frames still there | a commit frame whose salts and checksum chain hold, as in SQLite's own recovery | the frames, commit by commit | `wal-frames` |
+| WAL, frames gone (a checkpoint restarted the log, or the last connection closed and removed it) | the pages differ from the baseline | comparison with the baseline | `page-diff` |
+| Rollback journal | the file change counter in the header moved | comparison with the baseline | `page-diff` |
+
+Frames with no commit after them (a spilled transaction, open or rolled back)
+are counted in `Uncommitted`, and are no change. In rollback mode the journal
+itself cannot show a commit: committing deletes or blanks it. What it can show
+is a live transaction, and a journal in that state makes the answer `unknown`.
+The reader therefore keeps a copy of the pages as its baseline, which is a
+before and after comparison, unlike `FileWatch`. The format leaves no other way.
+
+**Tables are named soundly, at b-tree level.** The reader walks the schema and
+every b-tree, overflow chains and the freelist included, on each side of a
+change, and names the table owning each committed page on either side. Indexes
+count as their table, `WITHOUT ROWID` tables work, and a page that passes from
+one table to another is named under both. Row content is not read. Since a row
+lives on a page of its table's tree, a table whose rows changed is always named
+if its pages were seen, and a test holds this against SQLite's own answer over
+random writes. It over-reports: a page rewritten unchanged, or moved by
+`auto_vacuum` or `VACUUM`, names a table no row of which changed. Commits to
+page 1's header alone do not name the schema; `sqlite_schema` is named only for
+a change after the header. A tree that cannot be walked gives page numbers and
+`TableError`, with no table list.
+
+**`Exact` is what a table claim rests on.** It means every committed page of the
+window was seen, so a table not listed did not change. It holds on the
+`wal-frames` basis, and on `page-diff` for a single commit in rollback mode.
+With several commits in rollback mode, or with a WAL's frames gone, a change
+made and then undone leaves no mark on the pages, so `Exact` is false, and
+`NoCommit` about a table not listed is Inconclusive; a table that is listed is
+still Fail. To keep table claims conclusive, take the baseline right before the
+one request the claim is about. A rig whose code opens and closes its only
+connection per request loses the WAL at each close, and gets `page-diff`; in WAL
+mode a claim about a table then needs a second connection held open by the rig,
+outside the code under test, so the frames survive. A claim with no tables
+needs none of this.
+
+`unknown`, which `NoCommit` reports as Inconclusive: a live journal; a file
+missing, replaced or unreadable; and in WAL mode the frames gone, the pages the
+same as the baseline, and the file witness showing writes to the WAL, which
+is what a change made and undone looks like. That last case is why the reader
+needs the witness: in WAL mode a healthy capture is what proves the WAL was not
+written, and that a checkpoint did not run. `NoCommit` is Inconclusive when the
+witness does not watch the database, when its health is bad, and for a table the
+database never had.
+
+Limits. `Commits` comes from the change counter in rollback mode, and a
+connection in `locking_mode=EXCLUSIVE` bumps that only once, so several commits
+there can read as one and `Exact` is then wrong. An encrypted database is not a
+SQLite file to this reader: `WatchSQLite` fails. The whole database is read into
+memory, and held for the baseline. The reader takes no locks: read while the
+code under test is idle. It retries a read that a write crossed, but a write
+that lands inside one clock tick with no change of size can tear a read. If the
+code under test runs in the same process, closing the reader's descriptor drops
+every POSIX lock that process holds on the file, SQLite's included, so never
+read mid-transaction there.
+
 ### How other witnesses identify a process's cgroup
 
 The kernel's own identity for a cgroup is its path, or its 64-bit cgroup ID
@@ -353,7 +521,8 @@ outside Kubernetes, so off Kubernetes it is unproven as a backstop.
 
 ## Layout
 
-- `../pkg/witness/`: interfaces, `ProcWitness` and `Sinkhole`.
+- `../pkg/witness/`: interfaces, `ProcWitness`, `Sinkhole`, `FileWatch` and the
+  SQLite reader.
 - `../pkg/witness/execbpf/`: the kernel-side witness; `bpf/exec.c` is the eBPF
   program (dual MIT/GPL-2.0, as the kernel requires for its helpers).
 - `../pkg/witness/netbpf/`: the kernel-side network witness; `bpf/net.c` is

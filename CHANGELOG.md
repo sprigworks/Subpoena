@@ -21,6 +21,20 @@
   empty body and records the request line and headers. `Marked` finds arrivals by
   their `X-Subpoena-Mark` header. A mark comes through the code under test, so it
   hides nothing from `Dialed`.
+- **A file witness, tier 1.** `witness.FileWatch` is inotify on a watched root,
+  recursive, with no privilege: `create`, `write`, `rename` and `unlink`, with
+  path and time of reading. Attribution is by root, as `Sinkhole`'s is by
+  destination, so every event is returned for every trace. Overflow, the watch
+  limit, a root that vanishes and a directory lost before its watch landed fail
+  `Health`; `Coverage()` reports the gaps and what no gap can show, a file made
+  and removed in a new directory before its watch landed. The harness gets
+  `NoWrite`, `RequireNoWrite`, `CheckNoWrite` and `WatchWrites`, and the lint
+  counts them. `witness.WatchSQLite` and `RequireNoCommit` read a SQLite
+  database's WAL, header and pages, with no triggers and no SQLite library, to
+  tell a commit from no commit and name the tables changed, so an audit row
+  does not contradict a claim about another table. Python's `read_log` reads the
+  new `file_op` lines, with `no_write`, `require_no_write` and `check_no_write`;
+  running the witness stays Go-only (`subpoena-witness -file-root`).
 - **The wrong cause is no longer called a build failure.** A test or panic whose
   text held `[build failed]` or `[setup failed]` came back `invalid`, read from
   anywhere in the output. Cross now reads only `go test`'s own line. A package

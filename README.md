@@ -130,8 +130,10 @@ Details in [docs/architecture.md](docs/architecture.md).
 | Harness: capture, completeness, Pass / Fail / Inconclusive | yes | yes |
 | TraceQL subset evaluator | yes | yes, native (agrees on all 139 shared cases) |
 | Witnessed absence checks (`RequireNoSpawn`, `WatchSpawns`, capture health) | yes | yes, over the witness file |
-| Running a witness (`/proc`, eBPF exec, eBPF network) | yes | reads the file `subpoena-witness` writes |
+| Running a witness (`/proc`, eBPF exec, eBPF network, inotify) | yes | reads the file `subpoena-witness` writes |
 | Network absence checks (`RequireNoDial`, `Sinkhole`) | yes | yes, with the loopback `Sinkhole` |
+| File absence checks (`RequireNoWrite`, `WatchWrites`, `FileWatch`) | yes | yes, over the witness file |
+| SQLite commit checks (`RequireNoCommit`) | yes | no |
 | Cross-examination (`subpoena-cross`) | yes, plus layer groups, `-j` and `-select` | yes, for pytest, including groups, `-j`, `-select` and evidence files |
 | Lint (`subpoena-lint`) | yes | yes, eight AST rules; registry-drift stays Go-only |
 | Tiers 2 and 3 (OATS, alert rules) | same files, any language | same files, any language |
@@ -206,7 +208,7 @@ weaver-templates/     Weaver templates that generate the Go, Python and TypeScri
 generated/            generated names: go/semconv, python, ts
 pkg/harness/          in-memory exporter, Collect, Trace, Verdict, witness checks
 pkg/traceql/          TraceQL subset evaluator
-pkg/witness/          Witness and NetworkWitness interfaces, ProcWitness, Sinkhole, witness file reader
+pkg/witness/          Witness, NetworkWitness and FileWitness interfaces, ProcWitness, Sinkhole, FileWatch, SQLite reader, witness file reader
 pkg/witness/execbpf/  kernel-side exec witness (eBPF)
 pkg/witness/netbpf/   kernel-side network witness (eBPF)
 pkg/cgroup/           one cgroup per session, named with the trace ID

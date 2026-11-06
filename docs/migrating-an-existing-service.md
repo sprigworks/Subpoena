@@ -273,12 +273,19 @@ a control where the destination is allowed and the connection arrives (see
 connect and named send on the host, attributed by session cgroup; like `execbpf`
 it needs root and BTF. `witnesses/README.md` lists what each does not see.
 
-Other side effects (file or database changes) need another observer, for
-example an audit log. There is no interface for them; that is future work. The
-`unwitnessed-enforcement` lint rule only checks that some test asks a witness
-(`Spawned`, `Dialed`, or a harness check: `NoSpawn`, `RequireNoSpawn`,
-`CheckNoSpawn`, `WatchSpawns`, `NoDial`, `RequireNoDial` or `CheckNoDial`),
-so for other enforcement points review has to carry it.
+For files the sibling is `witness.FileWitness`, with `Wrote(traceID)`:
+`witness.NewFileWatch(root)` is inotify on a directory, with no privilege, and
+`harness.RequireNoWrite(t, w, traceID, path...)` asserts absence. For a SQLite
+database, where a denied request may still write an audit row to the same
+file, `harness.RequireNoCommit(t, w, db, traceID, table...)` asks about commits
+and tables instead. `witnesses/README.md` has what each can and cannot see.
+
+Other side effects (a change in a database behind a socket) need another
+observer, for example an audit log. There is no interface for them; that is
+future work. The `unwitnessed-enforcement` lint rule only checks that some test
+asks a witness (`Spawned`, `Dialed`, `Wrote`, or a harness check such as
+`RequireNoSpawn`, `RequireNoDial` or `RequireNoWrite`; `lint/README.md` has the
+list), so for other enforcement points review has to carry it.
 
 ## 5. Add provenance markers
 
@@ -319,7 +326,7 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 | `no-trace-assertion` | The file defines tests but never calls `Collect()`. If it holds only pure-logic tests, mark it `//subpoena:pure_logic` (see "What to delete"). A helper that wraps `Collect` counts only if every return hands back the trace from its own harness `Collect` call (`lint/README.md`) |
 | `unguarded-absence` | Call `Collect()`, or a verified wrapper, earlier in the same function |
 | `missing-provenance` | Add the marker (step 5) |
-| `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`, `Dialed`) what happened |
+| `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`, `Dialed`, `Wrote`) what happened |
 | `orphan-invariant` | Load the query by name, or add `invariants/<name>.traceql` and regenerate |
 | `provider-override` | Legacy tests often build their own `TracerProvider` with an in-memory exporter. Use the harness's tracer instead; mark a real need with `//subpoena:own_provider <reason>` |
 | `dead-telemetry` | A registry entry nothing emits. Emit it, or remove it from the registry (reviewed). Pass `-dead-telemetry` only when the targets cover the whole service |

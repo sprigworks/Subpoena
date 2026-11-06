@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 )
@@ -31,6 +33,23 @@ type Line struct {
 	Attribution string    `json:"attribution,omitempty"`
 }
 
+// FileLine is one line of file witness output: one change under a watched
+// root. A line with a file_op field is a FileLine; docs/ports.md (W7) has the
+// rest. TraceID is empty for a witness that cannot attribute to a trace, and
+// such a line belongs to every trace.
+type FileLine struct {
+	Time        time.Time `json:"time"`
+	FileOp      string    `json:"file_op"`
+	Path        string    `json:"path"`
+	Root        string    `json:"root"`
+	IsDir       bool      `json:"is_dir"`
+	Source      string    `json:"source"`
+	Rename      string    `json:"rename,omitempty"`
+	Cookie      uint32    `json:"cookie,omitempty"`
+	TraceID     string    `json:"trace_id,omitempty"`
+	Attribution string    `json:"attribution"`
+}
+
 // Record is a line that marks a capture window: "start" once the witness is
 // attached, "stop" when it has stopped, with the capture's health. A record
 // line is told from an exec line by its record field.
@@ -39,6 +58,11 @@ type Record struct {
 	Record  string    `json:"record"`
 	Healthy bool      `json:"healthy"`
 	Error   string    `json:"error,omitempty"`
+	// Roots, on a file witness's start record, are the directories it watched.
+	Roots []string `json:"roots,omitempty"`
+	// Coverage, on a file witness's stop record, is FileCoverage in one line:
+	// what the capture might have missed even when healthy.
+	Coverage string `json:"coverage,omitempty"`
 }
 
 // Record kinds.
@@ -50,12 +74,16 @@ const (
 // Log is a witness file read back: a Witness over what subpoena-witness
 // wrote, for tests that run the witness as a separate process.
 type Log struct {
-	lines  []Line
-	health error // the first capture fault in the file, or nil
+	lines    []Line
+	files    []FileLine
+	roots    []string
+	coverage string
+	health   error // the first capture fault in the file, or nil
 }
 
 var (
 	_ Witness        = (*Log)(nil)
+	_ FileWitness    = (*Log)(nil)
 	_ HealthReporter = (*Log)(nil)
 )
 
@@ -99,6 +127,10 @@ func ReadLog(r io.Reader) (*Log, error) {
 				return nil, fmt.Errorf("witness: line %d: no time", n) //subpoena:enforcement
 			}
 			records++
+			l.roots = append(l.roots, rec.Roots...)
+			if rec.Coverage != "" {
+				l.coverage = rec.Coverage
+			}
 			switch rec.Record {
 			case RecordStart:
 				if open != 0 {
@@ -117,6 +149,28 @@ func ReadLog(r io.Reader) (*Log, error) {
 			default:
 				return nil, fmt.Errorf("witness: line %d: unknown record %q", n, rec.Record) //subpoena:enforcement
 			}
+			continue
+		}
+		if op, ok := keys["file_op"]; ok && string(op) != "null" {
+			var fl FileLine
+			if err := json.Unmarshal(b, &fl); err != nil {
+				return nil, fmt.Errorf("witness: line %d: %w", n, err)
+			}
+			if fl.Time.IsZero() {
+				return nil, fmt.Errorf("witness: line %d: no time", n) //subpoena:enforcement
+			}
+			if fl.Path == "" {
+				return nil, fmt.Errorf("witness: line %d: no path", n) //subpoena:enforcement
+			}
+			switch FileOp(fl.FileOp) {
+			case FileCreate, FileWrite, FileRename, FileUnlink:
+			default:
+				return nil, fmt.Errorf("witness: line %d: unknown file_op %q", n, fl.FileOp) //subpoena:enforcement
+			}
+			if open == 0 {
+				fault(fmt.Errorf("witness: line %d: a file event outside any capture window", n)) //subpoena:enforcement
+			}
+			l.files = append(l.files, fl)
 			continue
 		}
 		var ln Line
@@ -153,7 +207,7 @@ func ReadLog(r io.Reader) (*Log, error) {
 // knownKeys are the field names of Line and Record.
 var knownKeys = func() []string {
 	var out []string
-	for _, v := range []any{Line{}, Record{}} {
+	for _, v := range []any{Line{}, Record{}, FileLine{}} {
 		t := reflect.TypeOf(v)
 		for i := 0; i < t.NumField(); i++ {
 			name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
@@ -193,7 +247,7 @@ func (l *Log) Health() error {
 	return nil
 }
 
-// Len returns the number of lines read.
+// Len returns the number of exec lines read.
 func (l *Log) Len() int { return len(l.lines) }
 
 // Lines returns the lines read, in file order.
@@ -229,3 +283,28 @@ func (l *Log) Spawned(traceID string) []ProcessEvent {
 	}
 	return out
 }
+
+// Wrote returns the file changes for traceID: lines naming it, and every line
+// that names no trace, which a tier-1 witness's never do.
+func (l *Log) Wrote(traceID string) []FileEvent {
+	var out []FileEvent
+	for _, f := range l.files {
+		if f.TraceID != "" && f.TraceID != traceID {
+			continue
+		}
+		out = append(out, FileEvent{
+			Op: FileOp(f.FileOp), Path: f.Path, Root: f.Root, IsDir: f.IsDir, Source: FileSource(f.Source),
+			Rename: f.Rename, Cookie: f.Cookie, TraceID: f.TraceID, Attribution: Attribution(f.Attribution), SeenAt: f.Time,
+		})
+	}
+	return out
+}
+
+// Covers reports whether path lies under a root the file's start record names.
+func (l *Log) Covers(path string) bool {
+	return filepath.IsAbs(path) && slices.ContainsFunc(l.roots, func(r string) bool { return pathWithin(path, r) })
+}
+
+// Coverage is the stop record's account of what the capture might have
+// missed, or "" if it gives none.
+func (l *Log) Coverage() string { return l.coverage }

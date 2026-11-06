@@ -35,7 +35,8 @@ class Finding:
 _SKIP = {'testdata', 'vendor', 'node_modules', '__pycache__', 'venv'}
 _FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
 _WITNESS = {'no_spawn', 'require_no_spawn', 'check_no_spawn', 'watch_spawns',
-            'no_dial', 'require_no_dial', 'check_no_dial', 'watch_dials', 'check_spawns'}
+            'no_dial', 'require_no_dial', 'check_no_dial', 'watch_dials', 'check_spawns',
+            'no_write', 'require_no_write', 'check_no_write'}
 _QUERIES = {'require_absent': 1, 'require_exists': 1, 'absent': 0, 'exists': 0, 'query': 0}
 
 

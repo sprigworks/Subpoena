@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/sprigworks/subpoena/docs/witness-event.schema.json",
-  "title": "subpoena-witness line",
-  "description": "One line of subpoena-witness output: one exec as the kernel saw it, or a record that opens or closes a capture window. A line with a record field is a record; any other line is an exec. See docs/ports.md (W). Readers ignore fields they do not know; existing fields keep their name and meaning.",
+  "title": "subpoena witness line",
+  "description": "One line of witness output: one exec as the kernel saw it, one file change under a watched root, or a record that opens or closes a capture window. A line with a record field is a record, one with a file_op field a file change, and any other line an exec. See docs/ports.md (W, W7). Readers ignore fields they do not know; existing fields keep their name and meaning.",
   "type": "object",
   "additionalProperties": true,
   "properties": {
     "time": {
       "type": "string",
       "format": "date-time",
-      "description": "When the exec was seen, or the record written (RFC 3339, UTC)."
+      "description": "When the exec or file change was seen (for a file change, when the witness read it), or the record written (RFC 3339, UTC)."
     },
     "pid": {
       "type": "integer",
@@ -54,14 +54,15 @@
     "trace_id": {
       "type": "string",
       "pattern": "^[0-9a-f]{32}$",
-      "description": "The session's trace ID, read from its cgroup name. Present only for execs inside a session cgroup."
+      "description": "The session's trace ID, read from its cgroup name. Present only for execs inside a session cgroup, and absent on a file change from a tier-1 witness, which belongs to every trace."
     },
     "attribution": {
       "type": "string",
       "enum": [
-        "cgroup"
+        "cgroup",
+        "root"
       ],
-      "description": "How the exec was tied to trace_id. Present exactly when trace_id is."
+      "description": "How the line was tied to a trace. cgroup: present exactly when trace_id is. root: a file change seen under a watched root, returned for every trace."
     },
     "record": {
       "type": "string",
@@ -78,6 +79,61 @@
     "error": {
       "type": "string",
       "description": "On an unhealthy stop record: what went wrong."
+    },
+    "file_op": {
+      "type": "string",
+      "enum": [
+        "create",
+        "write",
+        "rename",
+        "unlink"
+      ],
+      "description": "What happened to path."
+    },
+    "path": {
+      "type": "string",
+      "description": "The absolute path changed, spelled from the root as it was given."
+    },
+    "root": {
+      "type": "string",
+      "description": "The watched root path is under."
+    },
+    "is_dir": {
+      "type": "boolean",
+      "description": "Whether path is a directory."
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "inotify",
+        "scan"
+      ],
+      "description": "inotify: the kernel queued the event. scan: a scan of a new directory found the entry; file_op is create whatever was done to it."
+    },
+    "rename": {
+      "type": "string",
+      "enum": [
+        "from",
+        "to"
+      ],
+      "description": "Which side of a rename path is."
+    },
+    "cookie": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Ties the two sides of a rename; absent when zero."
+    },
+    "roots": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "On a file witness's start record: the directories it watched."
+    },
+    "coverage": {
+      "type": "string",
+      "description": "On a file witness's stop record: what the capture might have missed even when healthy, in one line."
     }
   },
   "if": {
@@ -93,17 +149,35 @@
     ]
   },
   "else": {
-    "required": [
-      "time",
-      "pid",
-      "ppid",
-      "host_pid",
-      "comm",
-      "exe",
-      "command",
-      "args",
-      "cgroup_id",
-      "cgroup"
-    ]
+    "if": {
+      "required": [
+        "file_op"
+      ]
+    },
+    "then": {
+      "required": [
+        "time",
+        "file_op",
+        "path",
+        "root",
+        "is_dir",
+        "source",
+        "attribution"
+      ]
+    },
+    "else": {
+      "required": [
+        "time",
+        "pid",
+        "ppid",
+        "host_pid",
+        "comm",
+        "exe",
+        "command",
+        "args",
+        "cgroup_id",
+        "cgroup"
+      ]
+    }
   }
 }

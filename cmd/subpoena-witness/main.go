@@ -4,6 +4,12 @@
 //
 //	subpoena-witness [-cgroup-root dir] [-all] [-out file] [-ready file]
 //	subpoena-witness -check-ready file   # exit 0 once the witness is attached
+//	subpoena-witness -file-root dir [-file-root dir ...] [-out file] [-ready file]
+//
+// With -file-root it runs the tier-1 file witness (witness.FileWatch) in place
+// of the eBPF one, and needs no privilege. It writes its lines when told to
+// stop (SIGTERM or SIGINT), so a witness killed outright leaves no file, which
+// proves nothing, as it should.
 //
 // By default only execs inside a session cgroup are written; -all writes every
 // exec on the machine, which an argument-based witness query needs. The line
@@ -35,6 +41,11 @@ func main() {
 	all := flag.Bool("all", false, "write every exec, not only those in a session cgroup")
 	out := flag.String("out", "-", "file to append JSON lines to (- for stdout)")
 	ready := flag.String("ready", "", "file to create once the program is attached")
+	var fileRoots []string
+	flag.Func("file-root", "directory to watch with the file witness, in place of the eBPF witness (repeatable)", func(dir string) error {
+		fileRoots = append(fileRoots, dir)
+		return nil
+	})
 	checkReady := flag.String("check-ready", "", "exit 0 if this ready file exists, 1 otherwise (for container health checks)")
 	flag.Parse()
 
@@ -44,10 +55,49 @@ func main() {
 		}
 		return
 	}
+	if len(fileRoots) != 0 {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		if err := runFiles(fileRoots, *out, *ready, sig); err != nil {
+			fmt.Fprintln(os.Stderr, "subpoena-witness:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(*root, *all, *out, *ready); err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-witness:", err)
 		os.Exit(1)
 	}
+}
+
+// runFiles runs the file witness until stop delivers, then writes the capture.
+// An unhealthy capture is written and returned: the file says so, and so does
+// the exit status.
+func runFiles(roots []string, out, ready string, stop <-chan os.Signal) error {
+	w, err := witness.NewFileWatch(roots...)
+	if err != nil {
+		return err
+	}
+	if ready != "" {
+		if err := os.WriteFile(ready, []byte("attached\n"), 0o644); err != nil {
+			w.Stop()
+			return err
+		}
+		defer os.Remove(ready)
+	}
+	fmt.Fprintln(os.Stderr, "subpoena-witness: attached")
+	<-stop
+	stopErr := w.Stop()
+	var dst io.Writer = os.Stdout
+	if out != "-" {
+		f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return errors.Join(stopErr, err)
+		}
+		defer f.Close()
+		dst = f
+	}
+	return errors.Join(stopErr, w.WriteLog(dst))
 }
 
 func run(root string, all bool, out, ready string) error {
