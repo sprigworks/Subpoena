@@ -61,3 +61,61 @@ func TestLater(t *testing.T) {
 		t.Fatalf("got %+v", r)
 	}
 }
+
+// Review 8, M4. Every package runs now, so a package that hangs on the mutant must
+// not cost the kill another package finished with. The repeat decides.
+func TestACleanKillHoldsWhenAnotherPackageHangs(t *testing.T) {
+	t.Parallel()
+	dir := module(t, map[string]string{"gate.go": gate3,
+		"a/a_test.go": `package a
+
+import ("testing"; "mini")
+
+func TestRefused(t *testing.T) {
+	if mini.Check("mallory") == nil { t.Fatal("mallory let in") }
+}
+`,
+		"z/z_test.go": `package z
+
+import ("testing"; "time"; "mini")
+
+func TestLater(t *testing.T) {
+	if mini.Check("mallory") == nil { time.Sleep(time.Hour) }
+}
+`})
+	if r := killOf(t, Options{Target: dir, Timeout: 20 * time.Second}); r.Outcome != Killed {
+		t.Fatalf("a real kill was lost: %+v", r)
+	}
+}
+
+// A hang with nothing to show for it is still a hang, and a failure in a package
+// that did not finish is not yet a clean one: its binary can still die.
+func TestAHangWithNoFinishedFailureStaysATimeout(t *testing.T) {
+	t.Parallel()
+	dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import ("testing"; "time")
+
+func TestRefused(t *testing.T) {
+	if Check("mallory") == nil { t.Error("mallory let in"); time.Sleep(time.Hour) }
+}
+`})
+	if r := killOf(t, Options{Target: dir, Timeout: 15 * time.Second}); r.Outcome != TimedOut {
+		t.Fatalf("got %+v", r)
+	}
+	plain := event("run", "a", "TestA", "") + event("output", "a", "TestA", "    a_test.go:4: boom\n") + event("fail", "a", "TestA", "")
+	for name, tc := range map[string]struct {
+		raw  string
+		want bool
+	}{
+		"finished":        {plain + event("fail", "a", "", "") + exitEvent("a", "1") + "\n", true},
+		"not finished":    {plain, false},
+		"left no record":  {plain + event("fail", "a", "", "") + exitEvent("a", exitUnknown) + "\n", false},
+		"died":            {plain + event("fail", "a", "", "") + exitEvent("a", "2") + "\n", false},
+		"a printed event": {event("output", "a", "TestA", exitEvent("a", "1")+"\n") + plain, false},
+	} {
+		if got := finishedFailure(tc.raw); got != tc.want {
+			t.Errorf("%s: %v", name, got)
+		}
+	}
+}

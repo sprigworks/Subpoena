@@ -183,7 +183,9 @@ test printed with no newline runs into the failure after it, and go test gives t
 as one line: in a test with a `fail` event the failure is read after that text, at go
 test's own indent. A mutant's first run passes `-test.failfast` to each test binary, so a
 package stops at its first red test and every package runs: go test's own `-failfast`
-skips packages not yet started as soon as one fails. Each kill reports its first evidence, the
+skips packages not yet started as soon as one fails. So a package can hang on the mutant
+after another has caught it: a run that timed out with a clean failure in a package that
+finished goes to the repeat, and with none it is a timeout. Each kill reports its first evidence, the
 first failure message of a failed test, and in Go the first of each package, witness
 if any is, since packages finish in any order: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`

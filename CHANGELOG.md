@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A package that hangs no longer costs another package's kill.** Every package runs now, and a
+  timed-out run went straight to `enforcement-mutant-timeout`, with a clean failure in the
+  output. A run with a clean failure in a package that finished now goes to the repeat, and a
+  hang with none stays a timeout.
 - **A kill that needs an earlier test survives a repeat that stops short.** When the repeat
   crashed or hung, cross ran the first run's failed tests alone, and a test that needs what ran
   before it then passed, so a real kill read as unconfirmed. The first run's own command now

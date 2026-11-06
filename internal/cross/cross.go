@@ -675,12 +675,15 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			// -test.failfast: one red test is a kill, so the rest of a package's
 			// tests need not run. Other packages still run to the end.
 			switch {
-			case timedOut(out, err):
+			case timedOut(out, err) && (orphansOnTimeout || buildFailed(out) || !finishedFailure(raw)):
 				res.Outcome, res.Output = TimedOut, tail(out, 20) //subpoena:enforcement
 				res.Unfinished = unfinished(raw)
 			case buildFailed(out):
 				res.Outcome, res.Output = Invalid, tail(out, 20)
 			default:
+				if timedOut(out, err) {
+					fmt.Fprintf(o.Log, "  did not finish, but a package failed and finished; the repeat decides: still running: %s\n", strings.Join(unfinished(raw), ", "))
+				}
 				ev, msg, crashed := firstFailure(raw, o.key)
 				if crashed {
 					res.Outcome, res.Output = Crashed, crashOutput(raw, 20) //subpoena:enforcement
@@ -879,6 +882,31 @@ func notAKill(raw string, err error, key string, first map[testID]bool) string {
 		}
 	}
 	return "a different test failed when run again with the mutant"
+}
+
+// finishedFailure reports whether a package of a run that timed out failed cleanly
+// and ended: a failure read from a binary that exited 1 by itself. Every package
+// runs, so one that hangs on the mutant says nothing of another that caught it, and
+// that kill goes to the repeat like any other. A failed test in a package still
+// running is no such thing, as its binary can yet die. The exit events are cross's
+// own, so printed text cannot stand in for one.
+//
+//subpoena:enforcement_point
+func finishedFailure(raw string) bool {
+	exited := map[string]bool{}
+	for _, line := range strings.Split(raw, "\n") {
+		var e struct{ Action, Package, Output string }
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &e) == nil && e.Action == exitAction && e.Output == "1" {
+			exited[e.Package] = true
+		}
+	}
+	for _, f := range failures(raw) {
+		if !exited[f.pkg] {
+			continue //subpoena:enforcement
+		}
+		return true
+	}
+	return false
 }
 
 // stoppedShort reports whether a red run hung, gave no clean failure, or lost a
