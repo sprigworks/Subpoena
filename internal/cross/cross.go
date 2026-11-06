@@ -859,7 +859,7 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, run 
 			}
 		}
 		if why != "" {
-			res.Why, res.Output = why, tail(testText(out.raw), 20)
+			res.Why, res.Output = why, redOutput(out)
 			res.Outcome = Unconfirmed //subpoena:enforcement
 			res.Hung = hung || why == noFinish
 			return nil
@@ -882,13 +882,32 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, run 
 			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
 		}
 		if err != nil {
-			res.Why, res.Output = "the suite failed without the mutant", tail(testText(out.raw), 20)
+			res.Why, res.Output = "the suite failed without the mutant", redOutput(out)
 			res.Outcome = Unconfirmed //subpoena:enforcement
 			return nil
 		}
 	}
 	return nil
 }
+
+// redOutput is what to show of a run that cost a kill: the tests that failed in it,
+// its first failure, then its end. The end alone can hide them, as go test -json gives
+// a test's end when it ends, so in a long suite the last lines are the slowest tests'
+// passes. The report's failing line is no help: it names the mutant's first run.
+func redOutput(run testRun) string {
+	out := tail(testText(run.raw), 20)
+	if len(failEvents(run.raw)) == 0 {
+		return out
+	}
+	_, msg, _ := firstFailure(run.raw, run.key)
+	if msg = oneLine(msg); len(msg) > maxShownFailure {
+		msg = msg[:maxShownFailure] + "..."
+	}
+	return fmt.Sprintf("failed in this run: %s\nfirst failure: %s\n%s", strings.Join(failingTests(run.raw), ", "), msg, out)
+}
+
+// maxShownFailure bounds redOutput's first failure, which can be a whole struct.
+const maxShownFailure = 500
 
 // rerunArgs is the command of rerun n without the mutant, from the mutant run's: whole
 // the first time and the failed packages after, each without -test.failfast. A

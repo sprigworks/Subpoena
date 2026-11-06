@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A run that cost a kill says which test failed in it.** An unconfirmed kill showed the last 20
+  lines of the red run and the mutant run's failing tests. In a long suite those lines are the slowest
+  tests' passes, so the test that failed without the mutant could not be seen. The output now starts
+  with the tests that failed in that run and its first failure. What counts as unconfirmed is unchanged.
 - **A panic testify's `suite` recovered is a crash.** It reports one through `t.Errorf`, with no
   line at column 0, so it read as a plain kill. `test panicked:` after a file and line, in a test
   that did not pass, now counts as a crash, as Ginkgo's `[PANICKED]` does. New cost: a failed test

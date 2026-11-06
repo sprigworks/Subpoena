@@ -157,3 +157,34 @@ func TestGoFlagsLeaveTheQuietSignatureAlone(t *testing.T) {
 		}
 	})
 }
+
+// The end of a long suite is its slowest tests' passes, so a run that cost a kill says
+// which tests failed in it, whatever the mutant's own run failed.
+func TestARedRunNamesWhatFailedInIt(t *testing.T) {
+	t.Parallel()
+	dir := module(t, map[string]string{"gate.go": gate3, "run_test.go": counted(t), "gate_test.go": `package mini
+
+import ("fmt"; "testing")
+
+func TestRefused(t *testing.T) { if nth <= 3 && Check("mallory") == nil { t.Fatal("mallory let in") } }
+func TestStale(t *testing.T) { if nth == 4 { t.Fatal("stale cache") } }
+func TestSlow(t *testing.T) { for i := range 40 { t.Run(fmt.Sprint(i), func(t *testing.T) {}) } }
+`})
+	r := killOf(t, Options{Target: dir})
+	if r.Outcome != Unconfirmed || r.Why != "the suite failed without the mutant" {
+		t.Fatalf("got %+v", r)
+	}
+	if !strings.HasPrefix(r.Output, "failed in this run: TestStale\nfirst failure: stale cache\n") {
+		t.Fatalf("output:\n%s", r.Output)
+	}
+	if !slices.Contains(r.Failing, "TestRefused") {
+		t.Fatalf("the first run's tests went: %+v", r.Failing)
+	}
+}
+
+func TestARedRunWithNoFailedTestShowsItsEnd(t *testing.T) {
+	t.Parallel()
+	if got := redOutput(testRun{raw: event("output", "mini", "", "exit status 2\n")}); got != "exit status 2" {
+		t.Fatalf("got %q", got)
+	}
+}
