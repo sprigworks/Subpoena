@@ -1628,7 +1628,7 @@ func crashLine(output string) bool {
 }
 
 // crashEvents gives an exit event of exitCrashLine for each failed package with a
-// crash line in any test's output. readFailures takes a passing test's line for a
+// crash line in its output, a test's or not, in a run that reached it. readFailures takes a passing test's line for a
 // log line, but a framed "=== NAME" line can put a real crash line on any test, one
 // that passed or one that will, and no reading of the output tells that from a log
 // line. RequireWitness asks for what holds against printed text, so it reads the

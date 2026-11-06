@@ -196,12 +196,13 @@ on a passing suite and cross stops at the baseline. `GOFLAGS=-memprofile=...`
 overrides the wrapper's own flag, so on a single-package target every kill is a
 crash: unset it for a cross run. A `panic:` line also voids a package's kills when it
 sits in a test that did not pass, so a panic something recovered, with the
-binary exiting 1, stays a crash. In a test that passed it is a log line, and
+binary exiting 1, stays a crash. So does one printed outside any test, from `TestMain` say, in a
+failed package, in any run. In a test that passed it is a log line, and
 order does not matter: the binary lived. The exception is a test that passed beside one that did
 not, read from `pause` and `cont` events: package testing's frames carry a line printed with no
 frame to whichever test printed last, so a parallel test's `panic:` line can land on its neighbour.
 There it is a crash. The cost is a passing parallel test that logs such a line at the start of a
-line beside a real failure: that kill reads crashed, and the run fails. Sequential tests keep the
+line beside a real failure: that kill reads crashed, and the run fails, wherever the line lands. Sequential tests keep the
 rule, and so do subtests in turn inside one parallel test. Under `--require-witness` it is a crash there too (see
 What forged output can do). A test with a `fail` event has not passed here,
 whatever `pass` sits beside it, so a printed pass does not make a crash a log line. testify's `suite` reports one it recovered through `t.Errorf`, as `test panicked:` after a
@@ -278,8 +279,10 @@ run's full `go test -json` output, killed ones included. `-j N` runs N single
 mutants at once, each in its own copy of the module (group runs stay
 sequential). On cross-self on 2026-10-27 it cut 490 s to 135 s at `-j 8` with
 the same verdicts. Those times are out of date and cross-self has not been timed
-since: a kill then took one suite run and now takes up to five (six if its repeat
-crashes or hangs), with the repeat a whole suite, and `pkg/witness` has gone from
+since: a kill then took one suite run and now takes five, a survivor two. A kill takes one more if
+its first run was green or said `PASS` after a failure, and one more for the first run's command
+plus up to two per package with a failed test if its repeat crashes or hangs, with the repeat a
+whole suite, and `pkg/witness` has gone from
 27 markers to 186 mutants. Load can flip a verdict either way: a polling witness sees less on a
 busy host, turning a kill into a survivor (which fails the run), and a
 timing-sensitive test can fail under contention, turning a survivor into a
@@ -303,21 +306,26 @@ number of enforcement points and mutants.
 
 Cross reads `go test` output, and the code under test can write that output: the lines go test
 frames, `PASS`, and what they turn into events. So a plain kill assumes the suite is not forging
-test-runner output. The rules above stop what a suite prints by accident or in the ordinary way,
-and where they cannot tell, they cost a kill and not make one. They are no defence against a suite
+test-runner output. The rules above stop the shapes they know of a suite printing by accident or in
+the ordinary way, and where they cannot tell, they mostly cost a kill and not make one: a framework
+of a kind cross has not met can still turn a crash into a plain failure. They are no defence against a suite
 built to fool them. Only a verified witness mark under `--require-witness` holds against forged
 output: output that a suite prints. It does not hold against code that signs, which is any code
 that reads the key, by plain `os.Getenv` where the harness is not linked, or that reaches the
 harness with a real `*testing.T`. A false witness kill is open to such code. Under
 `--require-witness` a crash line counts as a crash in any test of a failed package, passed or not. A
-passing test that prints such a line beside a witness failure so reads crashed. Each `go test`
+passing test that prints such a line beside a witness failure so reads crashed, if a run gets as far
+as that test: `-test.failfast` can stop first, and the last tries can then save the kill, and
+`-select` can leave the test out. Each `go test`
 command signs with a new key, so a signed line kept on disk and printed in a later run does not
 verify, and the kill reads `self-report`. That costs nothing: one random key per command. A line
 copied inside one command still verifies, in another package too. This closes replay only: code
 that can read the key signs a line of its own for the run it is in, as above.
 
-Two forgeries read as plain kills and stay open. A suite that hides `m.Run`'s `PASS` is above. In
-the other, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test
+At least four forgeries read as plain kills and stay open. A pair of printed run and fail lines
+beside a real failure is above. Printed run and pass lines can carry a crash line to a test that
+never ran. A suite that hides `m.Run`'s `PASS` is above. In
+another, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test
 that passed, which takes the crash rule off it: without `--require-witness` that line is a log line,
 and the test's plain failure is a kill. Code that signs, by whatever route, is out of scope, as stated above.
 
