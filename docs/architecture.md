@@ -59,8 +59,8 @@ because the instrumentation is a separate statement from the enforcement. A
 suite that trusts spans alone can be green over broken enforcement.
 
 So enforcement is proven by a witness: something outside the application's
-control that observes the side effect directly. Here, process exec events and
-outbound connection attempts.
+control that observes the side effect directly. Here, process exec events,
+outbound connection attempts, and sends on sockets already open.
 Tier 1 uses `ProcWitness`, which polls `/proc` and correlates by cgroup first:
 the gateway puts each session's processes in a cgroup named with the trace ID
 (`pkg/cgroup`), and the witness reads `/proc/<pid>/cgroup` to tie a process to a
@@ -69,10 +69,10 @@ The exec span records which correlation applies (`subpoena.witness.correlation`)
 Tier 2 and production use `pkg/witness/execbpf`: an eBPF program on the exec
 tracepoint that reads each process's cgroup in the kernel, run as
 `cmd/subpoena-witness` with its events shipped to Loki. That command ships
-exec events only. Tier 1 network absence uses `witness.Sinkhole`, a listener
-the test stands up. The kernel sibling is `pkg/witness/netbpf`, in
-`make test-ebpf`; it is not what `cmd/subpoena-witness` runs. See
-`witnesses/README.md` for the gaps in each.
+exec events, plus sends with `-deliveries`. Tier 1 network absence uses
+`witness.Sinkhole`, a listener the test stands up. The kernel sibling is
+`pkg/witness/netbpf`, in `make test-ebpf`. Delivery on a socket already open has
+no tier 1: only `netbpf` sees it. See `witnesses/README.md` for the gaps in each.
 
 The tier-2 OATS fixture proxies test requests through an independent capture
 controller. Its final input stops and drains the witness before OATS judges

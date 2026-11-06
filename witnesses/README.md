@@ -28,7 +28,7 @@ process is Fail even with unhealthy capture; zero processes is Pass only when
 the optional `witness.HealthReporter` (`Health() error`) reports healthy capture.
 Unknown health, capture still running, or a known capture failure yields
 Inconclusive. `RequireNoSpawn` fails on both Fail and Inconclusive.
-`CheckNoSpawn` and `CheckNoDial` are the non-fatal forms: they report the
+`CheckNoSpawn`, `CheckNoDial` and `CheckNoDelivery` are the non-fatal forms: they report the
 failure and let the test go on, so one failing run can show every kind of
 evidence. Witness failures start with `witness:` and telemetry failures with
 `testimony:`.
@@ -296,6 +296,123 @@ connect in a real session cgroup are attributed with the right cgroup ID; the
 test process's own dial is not attributed; and a burst of sends before `Stop`
 is not lost.
 
+### Delivery on an existing socket: `netbpf`, tier 2 only
+
+A broker delivers a message by writing to a subscriber on a socket it accepted
+earlier. Nothing dials, so `Sinkhole` and `Dialed` see nothing. A second eBPF
+program in `netbpf`, also on `fentry/security_socket_sendmsg`, reports those
+sends, and `netbpf.Witness` also implements `witness.DeliveryWitness`:
+
+```go
+Delivered(traceID string) []DeliveryEvent
+```
+
+**There is no tier 1 for this, and none is planned.** Seeing a write on a socket
+another process holds takes the kernel. A listener the test stands up sees only
+its own connections, and a subscriber the test runs is a plain recorder of what
+reached it, not a witness of what the broker did. Without root, BTF and cgroup
+v2 this witness cannot run, and a test that needs it must say the claim was not
+checked. `Sinkhole` is no substitute.
+
+The hook sees `write`, `writev`, `send`, `sendto`, `sendmsg`, `sendmmsg` and, on
+Linux 6.5 and later, `sendfile` and `splice`, because all of them reach the same
+LSM entry point; `write` gets there through `sock_write_iter`. `make test-ebpf`
+runs `write`, `writev`, `sendmsg` and `sendfile`, and the rest are not tested.
+The program reads the peer from the socket, not from the call:
+each `DeliveryEvent` has `Peer` (the far end), `Local` (this end, for a broker its
+listener's port), `Bytes`, `Protocol` and the caller's PID and cgroup. A send that
+names its destination (a UDP server's `sendto`) is delivery to that destination:
+`Op` is `sendmsg` instead of `deliver`, and the same send is in `Dialed` too.
+
+A claim names a peer, because a broker also writes acks to the publisher on the
+publisher's own socket:
+
+```go
+// Subscribers connect first. The peer is the subscriber's end of the connection.
+denied := netip.MustParseAddrPort(subscriber.LocalAddr().String())
+w := netbpf.New(netbpf.Config{CgroupRoot: root})
+w.Start()                     // after the subscribe handshakes, see below
+harness.WatchDeliveries(t, w, traceID, harness.DeliveryRule{
+	Never: []netip.AddrPort{denied},
+})
+// or, once stopped:
+harness.RequireNoDelivery(t, w, traceID, harness.DeliveryTo(denied))
+```
+
+`harness.NoDelivery`, `RequireNoDelivery` and `CheckNoDelivery` have the verdict
+rules of `NoDial`: a matching send is Fail even from a bad capture, and with none
+the verdict is Pass only on healthy, stopped, retained capture. A nil match means
+any send, the broker's acks included. `DeliveryRule` works like `SpawnRule`: `Never`
+wins over `Allowed`, nil `Allowed` allows any peer not in `Never`, and an empty
+non-nil `Allowed` allows none. Unlike `SpawnRule`, a rule that names no peer at all
+fails, as it claims nothing.
+
+In a peer, a zero port matches every port of the address, and a zero or
+unspecified address matches the port on any address. A send the witness could not
+place (`PeerUnknown`) is a hit for `DeliveryTo` and `Never`, and so is one to the
+right address with no port; no `Allowed` entry excuses either. Raw and SCTP
+sockets can give these, as can a send on a socket with no peer at all.
+
+Read a Pass with these in mind:
+
+- **It sees that bytes went, not what they were.** A `PINGRESP` or `SUBACK` on the
+  subscriber's socket looks like a `PUBLISH`, and a TLS socket looks the same as
+  a plain one. Start the witness after the subscribers have finished their
+  handshakes so those are out of the window, or use the `match` function on
+  `Bytes`. Keepalives inside the window are a real false Fail.
+- **The sender must be in the session cgroup.** Attribution is by cgroup alone,
+  so a broker running inside the test binary, as a Go library often does, is not
+  seen unless the test process itself is in the session cgroup. The clean form is
+  a separate broker process started with `Group.Start`. A process outside every
+  session cgroup is not even reported: unlike dials, these sends are filtered in
+  the kernel, because host-wide they would fill the ring buffer. A worker the
+  broker hands sends to, outside the cgroup, is not seen either.
+- **A wrong peer passes.** Naming the broker's listener port instead of the
+  subscriber's matches nothing. Pair the claim with a positive control, as with
+  `Sinkhole`: a subscriber that was allowed, whose delivery `Delivered` shows.
+- **It records the attempt.** The hook runs before the send, so a send that then
+  fails still counts, and `Bytes` is what the caller asked for, not what the peer
+  got. That over-reports, the safe direction for absence, but it is not proof a
+  message arrived. It also reports a connected UDP socket's peer on a `sendto` to
+  somewhere else, and a TCP send's ignored name, each alongside the real peer.
+- **The peer is what the sender's kernel holds.** Behind NAT or a proxy it is the
+  proxy. It is an address, not an identity: an ephemeral port reused inside the
+  window is a different peer with the same name, and two network namespaces can
+  hold the same address.
+
+Not seen: sockets that are not inet (`AF_UNIX`, netlink), which have no address
+to report, so a broker serving subscribers over a Unix socket needs another
+witness; `sendfile` and `splice` before Linux 6.5, which by the kernel's history
+took a path without this hook (not tested; only Linux 6.17 has been run), with no
+fault raised, so do not rest this claim on an older kernel; kernel TCP
+retransmits; and a sender nested more than 6 levels below its session cgroup,
+which the 8-element path walk does not reach, for this and for `Dialed`. Not
+tested: `io_uring`, `sendmmsg`, MPTCP and SCTP.
+
+`DeliveryCoverage()` says what a capture might have missed: sends reported, how
+many have no known peer, sends in session cgroups on sockets that are not inet
+(counted in the kernel), and lost events. `WatchDeliveries` logs the count of
+those other sends. A healthy capture with that count above zero means a peer
+reached over such a socket is simply not in `Delivered`.
+
+Capture health is `netbpf`'s, one ring buffer and one loss counter for both kinds
+of event. A failed reservation, a reader or decode error, a failed drain or an
+unreadable counter fails `Health`, and so does a failed load or attach of any of
+the three hooks, with the reason kept. A cgroup root name the kernel filter could
+never match (empty, or 64 bytes and over) fails `Start`. `make test-ebpf` runs its
+kernel tests: a broker process in a real session cgroup writing on accepted
+sockets (IPv4, a dual-stack listener, IPv6), with the real subscribers' sockets
+as the check; a denied subscriber that was written to; connected and unconnected
+UDP; a child cgroup of the session; an `AF_UNIX` send counted and not reported; a
+burst drained at `Stop`; a real overflow, with the reader held so reservations
+fail; and a refused attach of the delivery hook.
+
+`subpoena-witness -deliveries` runs this next to `execbpf` and writes one line per
+send from a session cgroup, so a test in another language can read it. Python's
+`Log.delivered`, `no_delivery`, `require_no_delivery`, `check_no_delivery` and
+`delivery_to` read that file. Running the witness stays Go-only, and Python has
+no `watch_deliveries`.
+
 ### How other witnesses identify a process's cgroup
 
 The kernel's own identity for a cgroup is its path, or its 64-bit cgroup ID
@@ -357,8 +474,8 @@ outside Kubernetes, so off Kubernetes it is unproven as a backstop.
 - `../pkg/witness/`: interfaces, `ProcWitness` and `Sinkhole`.
 - `../pkg/witness/execbpf/`: the kernel-side witness; `bpf/exec.c` is the eBPF
   program (dual MIT/GPL-2.0, as the kernel requires for its helpers).
-- `../pkg/witness/netbpf/`: the kernel-side network witness; `bpf/net.c` is
-  its eBPF program (dual MIT/GPL-2.0).
+- `../pkg/witness/netbpf/`: the kernel-side network and delivery witness;
+  `bpf/net.c` is its eBPF program (dual MIT/GPL-2.0).
 - `../cmd/subpoena-witness/`: runs it as a daemon, JSON lines out.
 - `../pkg/cgroup/`: per-session cgroup creation, placement and IDs, shared by
   the gateway and the witnesses.

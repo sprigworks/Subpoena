@@ -22,7 +22,8 @@ that kind of code in three ways.
 2. **An independent witness checks what really happened.** The code that
    enforces a rule is also the code that reports it did, so its spans only
    count as testimony. A witness the app doesn't control (`/proc` polling, or
-   eBPF probes in the Linux kernel, for process execs and outbound connections)
+   eBPF probes in the Linux kernel, for process execs, outbound connections and
+   sends on open sockets)
    records what actually ran. A capture the witness knows is broken fails the
    test. The `/proc` witness polls, so it can miss a process that starts and
    exits between two scans; `Coverage()` reports the worst gap, and the eBPF
@@ -132,6 +133,7 @@ Details in [docs/architecture.md](docs/architecture.md).
 | Witnessed absence checks (`RequireNoSpawn`, `WatchSpawns`, capture health) | yes | yes, over the witness file |
 | Running a witness (`/proc`, eBPF exec, eBPF network) | yes | reads the file `subpoena-witness` writes |
 | Network absence checks (`RequireNoDial`, `Sinkhole`) | yes | yes, with the loopback `Sinkhole` |
+| Delivery on an existing socket (`RequireNoDelivery`, `WatchDeliveries`), eBPF only | yes | `no_delivery` over the witness file |
 | Cross-examination (`subpoena-cross`) | yes, plus layer groups, `-j` and `-select` | yes, for pytest, including groups, `-j`, `-select` and evidence files |
 | Lint (`subpoena-lint`) | yes | yes, eight AST rules; registry-drift stays Go-only |
 | Tiers 2 and 3 (OATS, alert rules) | same files, any language | same files, any language |
@@ -208,7 +210,7 @@ pkg/harness/          in-memory exporter, Collect, Trace, Verdict, witness check
 pkg/traceql/          TraceQL subset evaluator
 pkg/witness/          Witness and NetworkWitness interfaces, ProcWitness, Sinkhole, witness file reader
 pkg/witness/execbpf/  kernel-side exec witness (eBPF)
-pkg/witness/netbpf/   kernel-side network witness (eBPF)
+pkg/witness/netbpf/   kernel-side network and delivery witness (eBPF)
 pkg/cgroup/           one cgroup per session, named with the trace ID
 pkg/production/       drop test-tier attributes in production (exporter, Collector config)
 witnesses/            witness design notes, Tetragon policy (enforcement)

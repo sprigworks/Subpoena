@@ -107,8 +107,8 @@ query. It exits 0 only if every answer matches. CI runs it against
 ## W: the witness
 
 The witness is not ported. `subpoena-witness` (Linux, eBPF) runs beside the
-tests in every language and writes one JSON object per line for each exec. A
-port reads that file. The format is a contract: its schema is
+tests in every language and writes one JSON object per line for each exec, and
+with `-deliveries` for each send (W8). A port reads that file. The format is a contract: its schema is
 [witness-event.schema.json](witness-event.schema.json), and a Go test keeps
 the command's output and the schema in step.
 
@@ -184,6 +184,39 @@ also pass.
 
 Check: `pkg/witness/sinkhole_test.go` and `pkg/harness/network_test.go`
 hold the cases; the Python runner is `python/tests/test_network.py`.
+
+- **W8. Delivery lines.** `subpoena-witness -deliveries` also writes one line
+  per send from a session cgroup; a line with a non-null `delivery_op` field is
+  one, and it comes before the exec reading of a line. The fields are `time`,
+  `pid`, `host_pid`, `comm`, `cgroup_id`, `cgroup`, `trace_id` and `attribution`
+  as above, and:
+
+  | Field | Type | Meaning |
+  | --- | --- | --- |
+  | `delivery_op` | `"deliver"` or `"sendmsg"` | a send on a connected socket, or one that named its destination |
+  | `protocol` | string | `tcp`, `udp`, or another IP protocol name or number |
+  | `peer` | string | the far end, `address:port` or `[address]:port`; empty when the witness could not read it |
+  | `local` | string | this end, in the same form; empty when unknown |
+  | `bytes` | integer (uint64) | what the caller asked to send, not what the peer received |
+
+  A stop record may carry `coverage`, one line on what the capture might have
+  missed even when healthy. W3 and W4 apply: `delivered(trace_id)` returns every
+  line whose `trace_id` equals it, the empty trace ID matches nothing, and a line
+  outside the window is a capture fault. A read error, never a skip: an unknown
+  `delivery_op`, and a `peer` or `local` that is not empty and does not parse. An
+  empty `peer` is not an error: such a send may have gone to any peer.
+  `no_delivery(witness, trace_id, match)` follows W6's rule over `delivered`.
+  `delivery_to(peers)` matches a send that may have gone to a peer: a zero port
+  matches every port of the address, an unspecified address matches the port on
+  any address, an IPv4-mapped address matches its IPv4 form, a send with an
+  unknown peer or no port matches, and naming no peers matches every send. A port
+  reads the file; it does not run this witness, which has no tier 1 in any
+  language.
+
+Check: the `delivery_` cases in `conformance/witness.yaml` (`delivered`,
+`no_delivery`, `no_delivery_peers`); the matching rules are in
+`pkg/harness/delivery_test.go`, and the Python runner is
+`python/tests/test_delivery.py`.
 
 ## L and G: lint and cross-examination
 
