@@ -295,8 +295,8 @@ output, and there a crash line counts as a crash in any test of a failed package
 passing test that prints such a line beside a witness failure so reads crashed. Each `go test`
 command signs with a new key, so a signed line kept on disk and printed in a later run does not
 verify, and the kill reads `self-report`. That costs nothing: one random key per command. A line
-copied inside one command still verifies, in another package too, but a witness really failed in
-that run for it to exist.
+copied inside one command still verifies, in another package too. This closes replay only: code
+that can read the key signs a line of its own for the run it is in, as above.
 
 Two forgeries read as plain kills and stay open. A suite that hides `m.Run`'s `PASS` is above. In
 the other, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test

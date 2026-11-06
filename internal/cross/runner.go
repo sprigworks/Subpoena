@@ -213,8 +213,8 @@ type testRun struct{ raw, key string }
 // event for each package that failed, and under RequireWitness crashEvents. Each
 // command signs with a key of its own, made here, so a mark says which run it came
 // from: a line kept from another mutant's run, or from this mutant's first run, does
-// not verify. Nothing outlives the command, so what a test wrote to disk or a process
-// it left running knows no later key. Inside one command the packages share the key.
+// not verify. Inside one command the packages share the key. This stops a kept line
+// and no more: code that can read a run's key can sign for that run (internal/crossmark).
 //
 //subpoena:enforcement_point
 func (r *runner) test(ctx context.Context, o Options, sb sandbox, args ...string) (testRun, error) {
