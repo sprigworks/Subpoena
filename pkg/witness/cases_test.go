@@ -37,6 +37,7 @@ func TestReadLogPassesTheSharedCases(t *testing.T) {
 			NoDelivery      map[string]string   `yaml:"no_delivery"`
 			NoDeliveryPeers []string            `yaml:"no_delivery_peers"`
 			Committed       map[string][]string `yaml:"committed"`
+			NoRow           map[string]string   `yaml:"no_row"` // the conformance package runs this one
 		} `yaml:"cases"`
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(b))

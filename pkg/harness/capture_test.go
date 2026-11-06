@@ -117,6 +117,12 @@ func TestWatchChecksNeedTheirCapture(t *testing.T) {
 			if got := tc.check(f); got != tc.want {
 				t.Fatalf("check = %v, want %v", got, tc.want)
 			}
+			if !tc.want && (len(f.errs) != 1 || !strings.HasPrefix(f.errs[0], TagInconclusive) || !strings.Contains(f.errs[0], "capture")) {
+				t.Fatalf("errors = %q, want one Inconclusive naming the capture", f.errs)
+			}
+			if tc.want && len(f.errs) != 0 {
+				t.Fatalf("errors = %q", f.errs)
+			}
 		})
 	}
 }
