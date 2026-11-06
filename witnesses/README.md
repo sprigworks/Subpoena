@@ -829,7 +829,7 @@ outside a short built-in list, a cast or typed string to a type outside one
 excused only in its exact keyword position, as `X'1F'` touching its quote or
 `AT TIME ZONE 'UTC'`), and a field of an expression, `(o).w`. The lists hold what
 pgx, psql and common ORMs send; a live test holds them to `pg_proc`, where every
-function but the few that touch sequences, locks or the clock is stable or immutable. A
+function but the few that touch sequences, locks, sleep or random numbers is stable or immutable. A
 plain qualified column
 `o.w` stays a read, though it is `w(o)` when `o` has no column `w`: every ORM writes
 them, and a Fail on an ordinary read is a false verdict too. That one is a limit,

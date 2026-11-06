@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -401,7 +402,8 @@ func TestReview7MySQLFalsePasses(t *testing.T) {
 		"character_set_client in backticks": func(r *myRig, db *sql.DB) {
 			f := fn(r)
 			must(r.t, db, "SET `character_set_client`=gbk")
-			must(r.t, db, "SELECT "+f+"()")
+			// 0xBF takes the backslash into one character, so the quote closes the string.
+			must(r.t, db, "SELECT '\xbf\\', "+f+"() -- '")
 		},
 		// H5
 		"LOCK TABLES fails after its commit": func(r *myRig, db *sql.DB) {
@@ -485,6 +487,9 @@ func TestReview7MySQLEndOfSessionIsNotARollback(t *testing.T) {
 			if v := r.verdict(tc.rows); v != harness.Inconclusive {
 				t.Fatalf("%v: %+v", v, r.w.Statements())
 			}
+			if f := strings.Join(r.w.Coverage().Faults, "; "); !strings.Contains(f, "COM_QUIT") {
+				t.Fatalf("not the quit's fault: %s", f)
+			}
 		})
 	}
 	t.Run("MyISAM, resetconnection", func(t *testing.T) {
@@ -529,9 +534,15 @@ func TestReview7MySQLEndOfSessionIsNotARollback(t *testing.T) {
 	})
 }
 
-// waitMyQuiet is here so that a quit has reached the server before the row count.
+// waitMyQuiet gives a quit time to reach the witness, then stops it: Stop on a
+// connection still closing would read as a drop.
 func waitMyQuiet(r *myRig) {
 	r.t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if c := r.w.Coverage(); c.Unknown+c.RolledBack != 0 {
+			break
+		}
+	}
 	r.w.Stop()
 }
 

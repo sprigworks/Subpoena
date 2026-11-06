@@ -232,6 +232,7 @@ func TestReview7CallPositions(t *testing.T) {
 		pgOnly("INSERT INTO o AS u (id) VALUES (1)", "write", "o"),
 		pgOnly("INSERT INTO o AS u (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET id = u.id", "write", "o"),
 		pgOnly(`INSERT INTO "o" AS "u" ("id") VALUES (1)`, "write", "o"),
+		pgOnly("INSERT INTO o AS u (update) VALUES (1)", "write", "o"), // a column, as it is with no alias
 		pgOnly("SELECT id FROM t WHERE v LIKE ('a%')", "read"),
 		pgOnly("SELECT id FROM t WHERE t.name LIKE ('a%') AND t.type NOT ILIKE ('a')", "read"),
 		pgOnly("SELECT id FROM t WHERE name NOT LIKE ('a%')", "read"),

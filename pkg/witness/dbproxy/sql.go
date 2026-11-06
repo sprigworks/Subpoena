@@ -1170,6 +1170,8 @@ func pgSetTaint(rest []token) string {
 }
 
 // pgSetPathTaint is pgPathTaint for a SET's value, which has to be a plain list.
+//
+//subpoena:enforcement_point
 func pgSetPathTaint(value []token) string {
 	var parts []string
 	for i, t := range value {
@@ -1350,7 +1352,7 @@ func mySetTaint(rest []token) string {
 			end++
 		}
 		if why := myAssignTaint(rest[:end]); why != "" {
-			return why
+			return why //subpoena:enforcement
 		}
 		rest = rest[min(end+1, len(rest)):]
 	}
@@ -1358,6 +1360,8 @@ func mySetTaint(rest []token) string {
 }
 
 // myAssignTaint is mySetTaint for one assignment.
+//
+//subpoena:enforcement_point
 func myAssignTaint(part []token) string {
 	for i, t := range part {
 		if t.punct("=") {

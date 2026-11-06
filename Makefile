@@ -99,7 +99,7 @@ test-ebpf:
 # clients. Plain `go test` runs these too if Docker and both images are there, and
 # skips otherwise; SUBPOENA_DB_REQUIRE pulls the images and makes a skip a failure.
 test-db:
-	SUBPOENA_DB_REQUIRE=1 go test -count=1 -v ./pkg/witness/dbproxy/live
+	SUBPOENA_DB_REQUIRE=1 go test -count=1 -timeout 30m -v ./pkg/witness/dbproxy/live
 
 # Regenerate the eBPF objects and Go bindings from pkg/witness/{execbpf,netbpf}/bpf/*.c
 # (needs clang). The output is committed so ordinary builds need no clang.
