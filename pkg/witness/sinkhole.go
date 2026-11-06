@@ -199,13 +199,17 @@ func (s *Sinkhole) Dialed(string) []NetworkEvent {
 }
 
 // Marked returns the arrivals whose first MarkHeader is mark, for telling one
-// request from another. It is no absence check: ask Dialed for that.
+// request from another: an arrival with no such header matches no mark, "" included.
+// It is no absence check: ask Dialed for that.
 func (s *Sinkhole) Marked(mark string) []NetworkEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []NetworkEvent
 	for _, e := range s.events {
-		if e.HTTP != nil && e.HTTP.Headers.Get(MarkHeader) == mark {
+		if e.HTTP == nil {
+			continue
+		}
+		if marks := e.HTTP.Headers.Values(MarkHeader); len(marks) > 0 && marks[0] == mark {
 			out = append(out, e)
 		}
 	}

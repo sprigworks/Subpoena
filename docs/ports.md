@@ -307,8 +307,9 @@ Check: the row cases in `conformance/witness.yaml`, through both runners, and
   assertion, or a dead test process is `crashed`; an assertion library's own
   failure type counts as an assertion, as webtest's status check does in
   Python); a hang, or a test-framework
-  timeout, is `timeout`; a kill that passes when run again with the mutant, or
-  fails in a rerun without it, is `unconfirmed`, which fails the run, and `-select` does not retry
+  timeout, is `timeout`; a kill that, run again with the mutant on a fresh copy, is not a
+  clean failure of a test that failed the first time, or that fails in a rerun without
+  the mutant, is `unconfirmed`, which fails the run, and `-select` does not retry
   it on the whole suite; a marker that takes no effect, and an enforcement point with no
   statement marker, are errors; the baseline must be green. Python's
   `subpoena-cross` also refuses a mutant the suite never imported from the

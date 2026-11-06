@@ -5,6 +5,7 @@ package witness
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -244,5 +245,45 @@ func TestAnArrivalThatIsNotHTTPStillCounts(t *testing.T) {
 	}
 	if got := s.Dialed("any"); len(got) != 1 || got[0].HTTP != nil || got[0].Attribution != ByDestination {
 		t.Fatalf("events %+v", got)
+	}
+}
+
+// Review 6, finding 14: the same bytes read the same in both languages
+// (python/tests/test_network.py has this table too). Only Marked differs by
+// request: Dialed sees every arrival.
+func TestMarkedReadsARequestAsPythonDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name, head, mark string
+		want             int
+		answered         bool
+	}{
+		{"no header matches no mark", "Host: x\r\n", "", 0, true},
+		{"an empty header matches the empty mark", "Host: x\r\nX-Subpoena-Mark:\r\n", "", 1, true},
+		{"a space before the colon stays in the name", "Host: x\r\nX-Subpoena-Mark : a\r\n", "a", 0, true},
+		{"a folded value joins", "Host: x\r\nX-Subpoena-Mark: a\r\n b\r\n", "a b", 1, true},
+		{"a folded value is not its first line", "Host: x\r\nX-Subpoena-Mark: a\r\n b\r\n", "a", 0, true},
+		{"a line with no colon is no request", "Host: x\r\nX-Subpoena-Mark: a\r\nnocolon\r\n", "a", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := answering(t)
+			c, err := net.Dial("tcp", s.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			fmt.Fprintf(c, "GET / HTTP/1.1\r\n%s\r\n", tc.head)
+			c.SetReadDeadline(time.Now().Add(5 * time.Second))
+			reply, _ := io.ReadAll(c)
+			s.Stop()
+			if got := len(reply) > 0; got != tc.answered {
+				t.Errorf("answered = %v, reply %q", got, reply)
+			}
+			if got := len(s.Marked(tc.mark)); got != tc.want {
+				t.Errorf("Marked(%q) = %d, want %d", tc.mark, got, tc.want)
+			}
+			if got := len(s.Dialed("any")); got != 1 {
+				t.Errorf("Dialed = %d", got)
+			}
+		})
 	}
 }

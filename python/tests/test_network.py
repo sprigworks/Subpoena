@@ -286,3 +286,31 @@ def test_an_arrival_that_is_not_http_still_counts():
     assert s.stop() is None
     (e,) = s.dialed("any")
     assert e.request == "" and e.attribution == BY_DESTINATION
+
+
+# Review 6, finding 14: the same bytes read the same in both languages
+# (pkg/witness/sinkhole_test.go has this table too). Only marked() differs by
+# request: dialed() sees every arrival.
+@pytest.mark.parametrize("head,mark,want,answered", [
+    ("Host: x\r\n", "", 0, True),
+    ("Host: x\r\nX-Subpoena-Mark:\r\n", "", 1, True),
+    ("Host: x\r\nX-Subpoena-Mark : a\r\n", "a", 0, True),
+    ("Host: x\r\nX-Subpoena-Mark: a\r\n b\r\n", "a b", 1, True),
+    ("Host: x\r\nX-Subpoena-Mark: a\r\n b\r\n", "a", 0, True),
+    ("Host: x\r\nX-Subpoena-Mark: a\r\nnocolon\r\n", "a", 0, False),
+])
+def test_marked_reads_a_request_as_go_does(head, mark, want, answered):
+    s = Sinkhole(answer=True)
+    c = socket.create_connection((str(s.addr.addr), s.addr.port), timeout=5)
+    c.sendall(f"GET / HTTP/1.1\r\n{head}\r\n".encode())
+    reply = b""
+    while True:
+        chunk = c.recv(4096)
+        if not chunk:
+            break
+        reply += chunk
+    c.close()
+    s.stop()
+    assert bool(reply) == answered, reply
+    assert len(s.marked(mark)) == want
+    assert len(s.dialed("any")) == 1

@@ -65,7 +65,7 @@ const (
 	MarkerGuard            = "subpoena:enforcement_guard"
 )
 
-// killRepeats is how many times a kill's failed packages run again with the
+// killRepeats is how many times a kill's whole test command runs again with the
 // mutant, on a fresh copy. A red run the mutant caused is red again; a rare flake
 // is not, and this is what stops one: runs without the mutant pass a flake that
 // fails one time in twenty-five nearly every time.
@@ -97,9 +97,11 @@ const (
 	// TimedOut means the suite did not finish within Options.Timeout. A hang
 	// may be the mutant's doing or the host's, so it is not a kill.
 	TimedOut Outcome = "enforcement-mutant-timeout"
-	// Unconfirmed means the suite went red on an assertion, but it passed when
-	// run again with the mutant, or failed in a rerun without it: leftover state
-	// or a flake, so the mutant may have had no part in it. A kill it is not.
+	// Unconfirmed means the suite went red on an assertion, but the kill did not
+	// hold: run again with the mutant on a fresh copy it was no clean failure of a
+	// test that failed the first time, or it failed in a rerun without the mutant,
+	// or no failed test's binary links the mutated code. Leftover state or a flake,
+	// so the mutant may have had no part in it. A kill it is not.
 	Unconfirmed Outcome = "enforcement-mutant-unconfirmed"
 	// Crashed means the suite went red with no clean failure message: a test
 	// binary died (panic, runtime fatal error, os.Exit), or a test failed
@@ -159,7 +161,8 @@ type Result struct {
 	Group   string   // set on a whole-group run
 	Outcome Outcome
 	Failing []string // names of failing tests, for Killed
-	// Why says why a kill is Unconfirmed.
+	// Why says why a kill is Unconfirmed, or why a witness kill came back
+	// KilledBySelfReport from its repeat.
 	Why string
 	// Evidence is the kind of the first failure in a Killed run, and
 	// FirstFailure that failure's message.
@@ -173,7 +176,8 @@ type Result struct {
 	// ZeroReturns lists the zero-value returns that stood in for returns the
 	// function could not end without, so a mutant could compile.
 	ZeroReturns []string
-	// Hint says what to do about an Invalid result, when cross can tell.
+	// Hint says what to do about an Invalid or Unconfirmed result, when cross
+	// can tell.
 	Hint string
 	// EvidenceFile is where the full go test -json output was kept, if
 	// Options.EvidenceDir is set.
@@ -264,8 +268,8 @@ type Options struct {
 	RequireWitness bool
 	Target         string // directory to cross-examine, inside a Go module
 	// Timeout bounds each go command; 5 minutes if zero. A kill is a build and
-	// 1+killRepeats+killReruns test commands, so a mutant can take that many
-	// times as long.
+	// 1+killRepeats+killReruns test commands, one more for each repeat that
+	// crashed or hung, so a mutant can take that many times as long.
 	Timeout time.Duration
 	Log     io.Writer // progress; io.Discard if nil
 	// EvidenceDir, if set, keeps the full go test -json output of every
@@ -376,6 +380,12 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		}
 		return sb
 	}
+	// A tree fresh could not remove goes here, so it ends with the run.
+	stale, err := os.MkdirTemp("", "subpoena-cross-stale-")
+	if err != nil {
+		return nil, err
+	}
+	defer removeLeftovers(o.Log, stale)
 	// Nothing runs in the discovery copy. Each worker has a directory that a
 	// fresh copy of it replaces before every run, made after the replaces were
 	// rewritten: the same bytes, so the drift check holds, and no case sees what
@@ -386,9 +396,9 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer removeTree(dir)
+		defer removeLeftovers(o.Log, dir)
 		sb := inCopy(dir)
-		sb.template = tmp
+		sb.template, sb.stale = tmp, stale
 		workers = append(workers, sb)
 	}
 	primary := workers[0]
@@ -669,7 +679,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 				if crashed {
 					res.Outcome, res.Output = Crashed, crashOutput(raw, 20) //subpoena:enforcement
 				} else {
-					res.Outcome, res.Failing = Killed, failingTests(out)
+					res.Outcome, res.Failing = Killed, failingTests(raw)
 					res.Evidence, res.FirstFailure = ev, msg
 					if ev != EvidenceWitness {
 						res.LaterWitness = witnessFailure(raw, o.key)
@@ -694,15 +704,18 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 }
 
 // confirmKill asks a kill to hold, and says why in res.Why if it does not. A
-// failed test's binary must link the mutated code. Then the failed packages run
-// again, all their tests, with the mutant on a fresh copy, killRepeats times:
-// the run must be a clean kill again with a test of the first run among the
-// failed, or the red was not the mutant's. The copy is fresh because a flake that
-// left a file behind would otherwise confirm itself. Then killReruns runs without
-// the mutant, each on a fresh copy: the first the mutant run's whole command,
-// since a failure can need a test in another package, and the rest the failed
-// packages. One that fails or does not finish was red for a reason other than
-// the mutant, or may have been.
+// failed test's binary must link the mutated code. Then the mutant run's whole
+// command runs again with the mutant on a fresh copy, killRepeats times: the run
+// must be a clean kill again with a test of the first run among the failed, or
+// the red was not the mutant's. The copy is fresh because a flake that left a file
+// behind would otherwise confirm itself. The command is whole because a failure
+// can need a test in another package, and it has no -failfast because a test that
+// catches the mutant is then sure to run, whatever test stopped the first run:
+// under -shuffle another can come first. Under RequireWitness the repeat's first
+// evidence must be witness too, or only one of the two runs had any. Then killReruns
+// runs without the mutant, each on a fresh copy: the first the mutant run's whole
+// command, and the rest the failed packages. One that fails or does not finish was
+// red for a reason other than the mutant, or may have been.
 //
 //subpoena:enforcement_point
 func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw string, ms []Mutant, mutated map[string][]byte, res *Result) error {
@@ -712,7 +725,7 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 		return err
 	}
 	if why != "" {
-		res.Why = why
+		res.Why, res.Hint = why, separateProgramHint
 		res.Outcome = Unconfirmed //subpoena:enforcement
 		return nil
 	}
@@ -720,24 +733,55 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 	if len(failed) > 0 {
 		narrow = append(slices.Clone(args[:len(args)-1]), failed...)
 	}
-	for n := range killRepeats {
+	whole := slices.DeleteFunc(slices.Clone(args), func(a string) bool { return a == "-failfast" })
+	first := failedTests(raw)
+	withMutant := func(a []string) (string, error, error) {
 		if err := sb.fresh(); err != nil {
-			return err
+			return "", nil, err
 		}
 		for file, b := range mutated {
 			if err := os.WriteFile(filepath.Join(sb.dir, filepath.FromSlash(file)), b, 0o644); err != nil {
-				return err
+				return "", nil, err
 			}
 		}
-		fmt.Fprintf(o.Log, "  repeat %d of %d with the mutant\n", n+1, killRepeats)
-		out, err := o.run.test(ctx, o, sb, narrow...)
+		out, runErr := o.run.test(ctx, o, sb, a...)
 		if ctx.Err() != nil {
-			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
+			return "", nil, fmt.Errorf("cross: run stopped: %w", ctx.Err())
 		}
-		if why := notAKill(out, err, o.key, res.Failing); why != "" {
+		return out, runErr, nil
+	}
+	for n := range killRepeats {
+		fmt.Fprintf(o.Log, "  repeat %d of %d with the mutant\n", n+1, killRepeats)
+		out, runErr, err := withMutant(whole)
+		if err != nil {
+			return err
+		}
+		why := notAKill(out, runErr, o.key, first)
+		if why != "" && stoppedShort(out, runErr, o.key) {
+			// With no -failfast the repeat reaches tests the first run never did,
+			// and the mutant can crash or hang one of them. That says nothing of
+			// the test that failed, so the first run's own command decides, by
+			// the same rule: a flake still has to fail twice in one test.
+			fmt.Fprintf(o.Log, "  %s; running the first command again\n", why)
+			again, againErr, err := withMutant(args)
+			if err != nil {
+				return err
+			}
+			if notAKill(again, againErr, o.key, first) == "" {
+				out, why = again, ""
+			}
+		}
+		if why != "" {
 			res.Why, res.Output = why, tail(testText(out), 20)
 			res.Outcome = Unconfirmed //subpoena:enforcement
 			return nil
+		}
+		if o.RequireWitness && res.Outcome == Killed {
+			if ev, msg := repeatEvidence(out, o.key, first); ev != EvidenceWitness {
+				res.Evidence, res.FirstFailure = ev, msg
+				res.Why = "the first run's first evidence was witness, and the repeat's was not"
+				res.Outcome = KilledBySelfReport //subpoena:enforcement
+			}
 		}
 	}
 	for n := range killReruns {
@@ -762,9 +806,13 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 	return nil
 }
 
+// separateProgramHint is the likely reason no failed test's binary links the
+// mutated code.
+const separateProgramHint = "a suite that runs the code as a separate program links none of it, so cross cannot count its kills"
+
 // notAKill says why a repeat with the mutant is not the kill the first run was,
 // or "" if it is: red on a clean failure, in a test that failed the first time.
-func notAKill(raw string, err error, key string, first []string) string {
+func notAKill(raw string, err error, key string, first map[testID]bool) string {
 	if err == nil {
 		return "the suite passed when run again with the mutant"
 	}
@@ -778,20 +826,86 @@ func notAKill(raw string, err error, key string, first []string) string {
 	if _, _, crashed := firstFailure(raw, key); crashed {
 		return "the run with the mutant crashed the second time"
 	}
-	for _, name := range failingTests(out) {
-		if slices.Contains(first, name) {
+	for k := range failedTests(raw) {
+		if first[k] {
 			return ""
 		}
 	}
 	return "a different test failed when run again with the mutant"
 }
 
+// stoppedShort reports whether a red run crashed or hung, so its tests did not
+// all get to say.
+func stoppedShort(raw string, err error, key string) bool {
+	if err == nil {
+		return false
+	}
+	out := testText(raw)
+	if buildFailed(out) {
+		return false
+	}
+	_, _, crashed := firstFailure(raw, key)
+	return crashed || timedOut(out, err)
+}
+
+// testID names a test across a run: its package and its top-level name. A
+// subtest counts as its test, as a Python test's parameters do.
+type testID struct{ pkg, test string }
+
+func idOf(pkg, test string) testID {
+	name, _, _ := strings.Cut(test, "/")
+	return testID{pkg, name}
+}
+
+// failedTests is the tests go test reported failed, from its fail events: printed
+// text can name a test that did not fail. A package that gave no clean failure
+// has none here, since the test a crash ended is not a test that noticed.
+func failedTests(raw string) map[testID]bool {
+	clean := map[string]bool{}
+	for _, f := range failures(raw) {
+		clean[f.pkg] = true
+	}
+	tests := map[testID]bool{}
+	for _, e := range failEvents(raw) {
+		if clean[e.Package] {
+			tests[idOf(e.Package, e.Test)] = true
+		}
+	}
+	return tests
+}
+
+// repeatEvidence is the kind and message of a repeat's first failure in a test of
+// first. Under -shuffle another test can come ahead of it, and that test was
+// never what the first run's evidence came from.
+func repeatEvidence(raw, key string, first map[testID]bool) (Evidence, string) {
+	for _, f := range failures(raw) {
+		if first[idOf(f.pkg, f.test)] {
+			return judge(f, key)
+		}
+	}
+	return EvidenceOther, emptyFailure
+}
+
+// failEvent is a test's fail event.
+type failEvent struct{ Action, Package, Test string }
+
+// failEvents lists the fail events of tests in raw, in order.
+func failEvents(raw string) []failEvent {
+	var evs []failEvent
+	for _, line := range strings.Split(raw, "\n") {
+		var e failEvent
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &e) == nil && e.Action == "fail" && e.Test != "" {
+			evs = append(evs, e)
+		}
+	}
+	return evs
+}
+
 // failedPackages lists the packages in raw with a failed test.
 func failedPackages(raw string) []string {
 	var failed []string
-	for _, line := range strings.Split(raw, "\n") {
-		var e struct{ Action, Package, Test string }
-		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &e) == nil && e.Action == "fail" && e.Test != "" && !slices.Contains(failed, e.Package) {
+	for _, e := range failEvents(raw) {
+		if !slices.Contains(failed, e.Package) {
 			failed = append(failed, e.Package)
 		}
 	}
@@ -866,6 +980,7 @@ const emptyFailure = "(the failure printed no text; -evidence-dir keeps the test
 // failure is one failure message of a failed test.
 type failure struct {
 	pkg  string
+	test string
 	head string // text on the file:line, the only place a tag is read
 	text string // what to print: head, or for a blank head the lines under it
 	more bool   // lines still extend text
@@ -908,17 +1023,23 @@ func firstFailure(raw, key string) (ev Evidence, msg string, crashed bool) {
 	if len(fs) == 0 {
 		return "", "", true
 	}
-	msg = crossmark.Strip(fs[0].text)
+	ev, msg = judge(fs[0], key)
+	return ev, msg, false
+}
+
+// judge is the kind of evidence a failure is, and its message.
+func judge(f failure, key string) (Evidence, string) {
+	msg := crossmark.Strip(f.text)
 	if msg == "" {
 		msg = emptyFailure
 	}
 	switch {
-	case harnessWitness(fs[0].head, key):
-		return EvidenceWitness, msg, false
-	case strings.HasPrefix(fs[0].head, "testimony:"):
-		return EvidenceTestimony, msg, false
+	case harnessWitness(f.head, key):
+		return EvidenceWitness, msg
+	case strings.HasPrefix(f.head, "testimony:"):
+		return EvidenceTestimony, msg
 	default:
-		return EvidenceOther, msg, false
+		return EvidenceOther, msg
 	}
 }
 
@@ -1035,7 +1156,7 @@ func failures(raw string) []failure {
 				fs[n].head, fs[n].text = "", m[1]
 			} else {
 				report[k] = len(fs)
-				fs = append(fs, failure{pkg: e.Package, head: m[1], text: m[1]})
+				fs = append(fs, failure{pkg: e.Package, test: e.Test, head: m[1], text: m[1]})
 			}
 			gomega[k] = report[k]
 		} else if n, ok := gomega[k]; ok {
@@ -1049,7 +1170,7 @@ func failures(raw string) []failure {
 			if m[1] == "" {
 				blank[k] = len(fs)
 			}
-			fs = append(fs, failure{pkg: e.Package, head: m[1], text: m[1], more: true})
+			fs = append(fs, failure{pkg: e.Package, test: e.Test, head: m[1], text: m[1], more: true})
 		} else if n, ok := blank[k]; ok {
 			fs[n].addLine(line)
 		}
@@ -1484,7 +1605,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 	for _, g := range f.Comments {
 		for _, c := range g.List {
 			if anyMarkerRE.MatchString(markerText(src, fset.Position(c.Pos()).Offset, c.Text)) && !placed[c] && stray == nil {
-				stray = fmt.Errorf("cross: %s:%d: %q is not a marker cross applies: statement and guard markers belong inside a //%s function, and the point marker on a function's doc comment", rel, fset.Position(c.Pos()).Line, c.Text, MarkerEnforcementPoint)
+				stray = fmt.Errorf("cross: %s:%d: %q is not a marker cross applies: statement and guard markers belong inside a //%s function, and the point marker on a function's doc comment; %s", rel, fset.Position(c.Pos()).Line, c.Text, MarkerEnforcementPoint, proseHint)
 			}
 		}
 	}
@@ -1649,33 +1770,41 @@ var (
 	guardRE       = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerGuard) + `(\s|$)`)
 	groupRE       = regexp.MustCompile(`^group=([A-Za-z0-9_.-]+)$`)
 	pointRE       = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcementPoint) + `(\s|$)`)
-	anyMarkerRE   = regexp.MustCompile(`^//\s*subpoena:enforcement`)
-	// trailingRE finds a marker after an upstream comment on a line of code:
+	anyMarkerRE   = regexp.MustCompile(`^//\s*subpoena\s*:\s*enforc`)
+	// trailingRE finds a marker after an upstream comment on a line of code, as
+	// loosely as anyMarkerRE, so a misspelt one there is an error too:
 	// return nil // why //subpoena:enforcement
-	trailingRE = regexp.MustCompile(`\s//\s*subpoena:enforcement(_guard)?(\s|$)`)
-	// inlineMarkerRE and onlyMarkerRE read source lines, so a marker the parser
-	// did not take is still counted, and a comment that names one in prose is not.
-	inlineMarkerRE = regexp.MustCompile(`\s//\s*subpoena:enforcement(_guard)?(\s|$)`)
-	onlyMarkerRE   = regexp.MustCompile(`^\s*//\s*subpoena:enforcement`)
+	trailingRE = regexp.MustCompile(`//\s*subpoena\s*:\s*enforc`)
+	// onlyMarkerRE reads source lines: the lines marking added.
+	onlyMarkerRE = regexp.MustCompile(`^\s*//\s*subpoena:enforcement`)
+	// directiveRE is go/ast's form of a directive, as //go:noinline.
+	directiveRE = regexp.MustCompile(`^//[a-z0-9]+:[a-z0-9]`)
 )
+
+// proseHint ends a marker error, since cross cannot tell the two apart.
+const proseHint = "on a line of code, a comment that names a marker reads as one, so if this is prose, reword it"
 
 // markerText is a comment's marker, or its text if it has none. On a line of
 // code that is the end of the comment when a marker follows upstream's text, so
 // marking a line removes none of it. Arguments stay, so a bad one is an error. A
-// comment on a line of its own that mentions a marker is prose.
+// comment on a line of its own that mentions a marker is prose, and so is one that
+// names the point marker, which no line of code can carry.
 func markerText(src []byte, offset int, text string) string {
 	start := bytes.LastIndexByte(src[:offset], '\n') + 1
-	if len(bytes.TrimSpace(src[start:offset])) == 0 {
+	if len(bytes.TrimSpace(src[start:offset])) == 0 || !strings.HasPrefix(text, "//") {
 		return text
 	}
 	if loc := trailingRE.FindStringIndex(text); loc != nil {
-		return strings.TrimSpace(text[loc[0]:])
+		if found := strings.TrimSpace(text[loc[0]:]); !pointRE.MatchString(found) {
+			return found
+		}
 	}
 	return text
 }
 
 // upstreamLine is line with the lines marking added above it taken out: a
-// marker-only line, and the empty // gofmt puts before one in a doc comment.
+// marker-only line, and the empty // gofmt puts before one in a doc comment. That
+// // stays if a directive follows the marker: gofmt wants it there anyway.
 func upstreamLine(src []byte, line int) int {
 	up := line
 	lines := bytes.Split(src, []byte("\n"))
@@ -1684,16 +1813,26 @@ func upstreamLine(src []byte, line int) int {
 			continue
 		}
 		up--
-		if i > 0 && string(bytes.TrimSpace(lines[i-1])) == "//" {
+		if i > 0 && string(bytes.TrimSpace(lines[i-1])) == "//" && !beforeDirective(lines, i) {
 			up--
 		}
 	}
 	return up
 }
 
-// markerCount counts the statement and guard markers in the source of the
-// mutated files, and names those that made no mutant. A marker that took no
-// effect is an error where cross can tell; this is for what it cannot.
+// beforeDirective reports whether the first line after the marker-only lines from
+// line i on is a directive.
+func beforeDirective(lines [][]byte, i int) bool {
+	for i < len(lines) && onlyMarkerRE.Match(lines[i]) {
+		i++
+	}
+	return i < len(lines) && directiveRE.Match(bytes.TrimSpace(lines[i]))
+}
+
+// markerCount counts the statement and guard markers in the comments of the
+// mutated files, and names those that made no mutant. A marker that took no effect
+// is an error where cross can tell; this is for what it cannot. The parser says
+// what a comment is: a block comment or a string that shows a marker holds none.
 func markerCount(ms []Mutant) (int, []string) {
 	lines := map[string]map[int]bool{}
 	src := map[string][]byte{}
@@ -1706,13 +1845,20 @@ func markerCount(ms []Mutant) (int, []string) {
 	n := 0
 	var unplaced []string
 	for _, file := range slices.Sorted(maps.Keys(src)) {
-		for i, l := range bytes.Split(src[file], []byte("\n")) {
-			text := bytes.TrimSpace(l)
-			own := bytes.HasPrefix(text, []byte("//")) && (enforcementRE.Match(text) || guardRE.Match(text))
-			if own || (!bytes.HasPrefix(text, []byte("//")) && inlineMarkerRE.Match(l)) {
-				n++
-				if !lines[file][i+1] {
-					unplaced = append(unplaced, fmt.Sprintf("%s:%d", file, i+1))
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, file, src[file], parser.ParseComments)
+		if err != nil {
+			continue // discovery parsed these bytes
+		}
+		for _, g := range f.Comments {
+			for _, c := range g.List {
+				at := fset.Position(c.Pos())
+				text := markerText(src[file], at.Offset, c.Text)
+				if enforcementRE.MatchString(text) || guardRE.MatchString(text) {
+					n++
+					if !lines[file][at.Line] {
+						unplaced = append(unplaced, fmt.Sprintf("%s:%d", file, at.Line))
+					}
 				}
 			}
 		}
@@ -1750,7 +1896,7 @@ func parseMarker(text string) (mk marker, ok bool, err error) {
 			name = g[1]
 		}
 		if name == "" || mk.group != "" {
-			return mk, false, fmt.Errorf("marker argument %q: want at most one group=<name>", a) //subpoena:enforcement
+			return mk, false, fmt.Errorf("marker argument %q: want at most one group=<name>; %s", a, proseHint) //subpoena:enforcement
 		}
 		mk.group = name
 	}
@@ -1921,19 +2067,20 @@ func copyTree(src, dst string) error {
 
 // sandbox is one copy of the module that mutants are run in, the GOWORK its go
 // commands use ("" to inherit the environment's), the discovery copy it is made
-// from, and the run's key.
+// from, the run's directory for trees it could not remove, and the run's key.
 type sandbox struct {
-	dir, work, template string
-	key                 string // handed to test binaries, to sign witness failures
+	dir, work, template, stale string
+	key                        string // handed to test binaries, to sign witness failures
 }
 
 // fresh replaces the copy with the discovery copy, so a run sees nothing an
 // earlier run left. The path stays: the go build cache keys on it.
 func (sb sandbox) fresh() error {
 	if err := removeTree(sb.dir); err != nil {
-		// A detached child can still be writing there. Move the tree aside: it
-		// goes with the run's temp directory, and the child writes on unseen.
-		aside, terr := os.MkdirTemp(filepath.Dir(sb.dir), "stale-")
+		// A detached child can still be writing there. Move the tree aside, into
+		// the run's own directory, and the child writes on unseen until the run
+		// ends and removeLeftovers takes it.
+		aside, terr := os.MkdirTemp(sb.stale, "copy-")
 		if terr != nil {
 			return fmt.Errorf("cross: reset copy: %w", err)
 		}
@@ -1946,6 +2093,26 @@ func (sb sandbox) fresh() error {
 	}
 	return nil
 }
+
+// removeLeftovers removes a tree of the run as it ends. A detached child can be
+// writing there, and each try can lose to it, but a tree that goes once is gone:
+// the child's directory went with it. The tree holds mutated source, so one that
+// will not go is named.
+func removeLeftovers(log io.Writer, dir string) {
+	for range removeTries {
+		if removeTree(dir) == nil {
+			return
+		}
+		time.Sleep(removeWait)
+	}
+	fmt.Fprintf(log, "cross: could not remove %s, which holds mutated source: a process a test started may still be writing there\n", dir)
+}
+
+// removeTries and removeWait bound removeLeftovers.
+const (
+	removeTries = 50
+	removeWait  = 100 * time.Millisecond
+)
 
 // runSingles runs each mutant alone, on as many copies as there are workers,
 // and returns the results in mutants' order. The first error stops the rest.
@@ -2053,22 +2220,18 @@ func timedOut(out string, err error) bool {
 	return errors.Is(err, errTimeout) || testTimeoutRE.MatchString(out)
 }
 
-var (
-	failRE = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
-	// buildRE matches go test's own line. The text alone can be anything a test
-	// or a panic printed.
-	buildRE = regexp.MustCompile(`(?m)^FAIL\s+\S+\s+\[(build|setup) failed\]$`)
-)
+// buildRE matches go test's own line. The text alone can be anything a test or a
+// panic printed.
+var buildRE = regexp.MustCompile(`(?m)^FAIL\s+\S+\s+\[(build|setup) failed\]$`)
 
 func buildFailed(out string) bool { return buildRE.MatchString(out) }
 
-func failingTests(out string) []string {
+// failingTests names the tests that failed in raw, from their fail events.
+func failingTests(raw string) []string {
 	var names []string
-	seen := map[string]bool{}
-	for _, m := range failRE.FindAllStringSubmatch(out, -1) {
-		if !seen[m[1]] {
-			seen[m[1]] = true
-			names = append(names, m[1])
+	for _, e := range failEvents(raw) {
+		if !slices.Contains(names, e.Test) {
+			names = append(names, e.Test)
 		}
 	}
 	if len(names) == 0 {
