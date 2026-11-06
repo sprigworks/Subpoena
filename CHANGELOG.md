@@ -22,6 +22,11 @@
   no newline, and it read as the test's first failure, pushing a witness kill down to
   self-report. Such a line now counts only in a test with no other failure message, or when it
   carries the harness's mark.
+- **A printed pass no longer turns a witness kill into unconfirmed.** Code under test could print
+  go test's framed `--- PASS:` line ahead of its real failure, and the test then read as passed.
+  A test's last ending now decides, and a fail after a pass counts only until another test
+  starts. A printed pass in a test running beside another, or in an Example's output, still
+  reads unconfirmed. See `docs/architecture.md`.
 - **A package that hangs no longer costs another package's kill.** Every package runs now, and a
   timed-out run went straight to `enforcement-mutant-timeout`, with a clean failure in the
   output. A run with a clean failure in a package that finished now goes to the repeat, and a

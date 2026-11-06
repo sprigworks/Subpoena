@@ -1013,10 +1013,16 @@ func idOf(pkg, test string) testID {
 //
 // go test makes a fail event of any "--- FAIL:" line that carries the byte the test
 // binary frames its own lines with, and a test can print that byte, so a fail event
-// alone is no proof. A test has one ending and it ran: a fail event for a test
-// that also passed, or that never ran, is printed text. What is left is a test that
-// prints the run line and the fail line of a test that never ran, which go test
-// cannot tell from the real thing. See docs/architecture.md.
+// alone is no proof, and nor is a pass event. A test ran, and its last ending decides:
+// its own printed text comes before its real end, so a printed fail is followed by the
+// real pass, and a printed pass by the real fail. That goes only while the pass is the
+// last thing to happen: once another test has started, a fail event for a test that
+// passed is that test's printing, not a real end, or any later test could fail one
+// that passed. So a printed pass in a test that then runs beside another costs its kill,
+// and so does one in an Example's output, which comes after the real fail. What is left
+// is printed text that gets in before the next test starts, and a test that prints the
+// run line and the fail line of a test that never ran, which go test cannot tell from
+// the real thing. See docs/architecture.md.
 //
 //subpoena:enforcement_point
 func failedTests(raw string) map[testID]bool {
@@ -1025,26 +1031,37 @@ func failedTests(raw string) map[testID]bool {
 		clean[f.pkg] = true
 	}
 	type key [2]string
-	ran, ended := map[key]bool{}, map[key]bool{}
+	ran, ended, last, failed := map[key]bool{}, map[key]bool{}, map[key]bool{}, map[key]bool{}
 	for _, line := range strings.Split(raw, "\n") {
 		var e failEvent
-		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
+		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || e.Test == "" {
 			continue
 		}
+		k := key{e.Package, e.Test}
 		switch e.Action {
 		case "run":
-			ran[key{e.Package, e.Test}] = true
+			ran[k] = true
+			for p := range last {
+				if p[0] == e.Package && !strings.HasPrefix(e.Test, p[1]+"/") {
+					delete(last, p) //subpoena:enforcement
+				}
+			}
 		case "pass", "skip":
-			ended[key{e.Package, e.Test}] = true
+			ended[k], last[k] = true, true
+			if failed[k] {
+				delete(failed, k) //subpoena:enforcement
+			}
+		case "fail":
+			if !ran[k] || ended[k] && !last[k] {
+				continue //subpoena:enforcement
+			}
+			failed[k] = true
 		}
 	}
 	tests := map[testID]bool{}
-	for _, e := range failEvents(raw) {
-		if k := (key{e.Package, e.Test}); !ran[k] || ended[k] {
-			continue //subpoena:enforcement
-		}
-		if clean[e.Package] {
-			tests[idOf(e.Package, e.Test)] = true
+	for k := range failed {
+		if clean[k[0]] {
+			tests[idOf(k[0], k[1])] = true
 		}
 	}
 	return tests

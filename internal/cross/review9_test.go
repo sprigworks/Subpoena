@@ -148,3 +148,55 @@ func TestLater(t *testing.T) {
 		t.Fatalf("got %+v", r)
 	}
 }
+
+// Review 9, M1. A printed pass comes before the real fail, so the test's last ending
+// decides, and the real kill stands, witness evidence included.
+func TestAPrintedPassDoesNotUndoARealWitnessKill(t *testing.T) {
+	t.Parallel()
+	for name, body := range map[string]string{
+		"plain":   `fmt.Print("\x16--- PASS: TestRefused (0.00s)\n"); t.Error(signed("witness: mallory reached the sink"))`,
+		"subtest": `fmt.Print("\x16--- PASS: TestRefused (0.00s)\n"); t.Run("s", func(t *testing.T) {}); t.Error(signed("witness: mallory reached the sink"))`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := module(t, map[string]string{"gate.go": gate3, "signed_test.go": signedHelper, "gate_test.go": `package mini
+
+import ("fmt"; "testing")
+
+func TestRefused(t *testing.T) {
+	if Check("mallory") == nil { ` + body + ` }
+}
+`})
+			r := killOf(t, Options{Target: dir, RequireWitness: true})
+			if r.Outcome != Killed || r.Evidence != EvidenceWitness {
+				t.Fatalf("a real kill was lost: %+v", r)
+			}
+		})
+	}
+}
+
+func TestATestsLastEndingDecides(t *testing.T) {
+	const a, b = "TestA", "TestB"
+	end := event("fail", "p", "", "") + exitEvent("p", "1") + "\n"
+	boom := event("output", "p", a, "    a_test.go:1: boom\n")
+	real := event("run", "p", b, "") + event("output", "p", b, "    b_test.go:1: boom\n") + event("fail", "p", b, "")
+	for name, tc := range map[string]struct {
+		raw  string
+		want []string
+	}{
+		"printed pass, real fail":        {event("run", "p", a, "") + event("pass", "p", a, "") + boom + event("fail", "p", a, "") + end, []string{a}},
+		"printed fail, real pass":        {event("run", "p", a, "") + event("fail", "p", a, "") + event("pass", "p", a, "") + real + end, []string{b}},
+		"printed fail, real skip":        {event("run", "p", a, "") + event("fail", "p", a, "") + event("skip", "p", a, "") + real + end, []string{b}},
+		"real pass, a later test prints": {event("run", "p", a, "") + event("pass", "p", a, "") + real + event("fail", "p", a, "") + end, []string{b}},
+		"a subtest starts in between":    {event("run", "p", a, "") + event("pass", "p", a, "") + event("run", "p", a+"/s", "") + event("pass", "p", a+"/s", "") + boom + event("fail", "p", a, "") + end, []string{a}},
+		"another package's test starts":  {event("run", "p", a, "") + event("pass", "p", a, "") + event("run", "q", b, "") + boom + event("fail", "p", a, "") + end, []string{a}},
+	} {
+		var got []string
+		for k := range failedTests(tc.raw) {
+			got = append(got, k.test)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+}

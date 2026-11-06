@@ -110,10 +110,19 @@ test stopped the first run. That costs a longer repeat, a whole suite where the
 first run could stop early, and `-failfast` in `GOFLAGS` does not change it. It must be a clean kill, with a test of the first run
 among the failed, read in Go from go test's `fail` events, since a test's output can
 print the line go test prints for a failure. A test can print the byte go test frames
-its own lines with too, and go test then makes a `fail` event of that text, so a `fail`
-event counts only for a test with a `run` event and no `pass` or `skip`. A test that
-prints the framed run line and fail line of a test that never ran still gets through:
-go test cannot tell those from the real thing, and neither can cross. In Go a repeat where
+its own lines with too, and go test then makes a `fail` or `pass` event of that text. So a
+test must have a `run` event, and its last ending decides: its own printed text comes
+before its real end, so a printed pass is followed by the real fail, and a printed fail by the
+real pass. A `fail` after a `pass` counts only until another test starts (a subtest of its
+own aside), since after that it is a later test's printing about one that passed. That leaves
+limits both ways. A printed pass in a test that then runs beside another, such as a parallel
+one, or one in a failing Example's output, which comes after the real fail, still costs a
+real kill: it reads unconfirmed, and the run stays red. Printed fail text that gets in after a
+test's real pass and before the next test starts, from a leaked goroutine, a test beside it or
+`TestMain`, reads as that test's failure. Like a test that
+prints the framed run line and fail line of a test that never ran, go test cannot tell that
+from the real thing, and neither can cross. It still needs a run that is red for a real reason
+twice with the mutant, and green without it. In Go a repeat where
 a package crashes, or that hangs, can do so in a test the first run never reached, and
 under `-shuffle` such a test can come first. So the first run's own command goes again,
 as a test can need what ran before it. If that stops short too, each package with a test of
