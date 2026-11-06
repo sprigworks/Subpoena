@@ -365,16 +365,17 @@ it, or more results than statements, makes the statement opaque.
 
 **TLS is refused, never passed through.** Postgres's `SSLRequest` and
 `GSSENCRequest` get `N`; MySQL's greeting has `CLIENT_SSL` and the compression flags
-cleared. A client that prefers TLS goes on in the clear. One that insists leaves, or
+cleared. Query attributes stay offered, because libmysql sets that flag regardless;
+a query carrying real attributes is opaque. A client that prefers TLS goes on in the clear. One that insists leaves, or
 sends a TLS record anyway, and that is Inconclusive: encrypted bytes it cannot read
 must never read as no row. pgx with `sslmode=prefer` leaves and redials, so a
 Postgres departure is excused by a plain connection that followed; that is decided
 at `Stop`. A MySQL client leaving at the greeting can't be told from a port probe,
 and is Inconclusive either way.
 
-**Inconclusive.** `Health` fails for: an unreadable frame or a reply matching no
-command (the connection goes on as a raw copy, so the application is not broken by
-its witness); a connection dropped with a transaction open or a reply owed, whose
+**Inconclusive.** `Health` fails for: an unreadable frame, a frame that panics the
+parser, or a reply matching no command (the connection goes on as a raw copy, so
+the application is not broken by its witness); a connection dropped with a transaction open or a reply owed, whose
 writes get outcome `unknown`; a connection it could not proxy, or left queued at
 `Stop`; a client insisting on TLS or compression; a failed write to the witness
 file; and a capture not yet stopped. Faults are per capture, not per table. A
@@ -389,7 +390,8 @@ as with `Sinkhole`, in which an allowed write is seen.
 
 Not seen, in every capture:
 
-- connections that do not go through the listener;
+- connections that do not go through the listener, which is TCP only: a DSN on a
+  Unix socket bypasses it;
 - rows written by triggers, rules and foreign-key actions, on tables the statement
   does not name;
 - bound values, so it can say a table was written, and not with what.
