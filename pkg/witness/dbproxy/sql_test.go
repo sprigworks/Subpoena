@@ -44,13 +44,13 @@ func TestClassify(t *testing.T) {
 		both("UPDATE users AS u SET a = 1", "write", "users"),
 		both("UPDATE users u SET a = 1", "write", "users"),
 		pgOnly("UPDATE ONLY users SET a = 1", "write", "users"),
-		pgOnly("UPDATE users SET a = o.a FROM orders o WHERE o.id = users.id", "write", "users"),
+		pgOnly("UPDATE users SET a = 1 FROM orders WHERE id = 2", "write", "users"),
 		myOnly("UPDATE LOW_PRIORITY IGNORE users SET a = 1", "write", "users"),
 		both("DELETE FROM users WHERE a = 1", "write", "users"),
 		both("DELETE FROM users", "write", "users"),
-		pgOnly("DELETE FROM ONLY users u USING orders o WHERE u.id = o.id RETURNING u.id", "write", "users"),
+		pgOnly("DELETE FROM ONLY users u USING orders o WHERE id = oid RETURNING id", "write", "users"),
 		myOnly("DELETE LOW_PRIORITY QUICK IGNORE FROM users ORDER BY a LIMIT 1", "write", "users"),
-		pgOnly("MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE", "write", "t"),
+		pgOnly("MERGE INTO t USING s ON id = sid WHEN MATCHED THEN DELETE", "write", "t"),
 		pgOnly("TRUNCATE a, b", "write", "a", "b"),
 		pgOnly("TRUNCATE TABLE ONLY a RESTART IDENTITY", "write", "a"),
 		myOnly("TRUNCATE TABLE a", "write", "a"),
@@ -141,6 +141,11 @@ func TestClassify(t *testing.T) {
 		pgOnly("EXPLAIN ANALYZE DELETE FROM t", "opaque"),
 		pgOnly("EXPLAIN (ANALYZE, BUFFERS) DELETE FROM t", "opaque"),
 		pgOnly("COPY (DELETE FROM t RETURNING *) TO STDOUT", "opaque"),
+
+		// A qualified column can be a function called on the row, in PostgreSQL.
+		pgOnly("UPDATE users SET a = o.a FROM orders o WHERE o.id = users.id", "opaque"),
+		pgOnly("DELETE FROM ONLY users u USING orders o WHERE u.id = o.id RETURNING u.id", "opaque"),
+		pgOnly("MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE", "opaque"),
 
 		// A read in form can still write: what it might do is unknown.
 		pgOnly("WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d", "opaque"),

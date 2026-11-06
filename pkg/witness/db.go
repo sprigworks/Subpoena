@@ -19,7 +19,8 @@ const (
 	// OutcomeRolledBack is a write the server accepted and then undid. It is not
 	// an effect.
 	OutcomeRolledBack Outcome = "rolled_back"
-	// OutcomeFailed is a statement the server refused. It is not an effect.
+	// OutcomeFailed is a statement the server refused. It is not an effect. A
+	// routine that could have committed part way gets OutcomeUnknown instead.
 	OutcomeFailed Outcome = "failed"
 	// OutcomeUnknown is a write whose fate the witness did not see: the
 	// connection dropped, or was unreadable, with it still open. Health fails

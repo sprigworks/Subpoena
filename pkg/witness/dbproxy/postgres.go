@@ -33,6 +33,9 @@ const (
 	pgItemSimple  pgItemKind = iota // a Query or FunctionCall: ends at ReadyForQuery
 	pgItemExecute                   // an Execute: ends at its own reply
 	pgItemSync                      // a Sync: ends at ReadyForQuery
+	pgItemParse                     // a Parse: ends at ParseComplete
+	pgItemBind                      // a Bind: ends at BindComplete
+	pgItemClose                     // a Close: ends at CloseComplete
 )
 
 // pgItem is a message sent to the server that it has not finished answering.
@@ -41,6 +44,14 @@ type pgItem struct {
 	stmts []statement
 	next  int
 	text  string // the whole query, for naming an unexpected result
+
+	// What a Parse, Bind or Close will do if the server accepts it, and the portal
+	// an Execute runs. Prepared statements and portals change only on the server's
+	// word, in reply order: it can refuse any of them, and a client can pipeline.
+	name   string     // the prepared statement
+	portal string     // the portal
+	target byte       // of a Close: 'S' or 'P'
+	parsed *statement // of a Parse
 }
 
 // pgSession follows one connection. Every reply is tied to the message that
@@ -59,7 +70,8 @@ type pgSession struct {
 	blind      bool
 	terminated bool
 	status     byte
-	failed     bool // an error since the last ReadyForQuery
+	failed     bool   // an error since the last ReadyForQuery
+	taint      string // why no statement on this connection can be read any more
 	queue      []*pgItem
 	prepared   map[string]*statement
 	portals    map[string]*statement
@@ -202,8 +214,89 @@ func (s *pgSession) startup(r *bufio.Reader, up, back io.Writer) error {
 	if !s.tlsAsked {
 		s.cap.notePlainStart()
 	}
-	_, err = io.CopyN(up, r, n)
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return err
+	}
+	s.startupParameters(buf[8:])
+	_, err = up.Write(buf)
 	return err
+}
+
+// startupParameters looks for a search path set at login. The server reports the
+// lexing settings by ParameterStatus, but not this one before version 18.
+func (s *pgSession) startupParameters(b []byte) {
+	for len(b) > 1 {
+		key, rest, ok := cstring(b)
+		if !ok {
+			return
+		}
+		value, rest, ok := cstring(rest)
+		if !ok {
+			return
+		}
+		b = rest
+		switch {
+		case key == "search_path":
+			s.tainted(pgPathTaint(value))
+		case key == "options" && strings.Contains(value, "search_path") && strings.Contains(value, "pg_catalog"):
+			s.tainted("the login options set a search path naming pg_catalog") //subpoena:enforcement
+		}
+	}
+}
+
+// tainted marks the connection as one whose statements can't be read, for good.
+// A session can go back, but a statement read by the wrong rules cannot.
+//
+//subpoena:enforcement_point
+func (s *pgSession) tainted(why string) {
+	if s.taint == "" {
+		s.taint = why //subpoena:enforcement
+	}
+}
+
+// parsedText applies what parsing found to the session.
+func (s *pgSession) parsedText(stmts ...statement) {
+	for i := range stmts {
+		s.tainted(stmts[i].taint)
+	}
+}
+
+// readable is st as far as the session's state allows. It is asked at the reply:
+// what ended the session's readability may have overtaken a pipelined statement.
+//
+//subpoena:enforcement_point
+func (s *pgSession) readable(st *statement) *statement {
+	if s.taint != "" && (st.class == classRead || st.class == classWrite) {
+		return st.opaqued("the session cannot be read: %s", s.taint) //subpoena:enforcement
+	}
+	return st
+}
+
+// parameterStatus follows the settings that change how text reads. The server
+// sends these whatever set them: SET, set_config, a function, the role's defaults.
+func (s *pgSession) parameterStatus(body []byte) error {
+	name, rest, ok := cstring(body)
+	if !ok {
+		return s.unreadableLocked("ParameterStatus without a terminator") //subpoena:enforcement
+	}
+	value, _, ok := cstring(rest)
+	if !ok {
+		return s.unreadableLocked("ParameterStatus without a terminator") //subpoena:enforcement
+	}
+	switch name {
+	case "standard_conforming_strings":
+		if !pgOn(value) {
+			s.tainted("standard_conforming_strings is off") //subpoena:enforcement
+		}
+	case "client_encoding":
+		if !pgReadableEncoding(value) {
+			s.tainted("the client encoding " + value + " can hide quotes in multibyte characters") //subpoena:enforcement
+		}
+	case "search_path":
+		s.tainted(pgPathTaint(value))
+	}
+	return nil
 }
 
 func cstring(b []byte) (string, []byte, bool) {
@@ -224,37 +317,31 @@ func (s *pgSession) onClient(typ byte, body []byte) error {
 		if !ok {
 			return s.unreadableLocked("Query without a terminator") //subpoena:enforcement
 		}
-		s.queue = append(s.queue, &pgItem{kind: pgItemSimple, stmts: parseSQL(dialectPostgres, sql), text: sql})
+		stmts := parseSQL(dialectPostgres, sql)
+		s.parsedText(stmts...)
+		s.queue = append(s.queue, &pgItem{kind: pgItemSimple, stmts: stmts, text: sql})
 	case 'P':
 		name, rest, ok := cstring(body)
 		sql, _, ok2 := cstring(rest)
 		if !ok || !ok2 {
 			return s.unreadableLocked("Parse without a terminator") //subpoena:enforcement
 		}
-		s.prepared[name] = onePrepared(dialectPostgres, sql)
+		st := onePrepared(dialectPostgres, sql)
+		s.parsedText(*st)
+		s.queue = append(s.queue, &pgItem{kind: pgItemParse, name: name, parsed: st})
 	case 'B':
 		portal, rest, ok := cstring(body)
 		name, _, ok2 := cstring(rest)
 		if !ok || !ok2 {
 			return s.unreadableLocked("Bind without a terminator") //subpoena:enforcement
 		}
-		st := s.prepared[name]
-		if st == nil {
-			o := opaqueStatement("", "EXECUTE", "bound to %q, a statement the witness did not see parsed", name)
-			st = &o
-		}
-		s.portals[portal] = st
+		s.queue = append(s.queue, &pgItem{kind: pgItemBind, name: name, portal: portal})
 	case 'E':
 		portal, _, ok := cstring(body)
 		if !ok {
 			return s.unreadableLocked("Execute without a terminator") //subpoena:enforcement
 		}
-		st := s.portals[portal]
-		if st == nil {
-			o := opaqueStatement("", "EXECUTE", "ran portal %q, which the witness did not see bound", portal)
-			st = &o
-		}
-		s.queue = append(s.queue, &pgItem{kind: pgItemExecute, stmts: []statement{*st}})
+		s.queue = append(s.queue, &pgItem{kind: pgItemExecute, portal: portal})
 	case 'C':
 		if len(body) < 2 {
 			return s.unreadableLocked("Close too short") //subpoena:enforcement
@@ -263,11 +350,7 @@ func (s *pgSession) onClient(typ byte, body []byte) error {
 		if !ok {
 			return s.unreadableLocked("Close without a terminator") //subpoena:enforcement
 		}
-		if body[0] == 'S' {
-			delete(s.prepared, name)
-		} else {
-			delete(s.portals, name)
-		}
+		s.queue = append(s.queue, &pgItem{kind: pgItemClose, target: body[0], name: name})
 	case 'F':
 		o := opaqueStatement("", "FUNCTION CALL", "a fast-path function call")
 		s.queue = append(s.queue, &pgItem{kind: pgItemSimple, stmts: []statement{o}})
@@ -310,7 +393,7 @@ func (s *pgSession) server(r *bufio.Reader, back io.Writer) error {
 		return s.unreadable("server message %q has length %d", typ, n) //subpoena:enforcement
 	case strings.IndexByte(pgServerTypes, typ) < 0:
 		return s.unreadable("server message type %q", typ) //subpoena:enforcement
-	case strings.IndexByte("CZ", typ) < 0:
+	case strings.IndexByte("CZS", typ) < 0:
 		s.mu.Lock()
 		err := s.guard(func() error { return s.onServer(typ, nil) })
 		s.mu.Unlock()
@@ -341,15 +424,68 @@ func (it *pgItem) current() *statement {
 		return &it.stmts[it.next]
 	}
 	o := opaqueStatement(it.text, firstWord(it.text), "more results than statements were read")
+	o.unread = true
 	return &o
 }
 
 // result is the head of the queue if it can take a command's result.
 func (s *pgSession) result() *pgItem {
-	if len(s.queue) == 0 || s.queue[0].kind == pgItemSync {
+	if len(s.queue) == 0 {
 		return nil
 	}
-	return s.queue[0]
+	it := s.queue[0]
+	switch it.kind {
+	case pgItemSimple:
+		return it
+	case pgItemExecute:
+		s.resolve(it)
+		return it
+	}
+	return nil
+}
+
+// resolve ties an Execute to what its portal holds now.
+func (s *pgSession) resolve(it *pgItem) {
+	if it.stmts != nil {
+		return
+	}
+	st := s.portals[it.portal]
+	if st == nil {
+		st = unseenStatement("ran portal %q, which the witness did not see bound", it.portal)
+	}
+	it.stmts = []statement{*st}
+}
+
+// confirmed applies the server's word on the Parse, Bind or Close at the head of
+// the queue. It is the only place prepared statements and portals change.
+//
+//subpoena:enforcement_point
+func (s *pgSession) confirmed(kind pgItemKind, reply string) error {
+	if len(s.queue) == 0 || s.queue[0].kind != kind {
+		return s.unreadableLocked("%s with nothing waiting for it", reply) //subpoena:enforcement
+	}
+	s.apply(s.queue[0])
+	s.queue = s.queue[1:]
+	return nil
+}
+
+func (s *pgSession) apply(it *pgItem) {
+	switch it.kind {
+	case pgItemParse:
+		s.prepared[it.name] = it.parsed //subpoena:enforcement
+	case pgItemBind:
+		st := s.prepared[it.name]
+		if st == nil {
+			st = unseenStatement("bound to %q, a statement the witness did not see parsed", it.name)
+		}
+		s.portals[it.portal] = st
+	case pgItemClose:
+		if it.target == 'S' {
+			delete(s.prepared, it.name)
+		} else {
+			delete(s.portals, it.name)
+		}
+	}
 }
 
 func (s *pgSession) advance(it *pgItem) {
@@ -376,6 +512,14 @@ func (s *pgSession) onServer(typ byte, body []byte) error {
 		}
 		s.complete(it.current(), tag)
 		s.advance(it)
+	case '1':
+		return s.confirmed(pgItemParse, "ParseComplete")
+	case '2':
+		return s.confirmed(pgItemBind, "BindComplete")
+	case '3':
+		return s.confirmed(pgItemClose, "CloseComplete")
+	case 'S':
+		return s.parameterStatus(body)
 	case 'I':
 		if it := s.result(); it != nil {
 			s.advance(it)
@@ -387,7 +531,7 @@ func (s *pgSession) onServer(typ byte, body []byte) error {
 		if it == nil {
 			return s.unreadableLocked("PortalSuspended with no command waiting") //subpoena:enforcement
 		}
-		if st := it.current(); st.class != classRead {
+		if st := s.readable(it.current()); st.class != classRead {
 			s.tx.add(st, witness.RowsUnknown) //subpoena:enforcement
 		}
 		s.advance(it)
@@ -418,15 +562,20 @@ func (s *pgSession) serverError() {
 		return
 	}
 	s.failed = true
-	it := s.result()
-	if it == nil {
-		return // at a Sync: the implicit commit failed, and ReadyForQuery settles it
+	if s.queue[0].kind == pgItemSync {
+		return // the implicit commit failed, and ReadyForQuery settles it
 	}
-	st := it.current()
-	s.tx.done(st, witness.RowsUnknown, witness.OutcomeFailed)
-	if it.kind == pgItemSimple {
-		it.next = len(it.stmts) // the rest of the text will not run
-		return
+	if it := s.result(); it != nil {
+		st := s.readable(it.current())
+		if st.mayCommit() && s.status == 'I' {
+			s.tx.unknown(st) //subpoena:enforcement
+		} else {
+			s.tx.done(st, witness.RowsUnknown, witness.OutcomeFailed)
+		}
+		if it.kind == pgItemSimple {
+			it.next = len(it.stmts) // the rest of the text will not run
+			return
+		}
 	}
 	// Everything up to the next Sync is skipped by the server, unanswered.
 	for len(s.queue) > 0 && s.queue[0].kind != pgItemSync {
@@ -451,7 +600,7 @@ func (s *pgSession) readyForQuery(status byte) error {
 		return nil
 	}
 	s.ready = true
-	if s.queue[0].kind == pgItemExecute {
+	if k := s.queue[0].kind; k != pgItemSimple && k != pgItemSync {
 		return s.unreadableLocked("ReadyForQuery before an Execute was answered") //subpoena:enforcement
 	}
 	s.queue = s.queue[1:]
@@ -467,7 +616,28 @@ func (s *pgSession) readyForQuery(status byte) error {
 	return nil
 }
 
+// forget applies a SQL-level PREPARE or DEALLOCATE: they share the protocol's
+// names. What such a name holds now was not seen as a Parse.
+//
+//subpoena:enforcement_point
+func (s *pgSession) forget(st *statement) {
+	if st.forget == "" {
+		return
+	}
+	o := opaqueStatement("", "EXECUTE", "a name %s changed", st.verb)
+	for name := range s.prepared {
+		if st.forget == "*" || st.forget == name {
+			s.prepared[name] = &o //subpoena:enforcement
+		}
+	}
+}
+
 var pgWriteTags = wordSet("INSERT UPDATE DELETE MERGE COPY")
+
+// pgInertTags are the tags of a statement the text said leaves rows alone. Any
+// other answer means the text was misread.
+var pgInertTags = wordSet(`ANALYZE BEGIN CHECKPOINT CLOSE COMMIT COPY DEALLOCATE DECLARE DISCARD EXPLAIN FETCH
+	LISTEN LOCK MOVE NOTIFY PREPARE RELEASE RESET ROLLBACK SAVEPOINT SELECT SET SHOW START UNLISTEN VACUUM`)
 
 // parseTag reads a CommandComplete tag: its first word, and the row count if the
 // tag is one that carries it.
@@ -492,14 +662,22 @@ func parseTag(tag string) (verb string, rows int64) {
 //subpoena:enforcement_point
 func (s *pgSession) complete(st *statement, tag string) {
 	verb, rows := parseTag(tag)
+	s.forget(st)
+	st = s.readable(st)
 	switch tag {
-	case "COMMIT":
-		s.tx.commit()
+	case "BEGIN", "START TRANSACTION":
+		s.status = 'T'
+	case "COMMIT", "PREPARE TRANSACTION":
+		// A prepared transaction is durable now, and nothing later in this cycle
+		// can roll it back.
+		s.tx.commit() //subpoena:enforcement
+		s.status = 'I'
 	case "ROLLBACK":
 		if st.tx == txRollbackTo {
 			s.tx.rollbackTo(st.savepoint)
 		} else {
 			s.tx.rollback()
+			s.status = 'I'
 		}
 	case "SAVEPOINT":
 		s.tx.savepoint(st.savepoint)
@@ -507,10 +685,13 @@ func (s *pgSession) complete(st *statement, tag string) {
 		s.tx.release(st.savepoint)
 	}
 	switch {
+	case st.class == classOpaque && st.mayCommit() && s.status == 'I':
+		s.tx.addAutonomous(st) //subpoena:enforcement
 	case st.class == classOpaque:
 		s.tx.add(st, witness.RowsUnknown)
 	case pgWriteTags[verb] && st.class != classWrite && st.verb != "COPY",
-		st.class == classWrite && pgWriteTags[st.verb] && verb != st.verb:
+		st.class == classWrite && pgWriteTags[st.verb] && verb != st.verb,
+		st.class != classWrite && !pgInertTags[verb]:
 		s.tx.add(st.opaqued("answered %q", tag), witness.RowsUnknown) //subpoena:enforcement
 	case st.class == classWrite:
 		if st.noCount {
@@ -557,6 +738,10 @@ func (s *pgSession) finish() {
 // transaction, so that they are reported as unknown.
 func (s *pgSession) settleInFlight() {
 	for _, it := range s.queue {
+		s.apply(it) // as if the server took it: the safe reading of a reply not seen
+		if it.kind == pgItemExecute {
+			s.resolve(it)
+		}
 		for i := it.next; i < len(it.stmts); i++ {
 			if st := &it.stmts[i]; st.class == classWrite || st.class == classOpaque {
 				s.tx.add(st, witness.RowsUnknown)

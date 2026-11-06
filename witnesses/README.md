@@ -623,13 +623,27 @@ connection until the server says how its transaction ended:
   transaction, explicit or implicit, and an error in that cycle makes the ending
   a rollback, so a failed pipeline or multi-statement query undoes what ran first.
   `COMMIT` of a failed transaction is answered `ROLLBACK`, and the tag wins.
+  `PREPARE TRANSACTION` settles at its own tag, as committed, so nothing after it
+  in the same query can undo it.
 - MySQL: the status flags on every OK and EOF. With no transaction open after a
   statement, everything pending has committed, whether by `COMMIT`, autocommit, or
   implicitly by DDL. A `ROLLBACK` that leaves a warning could not undo a
-  non-transactional table, and its writes stand.
+  non-transactional table, and its writes stand. A DDL statement that fails has
+  already committed what came before it.
+
+A routine can commit by itself, so its failure proves nothing. `CALL` or `DO` that
+fails, or is rolled back with a pipeline around it, outside a transaction block
+gets outcome `unknown` and a capture fault: `DO $$ BEGIN INSERT ...; COMMIT; RAISE
+... END $$` leaves its row. The same goes for any opaque statement that is not known
+to run whole, and text no parser finished. On MySQL it holds inside a transaction
+too, since a procedure may `COMMIT` and ERR carries no status. A function called
+from a `SELECT` runs inside that statement, so that failure stays `failed`.
 
 Savepoints undo only what followed them. Prepared statements are tied to their SQL
-through `Parse`/`Bind`/`Execute` and `COM_STMT_PREPARE`/`EXECUTE`. Bound values are
+through `Parse`/`Bind`/`Execute` and `COM_STMT_PREPARE`/`EXECUTE`, and a name takes
+its SQL only when the server confirms the Parse: a refused second `Parse` of a name
+leaves the first in place, on both sides. SQL-level `PREPARE` and `DEALLOCATE` share
+those names, so a name they touch is opaque from then on. Bound values are
 never read or logged; statement text is, so a literal in SQL is in the log.
 
 **Zero rows is no row.** `UPDATE 0` and an OK with no rows affected are committed
@@ -640,12 +654,44 @@ can make it report 0 for a row that exists elsewhere.
 **What it cannot read over-reports.** Table extraction is deliberately strict:
 any form it does not know is opaque, and an opaque statement counts against every
 table and cannot be excused by a zero count. That covers text that does not
-tokenize, MySQL's executed `/*! */` comments, `EXECUTE` of SQL-level `PREPARE`,
-`CALL`, `DO`, data-modifying `WITH`, multi-table `UPDATE` and `DELETE`, `TRUNCATE
-CASCADE`, schema changes other than to a table, and any function not known to leave
-rows alone, even in a `SELECT`: `SELECT delete_user(1)` is opaque, and a false alarm
-is the cost. The server also checks the text: a tag or row count that contradicts
-it, or more results than statements, makes the statement opaque.
+tokenize, MySQL's executed `/*! */` comments, `U&` strings and names, `EXECUTE` of
+SQL-level `PREPARE`, `COMMIT PREPARED`, `CALL`, `DO`, `COPY ... PROGRAM`,
+data-modifying `WITH`, multi-table `UPDATE` and `DELETE`, `TRUNCATE CASCADE`, `ALTER
+TABLE ... RENAME`, schema changes other than to a table, and an `EXPLAIN` with an
+option it does not read. A `CREATE TABLE ... AS` query and the expressions of `ALTER
+TABLE` get the same analysis as a `SELECT`. The server also checks the text: a tag or
+row count that contradicts it, or more results than statements, makes the statement
+opaque.
+
+**A name proves nothing the application could own.** Every call is opaque unless it
+is one of a short list of exact built-in names, kept per engine, even in a `SELECT`:
+`SELECT delete_user(1)` and `SELECT to_archive()` are opaque, and a false alarm is
+the cost. A schema-qualified call is opaque, except `pg_catalog.` and a listed name
+on Postgres. So is a quoted name, and a word that looks like a keyword but that the
+server's grammar would take as a function name (`SELECT partition()`). MySQL needs
+the name to touch its parenthesis: `count (1)` is a stored function. Postgres can
+also run a routine with no call syntax, so these are opaque there too: an operator
+outside a short built-in list, a cast or typed string to a type outside one
+(`1::mydomain`), and any qualified column, `o.total` or `(o).total`, because `o.w`
+is `w(o)` when `o` has no column `w`, and only the catalog can tell. That last one
+is broad: on Postgres a statement with `t.col` in it counts against every table,
+which most ORM output does. `EXCLUDED.a` stays readable when `a` is in the `INSERT`'s
+column list, and a qualified table in a `FROM` list is a table.
+
+**A session it can't read is opaque for good.** The witness reads text by the
+server's rules, and some settings change them. Postgres's `standard_conforming_strings`
+off, or a client encoding whose characters can hold a backslash (SJIS, BIG5, GBK and
+the like), are taken from `ParameterStatus`, so they are seen however they were set;
+a `SET` in the text counts at once, since a report waits for the next `Sync`. On
+MySQL `NO_BACKSLASH_ESCAPES` comes from the status flags, the charset from the
+handshake, and `ANSI_QUOTES`, `SET NAMES` and the like only from the text. A search
+path that puts a schema ahead of `pg_catalog` counts as well, from a `SET` or the
+startup packet. From then on every statement on that connection is opaque, even if
+the setting goes back. `SET GLOBAL` and `SET PERSIST` are opaque.
+
+Postgres keeps 63 bytes of a name and drops the rest without complaint, so events
+carry the cut name; a long non-ASCII name is opaque, since where it is cut depends
+on the server's encoding. Claim the name the server holds, not a longer spelling.
 
 **TLS is refused, never passed through.** Postgres's `SSLRequest` and
 `GSSENCRequest` get `N`; MySQL's greeting has `CLIENT_SSL` and the compression flags
@@ -661,8 +707,9 @@ and is Inconclusive either way.
 parser, or a reply matching no command (the connection goes on as a raw copy, so
 the application is not broken by its witness); a connection dropped with a transaction open or a reply owed, whose
 writes get outcome `unknown`; a connection it could not proxy, or left queued at
-`Stop`; a client insisting on TLS or compression; a failed write to the witness
-file; and a capture not yet stopped. Faults are per capture, not per table. A
+`Stop`; a client insisting on TLS or compression; a routine that failed or rolled
+back where it could have committed; a failed write to the witness file; and a
+capture not yet stopped. Faults are per capture, not per table. A
 `Terminate` or `COM_QUIT` with a transaction open is a clean rollback; an idle
 pooled connection at `Stop` is no fault. `Stop` waits up to a second for replies
 already owed.
@@ -678,12 +725,27 @@ Not seen, in every capture:
   Unix socket bypasses it;
 - rows written by triggers, rules and foreign-key actions, on tables the statement
   does not name;
-- bound values, so it can say a table was written, and not with what.
+- bound values, so it can say a table was written, and not with what;
+- routines installed before the capture that read as something else, which the wire
+  cannot show because only the catalog can. `SELECT * FROM v` where `v` is a view over
+  a writing function reads as a plain `SELECT`. So does a Postgres overload of a
+  listed name, operator or cast for other argument types: `lower(1)` with a
+  `public.lower(int)` that writes. One created through the listener is opaque when
+  it is created, which is why the claim fails then; one a migration installed is
+  not seen;
+- work a function commits on another connection, such as `dblink`, when the
+  statement around it fails or rolls back;
+- settings the server was started or configured with and never reports: a global
+  `sql_mode` with `ANSI_QUOTES`, or a role's `search_path` naming `pg_catalog` late.
+  A non-default `NAMEDATALEN` likewise moves where a name is cut;
+- rows left in a non-transactional MySQL table by a statement that failed part way:
+  the ERR has no count.
 
 Over-reported, in the safe direction: `PREPARE TRANSACTION` counts as committed,
 since it can be decided on another connection; after a MySQL deadlock, whose ERR
-carries no status, pending writes count until the next flags are seen; and a
-`SELECT` of a user function counts even if it only reads.
+carries no status, pending writes count until the next flags are seen; a call
+outside the list counts even if it only reads; so does a qualified column on
+Postgres; and a failed `CALL` that wrote nothing is Inconclusive.
 
 For a suite in another language, `subpoena-witness db -engine postgres -upstream
 host:port -out file` runs the same witness, needs no privileges, and stops on
@@ -694,7 +756,8 @@ Running the witness stays Go-only.
 `pkg/witness/dbproxy/live` tests it against real `postgres` and `mysql` containers,
 with pgx, go-sql-driver, `psql` and the `mysql` client, checking each verdict against
 what the tables hold. Those tests skip without Docker or the images, and under
-`subpoena-cross`; `make test-db` makes a skip a failure. The frame parsers also
+`subpoena-cross`; `make test-db` makes a skip a failure. The limits above that can
+be pinned are, in `TestReview6PostgresStatedLimits`. The frame parsers also
 replay bytes recorded from those servers, in `pkg/witness/dbproxy/testdata`.
 
 ### How other witnesses identify a process's cgroup
