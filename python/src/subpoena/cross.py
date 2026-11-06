@@ -25,9 +25,10 @@ that can carry the allow decision, so it is invalid. Mark the guard. Verdicts:
   A kill says a test noticed, not that it examined the refusal: a removal that
   stops the allowed path too is killed by an allowed-path test alone
   (docs/architecture.md, "What a kill does not prove").
-- unconfirmed: a kill, but the suite passed in one of _REPEATS runs with the
-  mutant, or failed in one of _RERUNS reruns without it, each on a fresh copy:
-  state outside the copy, or a flake. A flake can still pass them all, and state
+- unconfirmed: a kill, but one of _REPEATS runs with the mutant was no clean
+  failure of a test that failed the first time, or the suite failed in one of
+  _RERUNS reruns without it, each on a fresh copy: state outside the copy, or a
+  flake. A flake can still pass them all, and state
   that clears itself is gone by the first rerun. -select does not retry it. The
   run fails.
 - survived: the suite stayed green. The run fails.
@@ -96,14 +97,17 @@ _REPEATS = 1
 _RERUNS = 3
 
 _ANY_MARKER = re.compile(r"#\s*subpoena\s*:\s*enforc")  # cross's markers, misspelt ones too
-# A marker after an upstream comment on the same line: return x  # why  # subpoena:enforcement
-_TRAILING = re.compile(r"\s#\s*(subpoena:enforcement(?:_guard)?(?:\s.*)?)$")
-_INLINE_MARKER = re.compile(r"\s#\s*subpoena:enforcement(_guard)?(\s|$)")
+# A marker after an upstream comment on the same line, as loosely as _ANY_MARKER,
+# so a misspelt one there is an error too: return x  # why  # subpoena:enforcement
+_TRAILING = re.compile(r"#\s*(subpoena\s*:\s*enforc.*)$")
+_POINT_NAME = re.compile(r"subpoena:enforcement_point(\s|$)")
+_COUNTED = re.compile(r"subpoena:enforcement(_guard)?(\s|$)")
 _ONLY_MARKER = re.compile(r"^\s*#\s*subpoena\s*:\s*enforc")
 _POINT = "subpoena:enforcement_point"
 _STATEMENT = "subpoena:enforcement"
 _SIMPLE = (ast.Return, ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Raise, ast.Pass,
            ast.Break, ast.Continue, ast.Delete, ast.Assert)
+_PROSE_HINT = "on a line of code, a comment that names a marker reads as one, so if this is prose, reword it"
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", ".tox", ".nox", ".pytest_cache", "node_modules", ".mypy_cache", ".ruff_cache"}
 
 
@@ -151,6 +155,7 @@ class Result:
     accepted: str = ""
     selected: List[str] = field(default_factory=list)
     evidence_file: str = ""
+    why: str = ""             # why a kill is unconfirmed, or a witness kill came back self-report
 
 
 @dataclass
@@ -242,7 +247,7 @@ def _marker(comment: str):
     for arg in parts:
         match = re.fullmatch(r"group=([A-Za-z0-9_.-]+)", arg)
         if not match or group:
-            raise CrossError(f"cross: not a marker cross applies: marker argument {arg!r}: want at most one group=<name>")
+            raise CrossError(f"cross: not a marker cross applies: marker argument {arg!r}: want at most one group=<name>; {_PROSE_HINT}")
         group = match.group(1)
     return bypass, group
 
@@ -263,9 +268,10 @@ def _groups(mutants):
 def _marker_text(comment: str) -> str:
     """On a line of code, a comment's marker: all of it, or the end of it when
     the marker follows upstream's text, so marking a line removes none of it.
-    Arguments stay, so a bad one is an error."""
+    Arguments stay, so a bad one is an error. A comment that names the point
+    marker is prose: no line of code can carry it."""
     m = _TRAILING.search(comment)
-    return m.group(1) if m else comment
+    return m.group(1) if m and not _POINT_NAME.match(m.group(1)) else comment
 
 
 def _upstream_line(text: str, line: int) -> int:
@@ -274,31 +280,46 @@ def _upstream_line(text: str, line: int) -> int:
 
 
 def marker_count(root: str, mutants: List[Mutant]) -> Tuple[int, List[str]]:
-    """The statement and guard markers in the source of the mutated files, and,
-    as file:line, those that made no mutant."""
+    """The statement and guard markers in the comments of the mutated files,
+    and, as file:line, those that made no mutant. The tokenizer says what a
+    comment is: a string that shows a marker holds none."""
     n, unplaced = 0, []
     for file in sorted({m.file for m in mutants}):
         lines = {m.line for m in mutants if m.file == file}
-        text = _read_source(os.path.join(root, file), file).decode("utf-8")
-        for i, l in enumerate(text.split("\n"), 1):
-            own = l.lstrip().startswith("#")
-            if (own and _ONLY_MARKER.match(l) and "enforcement_point" not in l) or (not own and _INLINE_MARKER.search(l)):
+        text = _decode(_read_source(os.path.join(root, file), file), file)
+        for i, (comment, _) in sorted(_comments(text).items()):
+            if _COUNTED.match(comment):
                 n += 1
                 if i not in lines:
                     unplaced.append(f"{file}:{i}")
     return n, unplaced
 
 
+def _test_id(test: str) -> str:
+    """A test's id without its parameters, since they can hold the copy's path.
+    The file part stays whole: a directory's name can hold a [ too."""
+    path, sep, name = test.partition("::")
+    return path + sep + name.split("[")[0]
+
+
+def _repeat_evidence(code, records, out, first: List[str]) -> Tuple[str, str]:
+    """The kind and message of a repeat's first failure in a test of first: another
+    test was never what the first run's evidence came from."""
+    wanted = {_test_id(t) for t in first}
+    kept = [r for r in records if r.get("kind") != "failure" or _test_id(r["test"]) in wanted]
+    _, _, evidence, message = classify(code, kept, out)
+    return evidence, message
+
+
 def _not_a_kill(code, records, out, first: List[str]) -> str:
     """Why a repeat with the mutant is not the kill the first run was, or "" if
-    it is: red on a clean failure, in a test that failed the first time. A
-    test's parameters are left out, since an id can hold the copy's path."""
+    it is: red on a clean failure, in a test that failed the first time."""
     if _clean(code, records):
         return "the suite passed when run again with the mutant"
     outcome, failing, _, _ = classify(code, records, out)
     if outcome != KILLED:
         return f"the run with the mutant came back {outcome} the second time"
-    if not {t.split("[")[0] for t in failing} & {t.split("[")[0] for t in first}:
+    if not {_test_id(t) for t in failing} & {_test_id(t) for t in first}:
         return "a different test failed when run again with the mutant"
     return ""
 
@@ -376,7 +397,7 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
                     f"cross: {rel}:{line}: {'#' + c!r} is not a marker cross applies: statement and guard "
                     f"markers go on a simple statement or an if inside a function marked {_POINT}, the "
                     f"point marker on a full-line comment directly above the def, and markers take no "
-                    f"other text")
+                    f"other text; {_PROSE_HINT}")
         if missing:
             raise CrossError(missing[0])
     return points, mutants
@@ -832,13 +853,16 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                     log("mutant: " + ", ".join(m.name() for m in members))
                 code, out, records, evidence_file = suite(copy, selected=selected, members=members, label="mutant")
                 outcome, failing, evidence, first = classify(code, records, out)
+                why = ""
                 if require_witness and outcome == KILLED and evidence != "witness":
                     outcome = KILLED_BY_SELF_REPORT
                 if outcome in {KILLED, KILLED_BY_SELF_REPORT}:
                     # It must hold. With the mutant on a fresh copy, since a
                     # flake that left a file would otherwise confirm itself:
-                    # a clean kill, in a test of the first run. Without it: a
-                    # run that is red was red for another reason, or may be.
+                    # a clean kill, in a test of the first run, and under
+                    # require_witness with witness evidence again, or only one of
+                    # the two runs had any. Without it: a run that is red was red
+                    # for another reason, or may be.
                     for _ in range(_REPEATS):
                         again, again_copy = fresh()
                         try:
@@ -849,19 +873,25 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                         why = _not_a_kill(code, records, out, failing)
                         if why:
                             outcome = UNCONFIRMED
-                            out = why + "\n" + out
                             break
+                        if require_witness and outcome == KILLED:
+                            again_evidence, again_first = _repeat_evidence(code, records, out, failing)
+                            if again_evidence != "witness":
+                                outcome = KILLED_BY_SELF_REPORT
+                                evidence, first = again_evidence, again_first
+                                why = "the first run's first evidence was witness, and the repeat's was not"
                     else:
                         for _ in range(_RERUNS):
                             code, out, records, _ = baseline(selected, label="confirm")
                             if not _clean(code, records):
                                 outcome = UNCONFIRMED
-                                out = "the suite failed without the mutant\n" + out
+                                why = "the suite failed without the mutant"
                                 break
-                return Result(members[0], outcome, failing, evidence, first,
-                              "" if outcome == KILLED else _tail(out, 20),
+                # The reason goes ahead of the tail: a long report would push it out.
+                output = "" if outcome == KILLED else "\n".join(s for s in (why, _tail(out, 20)) if s)
+                return Result(members[0], outcome, failing, evidence, first, output,
                               with_mutants=list(members[1:]), selected=list(selected or []),
-                              evidence_file=evidence_file)
+                              evidence_file=evidence_file, why=why)
             finally:
                 _remove_tree(directory)
 
@@ -1010,6 +1040,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  first evidence ({r.evidence}): {r.first_failure}")
             if r.outcome == KILLED_BY_SELF_REPORT:
                 print("  " + _EXPLAIN[r.outcome])
+                if r.why:
+                    print("  " + r.why)
         else:
             print("  " + _EXPLAIN[r.outcome])
             if r.output and r.outcome != SURVIVED:

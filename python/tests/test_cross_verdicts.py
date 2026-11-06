@@ -691,3 +691,147 @@ def test_a_trailing_marker_with_a_bad_argument_is_an_error(tmp_path):
     bad = textwrap.dedent(GATE).replace("# subpoena:enforcement\n", "# why  # subpoena:enforcement grp=a\n")
     with pytest.raises(cross.CrossError):
         outcome(tmp_path / "p", {"auth.py": bad, "test_a.py": "import auth\ndef test_a():\n    pass\n"})
+
+
+# --- review 6 ---
+
+WITNESSED = """
+    import os
+    import socket
+    from subpoena import harness
+    from subpoena.witness import Sinkhole
+    import auth
+
+    def count():
+        p = {count!r}
+        n = (len(open(p).read()) if os.path.exists(p) else 0) + 1
+        open(p, "w").write("x" * n)
+        return n
+
+    {tests}
+
+    def test_allowed():
+        assert auth.gate("ann") == {{"user": "ann"}}
+"""
+
+
+def witnessed(count, plain_on_repeat):
+    repeat = 'assert run != 3, "a plain assertion"' if plain_on_repeat else ""
+    return WITNESSED.format(count=str(count), tests=f"""
+    def test_refused():
+        run = count()
+        s = Sinkhole()
+        if run in (2, 3):
+            socket.create_connection((str(s.addr.addr), s.addr.port)).close()
+        {repeat}
+        s.stop()
+        harness.require_no_dial(s, "trace-1")
+""")
+
+
+def test_require_witness_asks_the_repeat_too(tmp_path):
+    r = outcome(tmp_path / "p", {"auth.py": GATE, "test_a.py": witnessed(tmp_path / "count", True)},
+                require_witness=True)
+    assert r.outcome == KILLED_BY_SELF_REPORT and r.evidence == "other" and "repeat" in r.why
+    assert r.first_failure.startswith("AssertionError") or "plain assertion" in r.first_failure
+
+
+def test_a_witness_on_both_runs_stays_a_witness_kill(tmp_path):
+    r = outcome(tmp_path / "p", {"auth.py": GATE, "test_a.py": witnessed(tmp_path / "count", False)},
+                require_witness=True)
+    assert r.outcome == KILLED and r.evidence == "witness", r.output
+
+
+def test_plain_mode_asks_nothing_of_the_repeats_evidence(tmp_path):
+    r = outcome(tmp_path / "p", {"auth.py": GATE, "test_a.py": witnessed(tmp_path / "count", True)})
+    assert r.outcome == KILLED, r.output
+
+
+def test_repeat_evidence_is_read_from_the_same_test(tmp_path):
+    def failure(test, witness):
+        return {"kind": "failure", "test": test, "verdict": "assertion", "witness": witness, "message": test}
+    records = [{"kind": "collected", "tests": ["t.py::test_a", "t.py::test_b"]}, {"kind": "finished", "missing": []},
+               failure("t.py::test_a", False), failure("t.py::test_b", True)]
+    assert cross._repeat_evidence(1, records, "", ["t.py::test_b"])[0] == "witness"
+    assert cross._repeat_evidence(1, records, "", ["t.py::test_a"])[0] == "other"
+
+
+@pytest.mark.parametrize("mark", [
+    "# subpoena:enforcement_gaurd",
+    "# keep count  # subpoena:enforcement_gaurd",
+    "# keep count  # subpoena:enforcement: true",
+    "# keep count  # subpoena:enforcment",
+    "# keep count  # subpoena : enforcement",
+])
+def test_a_trailing_marker_is_read_as_loosely_as_a_whole_comment(tmp_path, mark):
+    src = textwrap.dedent(GATE).replace('    return {"user": user}', f'    audit = user  {mark}\n    return {{"user": user}}')
+    (tmp_path / "auth.py").write_text(src)
+    with pytest.raises(cross.CrossError, match="not a marker cross applies"):
+        cross.find_mutants(str(tmp_path))
+
+
+@pytest.mark.parametrize("mark,want", [
+    ("# keep count# subpoena:enforcement", 2),
+    ("# keep count  # subpoena:enforcement", 2),
+    ("# keep count  # subpoena:enforcement_point of this function", 1),
+    ("# keep count", 1),
+])
+def test_a_trailing_marker_that_reads_right_counts(tmp_path, mark, want):
+    src = textwrap.dedent(GATE).replace('    return {"user": user}', f'    audit = user  {mark}\n    return {{"user": user}}')
+    (tmp_path / "auth.py").write_text(src)
+    _, mutants = cross.find_mutants(str(tmp_path))
+    assert len(mutants) == want
+    assert cross.marker_count(str(tmp_path), mutants) == (want, [])
+
+
+def test_a_marker_error_says_prose_reads_as_a_marker(tmp_path):
+    (tmp_path / "auth.py").write_text(textwrap.dedent(GATE) + "STRICT = True  # where the code carries # subpoena:enforcement markers\n")
+    with pytest.raises(cross.CrossError, match="reads as one"):
+        cross.find_mutants(str(tmp_path))
+
+
+def test_a_long_report_keeps_the_reason(tmp_path):
+    count = tmp_path / "count"
+    r = outcome(tmp_path / "p", {"auth.py": GATE, "test_a.py": f"""
+        import os
+        import auth
+        p = {str(count)!r}
+        n = (len(open(p).read()) if os.path.exists(p) else 0) + 1
+        open(p, "w").write("x" * n)
+        def test_flaky():
+            assert n != 2, "timing"
+        def test_other():
+            assert n != 3, "\\n".join(f"line {{i}}" for i in range(40))
+        def test_allowed():
+            assert auth.gate("ann") == {{"user": "ann"}}
+    """})
+    assert r.outcome == UNCONFIRMED
+    assert r.output.splitlines()[0] == "a different test failed when run again with the mutant"
+
+
+def test_a_marker_shown_in_a_string_is_not_counted(tmp_path):
+    (tmp_path / "auth.py").write_text(textwrap.dedent(GATE) + 'USAGE = """\n   return x  # subpoena:enforcement\n# subpoena:enforcement_guard false\n"""\n')
+    _, mutants = cross.find_mutants(str(tmp_path))
+    assert cross.marker_count(str(tmp_path), mutants) == (1, [])
+
+
+def test_a_bracket_in_a_directory_is_no_parameter(tmp_path):
+    count = tmp_path / "count"
+    r = outcome(tmp_path / "p", {"auth.py": GATE, "tests/[v2]/test_a.py": f"""
+        import os
+        import auth
+        p = {str(count)!r}
+        n = (len(open(p).read()) if os.path.exists(p) else 0) + 1
+        open(p, "w").write("x" * n)
+        def test_flaky():
+            assert n != 2, "timing"
+        def test_other():
+            assert n != 3, "a different flake"
+        def test_allowed():
+            assert auth.gate("ann") == {{"user": "ann"}}
+    """})
+    assert r.outcome == UNCONFIRMED and "different test" in r.output
+
+
+def test_a_tests_parameters_are_left_out_of_its_id():
+    assert cross._test_id("tests/[v2]/t.py::C::test_x[a::b[c]") == "tests/[v2]/t.py::C::test_x"

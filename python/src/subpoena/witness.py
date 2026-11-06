@@ -708,11 +708,23 @@ class Sinkhole:
             lines = re.split(r"\r?\n", head.decode("latin-1"))
             if len(lines[0].split(" ")) != 3 or not lines[0].split(" ")[2].startswith("HTTP/"):
                 return
-            headers = {}
+            # As Go's http.ReadRequest: a folded line joins the one above, a space
+            # before the colon stays in the name, and a line with no colon is no
+            # request. Sinkholes in both languages must read the same bytes alike.
+            fields: List[List[str]] = []
             for line in lines[1:]:
+                if line[:1] in (" ", "\t"):
+                    if not fields:
+                        return
+                    fields[-1][1] = f"{fields[-1][1]} {line.strip()}".strip()
+                    continue
                 name, sep, value = line.partition(":")
-                if sep:
-                    headers.setdefault(name.strip().lower(), value.strip())
+                if not sep:
+                    return
+                fields.append([name.lower(), value.strip()])
+            headers = {}
+            for name, value in fields:
+                headers.setdefault(name, value)
             with self._mu:
                 event.request, event.headers = lines[0], headers
             c.sendall(_ANSWER_200)
@@ -780,7 +792,8 @@ class Sinkhole:
 
     def marked(self, mark: str) -> List[NetworkEvent]:
         """The arrivals whose first MARK_HEADER is mark, for telling one request
-        from another. It is no absence check: ask dialed() for that."""
+        from another: an arrival with no such header matches no mark, "" included.
+        It is no absence check: ask dialed() for that."""
         with self._mu:
             return [e for e in self._events if e.headers.get(MARK_HEADER.lower()) == mark]
 

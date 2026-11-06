@@ -104,9 +104,17 @@ cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
 mutant that does not compile is "invalid", never "killed". Every run starts from
 a fresh copy, so no test sees what another case left there. After a kill, it must
-hold. The tests run again with the mutant, on a fresh copy: the failed packages in
-Go, the mutant run's selection in Python. That must be a clean kill, with a test
-of the first run among the failed. Then three runs without the mutant, each on a
+hold. The mutant run's whole command runs again with the mutant, on a fresh copy,
+in Go without `-failfast`, so a test that catches the mutant is sure to run whatever
+test stopped the first run. That costs a longer repeat, a whole suite where the
+first run could stop early. It must be a clean kill, with a test of the first run
+among the failed, read in Go from go test's `fail` events, since a test's output can
+print the line go test prints for a failure. In Go a repeat that crashes or hangs can
+do so in a test the first run never reached, so the first run's own command then
+decides, by the same rule: a clean kill, in a test of the first run. With
+`--require-witness`, that test's first evidence must be witness on the repeat too.
+If not, the kill is `enforcement-mutant-killed-by-self-report`: only one of the two
+runs had independent evidence. Then three runs without the mutant, each on a
 fresh copy: the first is the mutant run's whole command, because a failure can
 need a test in another package, and in Go the others are the failed packages. The
 baseline, the mutant run and the reruns all start their test binaries the same
@@ -159,7 +167,7 @@ binary exiting 1, stays a crash. In a test that passed it is a log line, and
 order does not matter: the binary lived. Ginkgo reports a recovered panic as `[PANICKED]`,
 which counts as a crash wherever it falls in the suite, since Ginkgo runs a suite
 as one test in random order. Failures outside any test never count: a line
-printed while `TestMain` or `init` ran is package output, whatever its shape. Mutant runs use `go test -json -failfast`, so a
+printed while `TestMain` or `init` ran is package output, whatever its shape. A mutant's first run uses `go test -json -failfast`, so a
 package stops at its first red test. Each kill reports its first evidence, the
 first failure message of a failed test: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
@@ -198,8 +206,11 @@ test's call to `harness.witness_fail`, and a Go test's to `harness.WitnessErrorf
 never use either on a return-value or span assertion to satisfy the gate. `-evidence-dir` keeps every mutant
 run's full `go test -json` output, killed ones included. `-j N` runs N single
 mutants at once, each in its own copy of the module (group runs stay
-sequential); on cross-self it cut 490 s to 135 s at `-j 8` with the same
-verdicts. Load can flip a verdict either way: a polling witness sees less on a
+sequential). On cross-self on 2026-10-27 it cut 490 s to 135 s at `-j 8` with
+the same verdicts. Those times are out of date and cross-self has not been timed
+since: a kill then took one suite run and now takes up to five (six if its repeat
+crashes or hangs), with the repeat a whole suite, and `pkg/witness` has gone from
+27 markers to 186 mutants. Load can flip a verdict either way: a polling witness sees less on a
 busy host, turning a kill into a survivor (which fails the run), and a
 timing-sensitive test can fail under contention, turning a survivor into a
 kill. Gate releases on `-j 1`, or confirm kills there. `-select`
@@ -212,7 +223,7 @@ tests that are green without the mutant: a test that fails alone, or a
 selected subset that fails together (tests that depend on each other's
 order), is an error. The coverage pass costs about
 one extra suite run, so it pays off when each mutant's suite is long: on
-cross-self (short suites) `-j 8 -select` took 141 s against 135 s for `-j 8`,
+cross-self on the same day (short suites) `-j 8 -select` took 141 s against 135 s for `-j 8`,
 with the same verdicts. An enforcement point
 with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
@@ -260,7 +271,9 @@ an unknown argument, a guard marker without its value or off an `if` line, and
 a group of one are errors. So is a marker that would take no effect: a
 statement or guard marker outside an enforcement point, a point marker that is
 not on a function's doc comment, and a misspelt `//subpoena:enforcement...`
-comment. A run whose context is canceled is an error, never a verdict.
+comment, whether that is the whole comment or follows upstream's comment on a line
+of code. On a line of code, prose that names a statement or guard marker reads as
+one, so it is an error too, and the message says to reword it. A run whose context is canceled is an error, never a verdict.
 
 Discovery and mutation use the same saved file bytes. Before each
 mutation, cross-examination checks that the fresh copy still matches discovery

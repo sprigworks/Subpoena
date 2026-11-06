@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A kill's repeat is the whole command, and asks more.** Cross's repeat with the
+  mutant runs the mutant run's whole command without `-failfast`, so `-shuffle` and a
+  failure that shows in another package no longer lose a kill. A test of the first run
+  must fail again, read from `fail` events and not printed text, and under
+  `--require-witness` its first evidence must be witness again, or the kill is
+  `killed-by-self-report`. A misspelt marker after upstream's comment is an error,
+  a block comment or string that shows a marker no longer counts as one, and a
+  tree moved aside goes with the run. `Sinkhole.Marked` reads a request the same in
+  Go and Python.
+
 - **A broker's delivery has a witness.** gmqtt had none: a broker writes to a
   subscriber on a socket it accepted, and `Sinkhole` and `netbpf` see outbound
   dials only. `netbpf` has a second hook on `security_socket_sendmsg` that reports

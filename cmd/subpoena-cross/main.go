@@ -81,6 +81,9 @@ func main() {
 			fmt.Printf("  first evidence (%s): %s\n", r.Evidence, r.FirstFailure)
 			if r.Outcome == cross.KilledBySelfReport {
 				fmt.Println("  require-witness: the first failure was not witness evidence; ask the witness before return values or telemetry")
+				if r.Why != "" {
+					fmt.Println("  " + r.Why)
+				}
 			}
 			if r.Evidence != cross.EvidenceWitness && strings.HasPrefix(r.FirstFailure, "witness:") {
 				fmt.Println("  this witness: tag is not the harness's: a tag counts only through the harness, or harness.WitnessErrorf in a test, on a *testing.T, B or F")
@@ -92,11 +95,8 @@ func main() {
 		case cross.Unconfirmed:
 			fmt.Printf("  suite went red, but the kill did not hold: %s\n", r.Why)
 			fmt.Printf("  failing: %s\n", strings.Join(r.Failing, ", "))
-			if r.Output != "" {
-				fmt.Println("  the red run proves nothing: look for a flake, or state outside the copy:")
-				fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
-			} else {
-				fmt.Println("  a suite that runs the code as a separate program links none of it, so cross cannot count its kills")
+			for _, line := range unconfirmedAdvice(r) {
+				fmt.Println("  " + line)
 			}
 		case cross.Survived:
 			fmt.Println("  suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced")
@@ -138,6 +138,19 @@ func main() {
 	if rep.Failed() {
 		os.Exit(1)
 	}
+}
+
+// unconfirmedAdvice is what to do about an unconfirmed kill. A repeat that hung
+// can leave no output, so the output says nothing of which case this is.
+func unconfirmedAdvice(r cross.Result) []string {
+	if r.Hint != "" {
+		return []string{r.Hint}
+	}
+	advice := []string{"the red run proves nothing: look for a flake, or state outside the copy"}
+	if r.Output != "" {
+		advice = append(advice, strings.Split(r.Output, "\n")...)
+	}
+	return advice
 }
 
 // where is a mutant's file and line, with the unmarked line when markers moved it.
