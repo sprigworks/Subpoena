@@ -49,6 +49,7 @@ const (
 var witnessCalls = []struct{ name, importSuffix string }{
 	{"Spawned", witnessSuffix},
 	{"Dialed", witnessSuffix},
+	{"Delivered", witnessSuffix},
 	{"NoSpawn", harnessSuffix},
 	{"RequireNoSpawn", harnessSuffix},
 	{"NoDial", harnessSuffix},
@@ -56,6 +57,10 @@ var witnessCalls = []struct{ name, importSuffix string }{
 	{"CheckNoSpawn", harnessSuffix},
 	{"CheckNoDial", harnessSuffix},
 	{"WatchSpawns", harnessSuffix},
+	{"NoDelivery", harnessSuffix},
+	{"RequireNoDelivery", harnessSuffix},
+	{"CheckNoDelivery", harnessSuffix},
+	{"WatchDeliveries", harnessSuffix},
 }
 
 // asksWitness reports whether f calls one of witnessCalls (see callsFrom).
@@ -964,7 +969,7 @@ func checkUnwitnessedEnforcement(t *tree) []Finding {
 				continue
 			}
 			out = append(out, t.finding(RuleUnwitnessedEnforcement, fd.Pos(),
-				"enforcement point %s has no test that asks a Witness (Spawned, Dialed, or harness.RequireNoSpawn/RequireNoDial); span assertions alone are testimony, not proof", fd.Name.Name))
+				"enforcement point %s has no test that asks a Witness (Spawned, Dialed, Delivered, or harness.RequireNoSpawn/RequireNoDial/RequireNoDelivery); span assertions alone are testimony, not proof", fd.Name.Name))
 		}
 	}
 	return out

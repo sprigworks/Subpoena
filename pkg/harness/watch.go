@@ -237,12 +237,28 @@ func CheckNoDial(tb testing.TB, w witness.NetworkWitness, traceID string, match 
 	return true
 }
 
+// CheckNoDelivery is RequireNoDelivery without stopping the test. It reports
+// whether the check passed.
+func CheckNoDelivery(tb testing.TB, w witness.DeliveryWitness, traceID string, match func(witness.DeliveryEvent) bool) bool {
+	tb.Helper()
+	v, err := NoDelivery(w, traceID, match)
+	if v != Pass {
+		tb.Errorf("%s", noDeliveryMessage(tb, traceID, v, err))
+		return false
+	}
+	return true
+}
+
 func noSpawnMessage(tb testing.TB, traceID string, v Verdict, err error) string {
 	return verdictText(tb, fmt.Sprintf("no spawn for %s: %s: %v", traceID, v, err), v)
 }
 
 func noDialMessage(tb testing.TB, traceID string, v Verdict, err error) string {
 	return verdictText(tb, fmt.Sprintf("no dial for %s: %s: %v", traceID, v, err), v)
+}
+
+func noDeliveryMessage(tb testing.TB, traceID string, v Verdict, err error) string {
+	return verdictText(tb, fmt.Sprintf("no delivery for %s: %s: %v", traceID, v, err), v)
 }
 
 // verdictText tags a check's failure. Only a Fail, which is a sighting, is
