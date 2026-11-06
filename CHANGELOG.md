@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Sinkhole can answer.** It accepted and closed, so a proxy in front of it
+  turned the hangup into a 502 and hid what the proxy did next.
+  `NewAnsweringSinkhole` (`Sinkhole(answer=True)` in Python) replies 200 with an
+  empty body and records the request line and headers. A request marked with
+  `X-Subpoena-Mark` is told apart by trace; an unmarked arrival still holds for
+  every trace.
 - **The wrong cause is no longer called a build failure.** A test or panic whose
   text held `[build failed]` or `[setup failed]` came back `invalid`, read from
   anywhere in the output. Cross now reads only `go test`'s own line. A package

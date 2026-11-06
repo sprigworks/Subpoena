@@ -12,7 +12,7 @@ import socket
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import IO, List, Optional, Tuple, Union
+from typing import IO, Dict, List, Optional, Tuple, Union
 
 BY_CGROUP = "cgroup"
 
@@ -235,6 +235,14 @@ def read_log(f: IO[str]) -> Log:
 OP_CONNECT = "connect"  # connect() on an inet socket
 OP_SENDMSG = "sendmsg"  # a send with an explicit destination
 BY_DESTINATION = "destination"
+# An answering Sinkhole read the trace from the request's MARK_HEADER. The header
+# comes through the code under test, so a mark can only narrow an arrival to a
+# trace: one with no mark stays BY_DESTINATION and is returned for every trace.
+BY_MARK = "mark"
+MARK_HEADER = "X-Subpoena-Mark"
+_ANSWER_READ = 2.0  # seconds on one connection; the arrival is already recorded
+_ANSWER_HEAD = 1 << 16
+_ANSWER_200 = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 
 
 # "v4:port" or "[v6]:port", as Go's netip.ParseAddrPort takes them: an
@@ -298,6 +306,8 @@ class NetworkEvent:
     trace_id: str = ""
     attribution: str = ""
     seen_at: Optional[datetime] = None
+    request: str = ""  # HTTP request line, from an answering Sinkhole
+    headers: Dict[str, str] = field(default_factory=dict)  # names in lower case
 
 
 class Sinkhole:
@@ -314,9 +324,18 @@ class Sinkhole:
         ... point the code at s.addr, run it ...
         s.stop()
         require_no_dial(s, trace_id)
+
+    A proxy turns a closed connection into a 502, which can hide what it did
+    next. Sinkhole(answer=True) stands in for an upstream that must answer: it
+    replies 200 with an empty body and records the request line and headers.
+    An arrival is recorded before a byte is read, so one that sends nothing, or
+    something that is not HTTP, still counts.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, answer: bool = False) -> None:
+        self._answer = answer
+        self._conns: List[threading.Thread] = []
+        self._draining = False
         self._ln = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             self._ln.bind(("127.0.0.1", 0))
@@ -368,11 +387,57 @@ class Sinkhole:
                 continue
             except OSError as e:
                 return n, e
+            if self._answer and not self._draining:
+                event = self._record_one()
+                t = threading.Thread(target=self._serve, args=(c, event), name="subpoena-sinkhole-conn", daemon=True)
+                self._conns.append(t)
+                t.start()
+                continue
             n += 1  # it arrived; closing our end cannot unsay that
             try:
                 c.close()
             except OSError:
                 pass
+
+    def _record_one(self) -> NetworkEvent:
+        e = NetworkEvent(dest=self.addr, op=OP_CONNECT, protocol="tcp", attribution=BY_DESTINATION,
+                         seen_at=datetime.now(timezone.utc))
+        with self._mu:
+            self._events.append(e)
+        return e
+
+    def _serve(self, c: socket.socket, event: NetworkEvent) -> None:
+        """Read one request, fill in the event, answer and close. A request it
+        cannot read leaves the arrival as it is, which holds for every trace."""
+        try:
+            c.settimeout(_ANSWER_READ)
+            data = b""
+            while b"\r\n\r\n" not in data and len(data) < _ANSWER_HEAD:
+                chunk = c.recv(4096)
+                if not chunk:
+                    return
+                data += chunk
+            lines = data.split(b"\r\n\r\n", 1)[0].decode("latin-1").split("\r\n")
+            if len(lines[0].split(" ")) != 3 or not lines[0].split(" ")[2].startswith("HTTP/"):
+                return
+            headers = {}
+            for line in lines[1:]:
+                name, sep, value = line.partition(":")
+                if sep:
+                    headers[name.strip().lower()] = value.strip()
+            mark = headers.get(MARK_HEADER.lower(), "")
+            with self._mu:
+                event.request, event.headers = lines[0], headers
+                if mark:
+                    event.trace_id, event.attribution = mark, BY_MARK
+            c.sendall(_ANSWER_200)
+            c.shutdown(socket.SHUT_WR)
+            while c.recv(4096):  # closing on unread bytes can reset the answer away
+                pass
+        except OSError:
+            pass
+        finally:
+            c.close()
 
     def _record(self, n: int) -> None:
         if not n:
@@ -407,6 +472,9 @@ class Sinkhole:
         except OSError as e:
             self._fail(f"sinkhole: stop: {e}")
         self._thread.join()
+        self._draining = True
+        for t in self._conns:
+            t.join()
         n, err = _drain(self)
         self._record(n)
         if err is not None:
@@ -419,10 +487,11 @@ class Sinkhole:
             return self._err
 
     def dialed(self, trace_id: str) -> List[NetworkEvent]:
-        """Every connection that reached the sinkhole, whatever the trace:
-        arrivals cannot be told apart by trace."""
+        """Every connection that reached the sinkhole, leaving out only an
+        arrival marked with a different trace. One with no mark cannot be told
+        apart by trace, so it is returned for every trace."""
         with self._mu:
-            return list(self._events)
+            return [e for e in self._events if e.attribution != BY_MARK or e.trace_id == trace_id]
 
     def health(self) -> Optional[str]:
         """None if the capture is complete: stopped, drained, and no accept

@@ -8,7 +8,7 @@ import pytest
 
 from subpoena import witness
 from subpoena.harness import (Verdict, check_no_dial, check_no_spawn, dial_to, no_dial, require_no_dial)
-from subpoena.witness import BY_DESTINATION, OP_CONNECT, AddrPort, NetworkEvent, Sinkhole
+from subpoena.witness import BY_DESTINATION, BY_MARK, MARK_HEADER, OP_CONNECT, AddrPort, NetworkEvent, Sinkhole
 
 
 def dial(s, n=1):
@@ -224,3 +224,45 @@ def test_a_mapped_filter_still_sees_a_real_connection():
         assert verdict is Verdict.FAIL
         with pytest.raises(AssertionError):
             require_no_dial(s, "trace", dial_to(mapped))
+
+
+# --- answering Sinkhole: an upstream that must answer, with marks ---
+
+def _get(s, mark=""):
+    import http.client
+    c = http.client.HTTPConnection(str(s.addr.addr), s.addr.port, timeout=5)
+    c.request("POST", "/secret?x=1", body=b"a body", headers={MARK_HEADER: mark} if mark else {})
+    r = c.getresponse()
+    out = r.status, r.read()
+    c.close()
+    return out
+
+
+def test_answering_sinkhole_answers_and_records_the_request():
+    s = Sinkhole(answer=True)
+    assert _get(s, "a") == (200, b"")
+    assert s.stop() is None and s.health() is None
+    (e,) = s.dialed("a")
+    assert e.request == "POST /secret?x=1 HTTP/1.1"
+    assert e.attribution == BY_MARK and e.trace_id == "a"
+    assert e.headers[MARK_HEADER.lower()] == "a"
+
+
+def test_marked_arrivals_are_told_apart():
+    s = Sinkhole(answer=True)
+    for mark in ("a", "b", ""):
+        _get(s, mark)
+    s.stop()
+    assert len(s.dialed("a")) == 2
+    assert [e.attribution for e in s.dialed("c")] == [BY_DESTINATION]
+
+
+def test_an_arrival_that_is_not_http_still_counts():
+    import socket
+    s = Sinkhole(answer=True)
+    c = socket.create_connection((str(s.addr.addr), s.addr.port))
+    c.sendall(b"not http\r\n\r\n")
+    c.close()
+    assert s.stop() is None
+    (e,) = s.dialed("any")
+    assert e.request == "" and e.attribution == BY_DESTINATION

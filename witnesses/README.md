@@ -237,6 +237,15 @@ that arrives is recorded and closed. It needs no root, and the application
 cannot unsay a connection the listener accepted. `Stop` drains connections the
 kernel completed but the accept loop has not taken yet, so a client that hung
 up at once still counts; a drain or accept failure fails `Health`.
+A proxy turns a closed connection into a 502, which can hide what it did next.
+`NewAnsweringSinkhole` (`Sinkhole(answer=True)` in Python) stands in for an
+upstream that must answer: it replies 200 with an empty body and records the
+request line and headers. A request carrying `X-Subpoena-Mark: <trace id>` is
+attributed to that trace (`ByMark`), so `Dialed` leaves it out of other traces.
+The header travels through the code under test, so a mark only narrows: an
+arrival with no mark, because a proxy dropped it or the bytes were not HTTP,
+stays `ByDestination` and is returned for every trace.
+
 `NewSinkhole` listens on 127.0.0.1; `NewSinkholeAt` takes the address, for an
 IPv6 path or a second loopback address.
 

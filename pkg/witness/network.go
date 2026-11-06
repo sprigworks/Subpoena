@@ -1,6 +1,7 @@
 package witness
 
 import (
+	"net/http"
 	"net/netip"
 	"time"
 )
@@ -28,9 +29,11 @@ type NetworkEvent struct {
 	Dest        netip.AddrPort // IPv4-mapped IPv6 addresses are unmapped
 	Cgroup      string         // cgroup path, if readable
 	CgroupID    uint64         // kernel cgroup ID, if the witness reports one (0 otherwise)
-	TraceID     string         // set when Attribution is ByCgroup
+	TraceID     string         // set when Attribution is ByCgroup or ByMark
 	Attribution Attribution
 	SeenAt      time.Time
+	Request     string      // HTTP request line, from an answering Sinkhole
+	Headers     http.Header // HTTP headers, from an answering Sinkhole
 }
 
 // NetworkWitness reports outbound connection attempts attributable to a trace.

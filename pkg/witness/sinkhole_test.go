@@ -5,8 +5,14 @@ package witness
 
 import (
 	"errors"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
 	"net/netip"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -158,5 +164,87 @@ func TestSinkholeAtUnavailableAddressFails(t *testing.T) {
 	if s, err := NewSinkholeAt(netip.MustParseAddrPort("192.0.2.1:0")); err == nil {
 		s.Stop()
 		t.Fatal("want an error binding an address this host does not have")
+	}
+}
+
+func answering(t *testing.T) *Sinkhole {
+	t.Helper()
+	s, err := NewAnsweringSinkhole()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Stop() })
+	return s
+}
+
+// The B20 shape: a reverse proxy turns the plain Sinkhole's hangup into a 502,
+// and the answering one's reply into the upstream's 200.
+func TestAnsweringSinkholeStandsInForAnUpstream(t *testing.T) {
+	s := answering(t)
+	front := httptest.NewServer(httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: s.Addr().String()}))
+	defer front.Close()
+	req, _ := http.NewRequest("POST", front.URL+"/secret?x=1", strings.NewReader("a body"))
+	req.Header.Set(MarkHeader, "trace-a")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || len(body) != 0 {
+		t.Fatalf("got %d %q, want 200 and no body", resp.StatusCode, body)
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Health(); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Dialed("trace-a")
+	if len(got) != 1 || got[0].Request != "POST /secret?x=1 HTTP/1.1" || got[0].Attribution != ByMark || got[0].TraceID != "trace-a" {
+		t.Fatalf("events %+v", got)
+	}
+	if got[0].Headers.Get(MarkHeader) != "trace-a" {
+		t.Fatalf("headers %v", got[0].Headers)
+	}
+}
+
+// A mark tells two arrivals apart; only a different mark leaves one out.
+func TestMarkedArrivalsAreToldApart(t *testing.T) {
+	s := answering(t)
+	for _, mark := range []string{"a", "b", ""} {
+		req, _ := http.NewRequest("GET", "http://"+s.Addr().String()+"/", nil)
+		if mark != "" {
+			req.Header.Set(MarkHeader, mark)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	s.Stop()
+	if got := s.Dialed("a"); len(got) != 2 {
+		t.Fatalf("Dialed(a) = %+v, want its own and the unmarked one", got)
+	}
+	if got := s.Dialed("c"); len(got) != 1 || got[0].Attribution != ByDestination {
+		t.Fatalf("Dialed(c) = %+v, want the unmarked one", got)
+	}
+}
+
+// What cannot be read as a request still arrived.
+func TestAnArrivalThatIsNotHTTPStillCounts(t *testing.T) {
+	s := answering(t)
+	c, err := net.Dial("tcp", s.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Write([]byte("not http\r\n\r\n"))
+	c.Close()
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Dialed("any"); len(got) != 1 || got[0].Request != "" || got[0].Attribution != ByDestination {
+		t.Fatalf("events %+v", got)
 	}
 }
