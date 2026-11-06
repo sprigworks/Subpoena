@@ -120,11 +120,30 @@ func TestRefused(t *testing.T) {
 }
 `})
 	r := killOf(t, Options{Target: dir, Timeout: 15 * time.Second})
-	if r.Outcome != Unconfirmed || r.Why != noFinish || r.Hint != hungHint {
+	if r.Outcome != Unconfirmed || r.Why != noFinish || !r.Hung {
 		t.Fatalf("got %+v", r)
 	}
-	if strings.Contains(hungHint, "look for a flake") {
-		t.Fatal(hungHint)
+}
+
+// A crash on the repeat keeps its reason, and if every last try then hangs, that is
+// still no flake.
+func TestACrashThenHangsIsCalledHung(t *testing.T) {
+	t.Parallel()
+	dir := module(t, map[string]string{"gate.go": gate3, "run_test.go": counted(t), "gate_test.go": `package mini
+
+import ("testing"; "time")
+
+func TestRefused(t *testing.T) {
+	if Check("mallory") == nil {
+		if nth == 3 { panic("died") }
+		if nth > 3 { time.Sleep(time.Hour) }
+		t.Fatal("mallory let in")
+	}
+}
+`})
+	r := killOf(t, Options{Target: dir, Timeout: 15 * time.Second})
+	if r.Outcome != Unconfirmed || !strings.Contains(r.Why, "crashed") || !r.Hung {
+		t.Fatalf("got %+v", r)
 	}
 }
 
@@ -144,7 +163,7 @@ func TestLater(t *testing.T) {
 }
 `})
 	r := killOf(t, Options{Target: dir, Timeout: 15 * time.Second})
-	if r.Outcome != Unconfirmed || r.Why == noFinish || r.Hint != "" {
+	if r.Outcome != Unconfirmed || r.Why == noFinish || r.Hung {
 		t.Fatalf("got %+v", r)
 	}
 }

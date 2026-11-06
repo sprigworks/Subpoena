@@ -25,3 +25,11 @@ func TestUnconfirmedAdvice(t *testing.T) {
 		t.Fatalf("output: %q", got)
 	}
 }
+
+// Review 9, H1. A kill lost to a hang was no flake, so the advice must not say so.
+func TestUnconfirmedAdviceForAHangIsNotAFlake(t *testing.T) {
+	got := strings.Join(unconfirmedAdvice(cross.Result{Hung: true, Output: "one\ntwo"}), "\n")
+	if strings.Contains(got, "flake,") || !strings.Contains(got, "hung") || !strings.Contains(got, "one\ntwo") {
+		t.Fatalf("got %q", got)
+	}
+}

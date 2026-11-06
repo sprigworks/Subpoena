@@ -176,6 +176,10 @@ type Result struct {
 	// ZeroReturns lists the zero-value returns that stood in for returns the
 	// function could not end without, so a mutant could compile.
 	ZeroReturns []string
+	// Hung says an Unconfirmed result's last tries all hung, with each failed
+	// package alone, so nothing shows the red was a flake or the mutant's.
+	Hung bool
+
 	// Hint says what to do about an Invalid or Unconfirmed result, when cross
 	// can tell.
 	Hint string
@@ -793,6 +797,7 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 			return err
 		}
 		why := notAKill(out, runErr, o.key, first)
+		hung := false // every last try hung
 		asked := o.RequireWitness && res.Outcome == Killed
 		reason := why
 		if why == "" && asked {
@@ -808,6 +813,7 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 			// what ran before it. Then the test goes alone, with what can crash it
 			// left out, for when the command too reaches that crash.
 			fmt.Fprintf(o.Log, "  %s; running the first run's command again, then its failed tests\n", reason)
+			hung = true
 			for _, a := range lastTries(args, raw, first) {
 				again, againErr, err := withMutant(a)
 				if err != nil {
@@ -815,8 +821,11 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 				}
 				if r := notAKill(again, againErr, o.key, first); r != "" {
 					// A try that finished says more than one that hung.
-					if why != "" && r != noFinish {
-						why = r
+					if r != noFinish {
+						hung = false
+						if why == noFinish {
+							why = r
+						}
 					}
 					continue
 				}
@@ -829,9 +838,7 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 		if why != "" {
 			res.Why, res.Output = why, tail(testText(out), 20)
 			res.Outcome = Unconfirmed //subpoena:enforcement
-			if why == noFinish {
-				res.Hint = hungHint
-			}
+			res.Hung = hung || why == noFinish
 			return nil
 		}
 		if asked {
@@ -928,10 +935,6 @@ const separateProgramHint = "a suite that runs the code as a separate program li
 
 // noFinish is notAKill's reason for a run that hung.
 const noFinish = "the run with the mutant did not finish the second time"
-
-// hungHint is what to do about a kill whose every repeat hung. Each package that
-// failed went alone, so the hang is in one of them, and that says nothing of a flake.
-const hungHint = "every repeat hung, even with each failed package alone, so nothing here says the red was a flake or the mutant's: find what hangs in the failed package with the mutant, or raise -timeout if it is only slow"
 
 // notAKill says why a repeat with the mutant is not the kill the first run was,
 // or "" if it is: red on a clean failure, in a test that failed the first time.

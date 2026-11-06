@@ -150,6 +150,9 @@ func unconfirmedAdvice(r cross.Result) []string {
 		return []string{r.Hint}
 	}
 	advice := []string{"the red run proves nothing: look for a flake, or state outside the copy"}
+	if r.Hung {
+		advice = []string{"the repeats hung, even with each failed package alone, so nothing shows the red was a flake or the mutant's: find what hangs in the failed package with the mutant, or raise -timeout if it is only slow"}
+	}
 	if r.Output != "" {
 		advice = append(advice, strings.Split(r.Output, "\n")...)
 	}
