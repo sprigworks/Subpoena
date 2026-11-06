@@ -123,6 +123,8 @@ func newFileWatch(h fileHooks, roots ...string) (*FileWatch, error) {
 }
 
 // record adds an event seen now. Called by the reader only.
+//
+//subpoena:enforcement_point
 func (w *FileWatch) record(e FileEvent) {
 	e.Attribution, e.SeenAt = ByRoot, time.Now()
 	e.Root = w.rootOf(e.Path)
@@ -274,7 +276,7 @@ func (w *FileWatch) WriteLog(dst io.Writer) error {
 // that writes it once attached and WriteEnd once stopped leaves an open window
 // if it is killed between them, and a reader's Health fails on that.
 func (w *FileWatch) WriteStart(dst io.Writer) error {
-	return json.NewEncoder(dst).Encode(Record{Time: w.started.UTC(), Record: RecordStart, Roots: w.roots})
+	return json.NewEncoder(dst).Encode(Record{Time: w.started.UTC(), Record: RecordStart, Roots: w.roots, Captures: []string{CaptureFile}})
 }
 
 // WriteEnd writes the rest of WriteLog, after WriteStart: the events and the

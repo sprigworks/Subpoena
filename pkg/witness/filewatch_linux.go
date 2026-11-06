@@ -79,6 +79,7 @@ func (w *FileWatch) addWatch(path string, mask uint32) (int, error) {
 	return unix.InotifyAddWatch(w.state.fd, path, mask)
 }
 
+//subpoena:enforcement_point
 func (w *FileWatch) start() error {
 	fd, err := unix.InotifyInit1(unix.IN_NONBLOCK | unix.IN_CLOEXEC)
 	if err != nil {
@@ -205,6 +206,8 @@ func (w *FileWatch) readQueue(buf []byte) (int, error) {
 // writers still going it would otherwise never find the queue empty. Stop was
 // called with the code under test still running, so what it wrote is unsettled,
 // and the capture says so.
+//
+//subpoena:enforcement_point
 func (w *FileWatch) drain(buf []byte) bool {
 	s := w.state
 	for {
