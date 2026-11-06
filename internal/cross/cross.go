@@ -766,7 +766,6 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 	if len(failed) > 0 {
 		narrow = slices.Concat(args[:len(args)-3], failed, args[len(args)-2:])
 	}
-	first := failedTests(raw, o.key)
 	whole := args[:max(0, len(args)-2)] // without -test.failfast
 	withMutant := func(a []string) (string, error, error) {
 		if err := sb.fresh(); err != nil {
@@ -789,6 +788,19 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 			res.RepeatEvidence = append(res.RepeatEvidence, file)
 		}
 		return out, runErr, nil
+	}
+	first := failedTests(raw, o.key)
+	if len(first) == 0 && passAfterFail(raw) {
+		// -test.failfast can make the PASS: a TestMain that calls m.Run again gets a
+		// run of nothing, which says it after a real failure. So the failed tests come
+		// from the run as it would have gone, by the same rules, and the repeat below
+		// still has to fail one of them. A binary that says PASS there too gives none.
+		fmt.Fprintf(o.Log, "  a package failed a test and said PASS; running without -test.failfast\n")
+		out, _, err := withMutant(whole)
+		if err != nil {
+			return err
+		}
+		first = failedTests(out, o.key)
 	}
 	for n := range killRepeats {
 		fmt.Fprintf(o.Log, "  repeat %d of %d with the mutant\n", n+1, killRepeats)
@@ -898,6 +910,17 @@ func lastTries(args []string, raw string, first map[testID]bool) [][]string {
 		tries = append(tries, slices.Concat(only[:len(only)-1], []string{pkg}))
 	}
 	return tries
+}
+
+// passAfterFail reports whether a package with a failed test also said PASS.
+func passAfterFail(raw string) bool {
+	ends := endings(raw)
+	for _, pkg := range failedPackages(raw) {
+		if ends[eventKey{pkg, ""}].saidPass {
+			return true
+		}
+	}
+	return false
 }
 
 // packagesIn lists the packages with an event in raw.
@@ -1025,7 +1048,8 @@ func idOf(pkg, test string) testID {
 // line of a test that never ran has events go test cannot tell from the real thing,
 // and a binary that said PASS is what gives those away: m.Run says it only when every
 // test passed, so a binary that said it and exited 1 did so in TestMain, and failed
-// no test. Printing PASS can cost a kill and make none. What is left is such a pair
+// no test. Under -test.failfast a second m.Run says it after a real failure, which is
+// why confirmKill asks a run without it. Printing PASS can cost a kill and make none. What is left is such a pair
 // of lines beside a real failure in its package. See docs/architecture.md.
 //
 //subpoena:enforcement_point
