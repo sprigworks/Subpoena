@@ -632,12 +632,17 @@ func (s *pgSession) forget(st *statement) {
 	if st.forget == "" {
 		return
 	}
-	o := opaqueStatement("", "EXECUTE", "a name %s changed", st.verb)
 	for name := range s.prepared {
 		if st.forget == "*" || st.forget == name {
-			s.prepared[name] = &o //subpoena:enforcement
+			s.prepared[name] = rebound(st.verb) //subpoena:enforcement
 		}
 	}
+}
+
+// rebound stands for what a name holds after a SQL-level verb touched it.
+func rebound(verb string) *statement {
+	o := opaqueStatement("", "EXECUTE", "a name %s changed", verb)
+	return &o
 }
 
 var pgWriteTags = wordSet("INSERT UPDATE DELETE MERGE COPY")

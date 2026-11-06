@@ -198,6 +198,9 @@ func TestUnprovenIsOpaque(t *testing.T) {
 		pgOnly("SELECT 'a'\n'b'", "read"),
 		myOnly("SELECT 1 --\x7f '\nDELETE FROM t; -- '", "opaque"),
 		myOnly("SELECT 1 # \x00, write_it()", "opaque"),
+		myOnly("SELECT 1 -- \x00, write_it()", "opaque"),
+		myOnly("SELECT 1 \x00", "opaque"),
+		pgOnly(`TRUNCATE U&"\0075sers"`, "opaque"), // nothing after the name to give it away
 	} {
 		for _, d := range []dialect{dialectPostgres, dialectMySQL} {
 			if (d == dialectPostgres && !tc.pg) || (d == dialectMySQL && !tc.my) {
@@ -253,7 +256,7 @@ func TestPostgresNameIsCutAsTheServerCutsIt(t *testing.T) {
 		t.Errorf("a name at the limit is whole: %+v", s)
 	}
 	// Where a non-ASCII name is cut depends on the server's encoding.
-	if s := classOf(t, dialectPostgres, "INSERT INTO "+strings.Repeat("é", 40)+" VALUES (1)"); s.class != classOpaque {
+	if s := classOf(t, dialectPostgres, "INSERT INTO "+strings.Repeat("é", 40)+" VALUES (1)"); s.verb != "INSERT" || !strings.Contains(s.reason, "long name") {
 		t.Errorf("%+v", s)
 	}
 	// MySQL refuses a long name; it does not cut one.
@@ -412,6 +415,23 @@ func TestPostgresConfirmationWithNothingWaiting(t *testing.T) {
 		w.server(frame(typ))
 		if len(w.cap.faultList()) == 0 {
 			t.Errorf("%q with nothing waiting must fault", typ)
+		}
+		// The wrong confirmation for what is waiting must not apply it.
+		w = pgReadyWire(t)
+		w.client(pgExecute("p"), pgSync())
+		w.server(frame(typ))
+		if f := w.cap.faultList(); len(f) != 1 || !strings.Contains(f[0], "nothing waiting") {
+			t.Errorf("%q ahead of an Execute: %q", typ, f)
+		}
+	}
+}
+
+func TestPostgresParameterStatusWithoutTerminator(t *testing.T) {
+	for _, body := range [][]byte{[]byte("name"), []byte("name\x00value")} {
+		w := pgReadyWire(t)
+		w.server(frame('S', body))
+		if f := w.cap.faultList(); len(f) != 1 || !strings.Contains(f[0], "ParameterStatus") {
+			t.Errorf("%q: %q", body, f)
 		}
 	}
 }

@@ -92,7 +92,10 @@ var atomicVerbs = map[string]bool{"SELECT": true, "VALUES": true, "TABLE": true,
 //
 //subpoena:enforcement_point
 func (st *statement) mayCommit() bool {
-	return st.class == classOpaque && !st.atomic && (st.unread || !atomicVerbs[st.verb]) //subpoena:enforcement
+	if st.class == classOpaque && !st.atomic && (st.unread || !atomicVerbs[st.verb]) {
+		return true //subpoena:enforcement
+	}
+	return false
 }
 
 type tokenKind int
@@ -134,9 +137,9 @@ func (t token) punct(p string) bool { return t.kind == tokPunct && t.text == p }
 func parseSQL(d dialect, text string) []statement {
 	toks, err := tokenize(d, text)
 	if err != nil {
-		o := opaqueStatement(text, firstWord(text), "cannot tokenize: %v", err) //subpoena:enforcement
+		o := opaqueStatement(text, firstWord(text), "cannot tokenize: %v", err)
 		o.unread, o.forget, o.taint = true, "*", tokenizeTaint(text)
-		return []statement{o}
+		return []statement{o} //subpoena:enforcement
 	}
 	var out []statement
 	depth, start := 0, 0
@@ -496,7 +499,8 @@ func clipNames(toks []token) (out []token, bad bool) {
 		if &out[0] == &toks[0] {
 			out = append([]token(nil), toks...)
 		}
-		out[i].text = t.text[:pgMaxName] //subpoena:enforcement
+		t.text = t.text[:pgMaxName] //subpoena:enforcement
+		out[i] = t
 	}
 	return out, false
 }
@@ -625,13 +629,9 @@ func unknownCall(d dialect, toks []token) string {
 		if !toks[i+1].punct("(") {
 			continue
 		}
-		switch t.kind {
-		case tokNumber, tokQuoted:
-			// MySQL's names may start with a digit, and a quoted name is not
-			// the keyword or built-in it spells.
-			return t.text //subpoena:enforcement
-		case tokWord:
-		default:
+		// MySQL's names may start with a digit, and a quoted name is not the
+		// keyword or built-in it spells: neither is on any list below.
+		if t.kind == tokString || t.kind == tokPunct {
 			continue
 		}
 		if i > 0 && toks[i-1].punct(".") {
