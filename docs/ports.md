@@ -251,7 +251,7 @@ Check: the `delivery_` cases in `conformance/witness.yaml` (`delivered`,
   | `dest` | string | the address the application connected to |
   | `statement`, `verb` | string | SQL as sent, cut at 8 KiB; first keyword. Never bound values |
   | `tables` | array of strings | tables written; a Postgres name is cut to the 63 bytes the server keeps |
-  | `opaque`, `reason` | boolean, string | it may have written anything, and why. A call, on Postgres a qualified column, operator or cast, is opaque unless it is proven inert |
+  | `opaque`, `reason` | boolean, string | it may have written anything, and why. A call, and on Postgres an operator, cast or field of an expression, is opaque unless it is proven inert. A plain qualified column is a read |
   | `rows` | integer | rows changed, -1 if unknown |
   | `outcome` | string | `read`, `committed`, `rolled_back`, `failed` or `unknown` |
   | `attribution` | `"destination"` | it holds for every trace |
@@ -267,8 +267,9 @@ Check: the `delivery_` cases in `conformance/witness.yaml` (`delivered`,
   its work, so `failed` means the server refused the statement and nothing of it
   stayed, as far as the wire can say. W4's other rules apply.
   The file cannot show what only the catalog knows: a view over a writing function,
-  or an overload of a built-in name installed before the capture, reads as a plain
-  read (`witnesses/README.md` has the list of what is never seen).
+  field notation (`o.w` calling `w(o)`), or an overload of a built-in name, installed
+  before the capture, reads as a plain read (`witnesses/README.md` has the list of
+  what is never seen).
   A port ships the reader; a `no_row` check over it is not in Python yet, so a
   Python test reads `committed` and `health` itself.
 

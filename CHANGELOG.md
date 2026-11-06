@@ -19,15 +19,14 @@
   cgroup root name the kernel can never match, which read as silence.
 - **The database witness trusts less.** It treats a call as opaque unless it is an
   exact name on a short per-engine list, and on Postgres the same goes for
-  qualified columns (`o.w` can be `w(o)`), operators outside a built-in list and
-  casts to unknown types, so a statement with `t.col` now counts against every
-  table. `EXPLAIN`, `CREATE TABLE ... AS`, `ALTER TABLE` expressions and `COPY ...
+  operators outside a built-in list, casts to unknown types and fields of an
+  expression. `EXPLAIN`, `CREATE TABLE ... AS`, `ALTER TABLE` expressions and `COPY ...
   PROGRAM` are read for what they run. A session whose lexing or function lookup it
   can't follow is opaque for good. A `CALL` or `DO` that failed where it could have
   committed is `unknown` and Inconclusive. Names take their SQL only when the server
   confirms the `Parse`, `PREPARE TRANSACTION` settles at its tag, and Postgres names
-  are cut to 63 bytes. A view over a writing function and an overload of a listed
-  name stay out of reach: `witnesses/README.md`.
+  are cut to 63 bytes. A view over a writing function, field notation (`o.w` calling
+  `w(o)`) and an overload of a listed name stay out of reach: `witnesses/README.md`.
 - **A database witness, for Postgres and MySQL.** `pkg/witness/dbproxy` is a
   wire-protocol proxy: point the application's DSN at its loopback listener and
   it forwards to the real server, logging statements and commits per connection.

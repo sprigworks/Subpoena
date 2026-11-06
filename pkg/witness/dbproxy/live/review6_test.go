@@ -72,15 +72,15 @@ func TestReview6Postgres(t *testing.T) {
 			r.t.Cleanup(func() { r.direct.Exec(context.Background(), "DROP FUNCTION partition()") })
 			sent(c, "SELECT partition()")
 		}},
-		{"functional notation", harness.Fail, func(r *pgRig, c *pgx.Conn) {
+		{"functional notation, function created through the listener", harness.Fail, func(r *pgRig, c *pgx.Conn) {
 			r.direct1("CREATE TABLE one_" + r.table + " (a int); INSERT INTO one_" + r.table + " VALUES (1)")
-			r.writer("w_"+r.table, "one_"+r.table)
+			sent(c, "CREATE FUNCTION w_"+r.table+"(one_"+r.table+") RETURNS int LANGUAGE plpgsql AS $f$ BEGIN "+r.ins()+"; RETURN 1; END $f$")
 			sent(c, "SELECT o.w_"+r.table+" FROM one_"+r.table+" o")
 		}},
-		{"functional notation in WHERE", harness.Fail, func(r *pgRig, c *pgx.Conn) {
-			r.direct1("CREATE TABLE one_" + r.table + " (a int); INSERT INTO one_" + r.table + " VALUES (1)")
-			r.writer("w_"+r.table, "one_"+r.table)
-			sent(c, "SELECT 1 FROM one_"+r.table+" o WHERE o.w_"+r.table+" = 1")
+		{"view created through the listener", harness.Fail, func(r *pgRig, c *pgx.Conn) {
+			r.writer("w_"+r.table, "")
+			sent(c, "CREATE VIEW v_"+r.table+" AS SELECT w_"+r.table+"()")
+			sent(c, "SELECT * FROM v_"+r.table)
 		}},
 		{"field of a parenthesis", harness.Fail, func(r *pgRig, c *pgx.Conn) {
 			r.direct1("CREATE TABLE one_" + r.table + " (a int); INSERT INTO one_" + r.table + " VALUES (1)")
@@ -256,6 +256,10 @@ func TestReview6PostgresStillPasses(t *testing.T) {
 		"built-ins": func(r *pgRig, c *pgx.Conn) {
 			sent(c, "SELECT count(*), lower('X'), pg_catalog.upper('x'), 1::int, now() FROM "+r.table+" WHERE id = 1")
 		},
+		"what an ORM writes": func(r *pgRig, c *pgx.Conn) {
+			r.direct1("CREATE TABLE o_" + r.table + " (uid int)")
+			sent(c, `SELECT "u"."id", u.v FROM `+r.table+` u JOIN o_`+r.table+` o ON o.uid = u.id WHERE u.id = 1 ORDER BY u.v`)
+		},
 		"failed function": func(r *pgRig, c *pgx.Conn) {
 			r.direct1("CREATE FUNCTION f_" + r.table + "() RETURNS int LANGUAGE plpgsql AS $f$ BEGIN " + r.ins() + "; RAISE EXCEPTION 'x'; END $f$")
 			sent(c, "SELECT f_"+r.table+"()")
@@ -296,6 +300,16 @@ func TestReview6PostgresStatedLimits(t *testing.T) {
 			r.writer("w_"+r.table, "")
 			r.direct1("CREATE VIEW v_" + r.table + " AS SELECT w_" + r.table + "()")
 			sent(c, "SELECT * FROM v_"+r.table)
+		},
+		"function called as a column": func(r *pgRig, c *pgx.Conn) {
+			r.direct1("CREATE TABLE one_" + r.table + " (a int); INSERT INTO one_" + r.table + " VALUES (1)")
+			r.writer("w_"+r.table, "one_"+r.table)
+			sent(c, "SELECT o.w_"+r.table+" FROM one_"+r.table+" o")
+		},
+		"function called as a column in WHERE": func(r *pgRig, c *pgx.Conn) {
+			r.direct1("CREATE TABLE one_" + r.table + " (a int); INSERT INTO one_" + r.table + " VALUES (1)")
+			r.writer("w_"+r.table, "one_"+r.table)
+			sent(c, "SELECT 1 FROM one_"+r.table+" o WHERE o.w_"+r.table+" = 1")
 		},
 		"overload of a listed name": func(r *pgRig, c *pgx.Conn) {
 			r.writer("lower", "int")

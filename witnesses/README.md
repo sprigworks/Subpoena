@@ -672,11 +672,10 @@ server's grammar would take as a function name (`SELECT partition()`). MySQL nee
 the name to touch its parenthesis: `count (1)` is a stored function. Postgres can
 also run a routine with no call syntax, so these are opaque there too: an operator
 outside a short built-in list, a cast or typed string to a type outside one
-(`1::mydomain`), and any qualified column, `o.total` or `(o).total`, because `o.w`
-is `w(o)` when `o` has no column `w`, and only the catalog can tell. That last one
-is broad: on Postgres a statement with `t.col` in it counts against every table,
-which most ORM output does. `EXCLUDED.a` stays readable when `a` is in the `INSERT`'s
-column list, and a qualified table in a `FROM` list is a table.
+(`1::mydomain`), and a field of an expression, `(o).w`. A plain qualified column
+`o.w` stays a read, though it is `w(o)` when `o` has no column `w`: every ORM writes
+them, and a Fail on an ordinary read is a false verdict too. That one is a limit,
+listed below.
 
 **A session it can't read is opaque for good.** The witness reads text by the
 server's rules, and some settings change them. Postgres's `standard_conforming_strings`
@@ -728,11 +727,12 @@ Not seen, in every capture:
 - bound values, so it can say a table was written, and not with what;
 - routines installed before the capture that read as something else, which the wire
   cannot show because only the catalog can. `SELECT * FROM v` where `v` is a view over
-  a writing function reads as a plain `SELECT`. So does a Postgres overload of a
-  listed name, operator or cast for other argument types: `lower(1)` with a
-  `public.lower(int)` that writes. One created through the listener is opaque when
-  it is created, which is why the claim fails then; one a migration installed is
-  not seen;
+  a writing function reads as a plain `SELECT`. So does field notation on Postgres:
+  `SELECT o.w FROM one o` calls `w(o)` if `one` has no column `w`. So does a Postgres
+  overload of a listed name, operator or cast for other argument types: `lower(1)`
+  with a `public.lower(int)` that writes. One created through the listener is opaque
+  when it is created, which is why the claim fails then, unless `Mark` hid it as
+  setup; one a migration installed is not seen;
 - work a function commits on another connection, such as `dblink`, when the
   statement around it fails or rolls back;
 - settings the server was started or configured with and never reports: a global
@@ -744,8 +744,8 @@ Not seen, in every capture:
 Over-reported, in the safe direction: `PREPARE TRANSACTION` counts as committed,
 since it can be decided on another connection; after a MySQL deadlock, whose ERR
 carries no status, pending writes count until the next flags are seen; a call
-outside the list counts even if it only reads; so does a qualified column on
-Postgres; and a failed `CALL` that wrote nothing is Inconclusive.
+outside the list counts even if it only reads; and a failed `CALL` that wrote
+nothing is Inconclusive.
 
 For a suite in another language, `subpoena-witness db -engine postgres -upstream
 host:port -out file` runs the same witness, needs no privileges, and stops on

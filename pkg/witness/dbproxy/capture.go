@@ -165,7 +165,7 @@ var alwaysMissed = []string{
 	"rows written by triggers, rules and foreign-key actions, on tables the statement does not name",
 	"rows changed by a statement that reports zero rows, such as an insert a trigger redirected",
 	"the bound values of a statement: it sees that a table was written, not with what",
-	"routines installed before the capture that read as something else: a view over a writing function, an overload of a listed function, operator or cast for other argument types",
+	"routines installed before the capture that read as something else: a view over a writing function, a function called as a column (o.w for w(o)), an overload of a listed function, operator or cast for other argument types",
 	"work a function on another connection committed, such as dblink inside a statement that then failed",
 }
 

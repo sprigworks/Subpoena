@@ -61,11 +61,10 @@ type statement struct {
 	tx        txOp
 	savepoint string
 	dialect   dialect
-	unread    bool            // no parser finished the text: it could hold anything
-	atomic    bool            // opaque, but it cannot be a routine that commits
-	taint     string          // why the session's lexing or name lookup can't be followed after this
-	forget    string          // a server-side prepared name this ends or replaces; "*" is all of them
-	columns   map[string]bool // lower case: columns the statement proves exist on its target
+	unread    bool   // no parser finished the text: it could hold anything
+	atomic    bool   // opaque, but it cannot be a routine that commits
+	taint     string // why the session's lexing or name lookup can't be followed after this
+	forget    string // a server-side prepared name this ends or replaces; "*" is all of them
 }
 
 // opaqueStatement is a statement that counts against every table.
@@ -607,14 +606,14 @@ func checked(st statement, rest []token) statement {
 // "". Everything the server can resolve to a routine is denied unless shown
 // otherwise, and the application owns the names of routines, so the proof has to
 // be one the application cannot arrange. What stays out of reach is in
-// witnesses/README.md: an overload of a listed name that was installed before the
-// capture looks the same as the built-in.
+// witnesses/README.md: an overload of a listed name, or a function called as a.b,
+// installed before the capture looks the same as the built-in or the column.
 func unproven(st *statement, toks []token) string {
 	if name := unknownCall(st.dialect, toks); name != "" {
 		return "calls " + name + ", which may write"
 	}
 	if st.dialect == dialectPostgres {
-		return pgHidden(st, toks)
+		return pgHidden(toks)
 	}
 	return ""
 }
@@ -765,37 +764,16 @@ var pgBeforeString = wordSet(`ALL AND ANY AS B BETWEEN BY CASE COLLATE DATE DEFA
 	IN INTERVAL LIKE LIMIT N NOT OFFSET ON OR RETURNING SELECT SET SIMILAR THEN TIME TIMESTAMP TO USING VALUES
 	WHEN WHERE X ZONE`)
 
-// pgClauseEnds end a FROM list at their depth.
-var pgClauseEnds = wordSet(`WHERE GROUP ORDER HAVING LIMIT OFFSET WINDOW FOR UNION INTERSECT EXCEPT ON SET
-	RETURNING FETCH WHEN`)
-
 // pgHidden finds what PostgreSQL resolves to a routine with no call syntax: a
-// user operator, a cast to a type it does not know, and a.b, which is b(a) if a
-// has no column b. Only the catalog can tell that last one from a column, so a
-// qualified column reference is unproven. A name in a FROM list is a table.
-func pgHidden(st *statement, toks []token) string {
-	depth := 0
-	from, selects := map[int]bool{}, map[int]bool{}
+// user operator, a cast to a type it does not know, and a field of an expression,
+// (a).b, which is b(a) if a has no field b. A plain a.b can be b(a) too, but it is
+// also every ORM's column, and failing every claim on a read is a false verdict as
+// well. Only the catalog can tell them apart, so a.b stays a read, and the function
+// behind it is a stated limit like a view: it has to exist already, and one created
+// through the listener is opaque when it is created.
+func pgHidden(toks []token) string {
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
-		switch {
-		case t.punct("("):
-			depth++
-			from[depth], selects[depth] = false, false
-		case t.punct(")"):
-			depth--
-		case t.is("SELECT"):
-			selects[depth] = true
-		case t.is("FROM"):
-			// FROM is also in EXTRACT(a FROM b) and IS DISTINCT FROM.
-			if (depth == 0 || selects[depth]) && !(i > 0 && toks[i-1].is("DISTINCT")) {
-				from[depth] = true
-			}
-		case t.is("JOIN"), t.is("USING") && (st.verb == "DELETE" || st.verb == "MERGE"):
-			from[depth] = true
-		case t.kind == tokWord && pgClauseEnds[t.up]:
-			from[depth] = false
-		}
 		if t.is("CAST") && i+1 < len(toks) && toks[i+1].punct("(") {
 			if why := castType(toks[i+1 : pastParens(toks, i+1)]); why != "" {
 				return why
@@ -820,10 +798,8 @@ func pgHidden(st *statement, toks []token) string {
 			i += n - 1
 			continue
 		}
-		if why, next := dotted(st, toks, i, depth, from); why != "" {
-			return why
-		} else if next > i {
-			i = next
+		if (t.punct(")") || t.punct("]")) && i+2 < len(toks) && toks[i+1].punct(".") && (toks[i+2].kind == tokWord || toks[i+2].kind == tokQuoted) {
+			return toks[i+2].text + " may be a function called on a row, not a field"
 		}
 	}
 	return ""
@@ -873,35 +849,6 @@ func operatorAt(toks []token, i int) (string, int) {
 		n--
 	}
 	return op, n
-}
-
-// dotted checks a.b at i. It returns why it is unproven, or the index of the last
-// name of a chain it has cleared.
-func dotted(st *statement, toks []token, i, depth int, from map[int]bool) (string, int) {
-	t := toks[i]
-	name := t.kind == tokWord || t.kind == tokQuoted
-	if (!name && !t.punct(")") && !t.punct("]")) || i+2 >= len(toks) || !toks[i+1].punct(".") {
-		return "", 0
-	}
-	last := i
-	for last+2 < len(toks) && toks[last+1].punct(".") && (toks[last+2].kind == tokWord || toks[last+2].kind == tokQuoted) {
-		last += 2
-	}
-	switch {
-	case last == i: // a.* or nothing readable
-		return "", 0
-	case last+1 < len(toks) && toks[last+1].punct("("): // a call: unknownCall has judged it
-		return "", last
-	case st.verb == "SET": // a parameter's name
-		return "", last
-	case st.verb == "TABLE" && i == 1:
-		return "", last
-	case name && from[depth] && i > 0 && (toks[i-1].is("FROM", "JOIN", "ONLY", "USING") || toks[i-1].punct(",")):
-		return "", last
-	case t.is("EXCLUDED") && last == i+2 && st.columns[toks[last].up] && toks[last].kind == tokWord:
-		return "", last // a column of the target: a column beats a function
-	}
-	return fmt.Sprintf("%s may be a function called on a row, not a column", toks[last].text), 0
 }
 
 // setStatement reads SET. It is a read, unless it changes what the witness can
@@ -1116,9 +1063,7 @@ func insert(st statement, toks []token) statement {
 		return opaqueStatement(st.text, st.verb, "no table after %s", st.verb) //subpoena:enforcement
 	}
 	if next < len(toks) && toks[next].punct("(") {
-		end := pastParens(toks, next)
-		st.columns = columnList(toks[next:end])
-		next = end
+		next = pastParens(toks, next)
 	}
 	for j := next; j < len(toks); j++ {
 		if toks[j].is("INSERT", "DELETE", "MERGE", "TRUNCATE") || (toks[j].is("UPDATE") && !toks[j-1].is("DO", "KEY")) {
@@ -1126,18 +1071,6 @@ func insert(st statement, toks []token) statement {
 		}
 	}
 	return checked(write(st, name), toks[next:])
-}
-
-// columnList is the plain names in an INSERT's "(a, b)". The server has refused
-// the statement if any is not a column.
-func columnList(toks []token) map[string]bool {
-	m := map[string]bool{}
-	for _, t := range toks {
-		if t.kind == tokWord {
-			m[t.up] = true
-		}
-	}
-	return m
 }
 
 // pastParens returns the index past the parenthesised group opening at i.
