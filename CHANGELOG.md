@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Cross's verdicts no longer turn on which package finished first.** `-require-witness`
+  reads evidence by package, and a test of the first run that gives witness evidence on the
+  repeat is enough, wherever it ran. A package that dies on the repeat, or a later crash under
+  `-shuffle`, no longer loses a kill: the first run's failed tests run again alone. `go test`'s
+  own `-failfast`, in `GOFLAGS` too, no longer skips packages or stops the repeat, and
+  `-evidence-dir` keeps the repeat's output. A printed open line before a test's failure is
+  no crash. A `fail` event counts only for a test that ran and did not pass, so a framed line
+  in a test's output cannot name a test that passed; `docs/architecture.md` states what is left.
+- **Markers.** A marker in the wrong case or with two letters swapped is an error, in Go and
+  Python. On a line of its own, `// subpoena: enforcement points are listed` is prose again, and
+  the error's hint no longer speaks only of a line of code.
+- **Python cross keeps its verdicts when a detached writer holds its directory:** cleanup is
+  bounded as Go's is, and names a tree it could not remove.
+- **The Python Sinkhole reads a request as Go's does,** including what `http.ReadRequest` refuses
+  and marks in UTF-8, from one table, `conformance/sinkhole.yaml`.
+
 - **The file witness no longer overstates.** A SQLite table claim is Inconclusive
   for a virtual table, whose rows are on no page of its own, and the reader now
   names any table whose schema row changed or whose pages changed owner, so a

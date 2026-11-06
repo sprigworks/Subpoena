@@ -176,6 +176,8 @@ func TestAllowed(t *testing.T) { if Check("ann") != nil { t.Fatal("ann refused")
 
 func TestFailedTestsComeFromFailEvents(t *testing.T) {
 	raw := strings.Join([]string{
+		`{"Action":"run","Package":"p","Test":"TestB"}`,
+		`{"Action":"run","Package":"p","Test":"TestB/sub"}`,
 		`{"Action":"output","Package":"p","Test":"TestB","Output":"    x_test.go:1: boom\n"}`,
 		`{"Action":"output","Package":"p","Test":"TestB","Output":"--- FAIL: TestForged (0.00s)\n"}`,
 		`{"Action":"fail","Package":"p","Test":"TestB/sub"}`,
@@ -196,6 +198,7 @@ func TestFailedTestsComeFromFailEvents(t *testing.T) {
 func TestAFailedTestIsNamedWithItsPackage(t *testing.T) {
 	line := func(pkg string) string {
 		return strings.Join([]string{
+			`{"Action":"run","Package":"` + pkg + `","Test":"TestX"}`,
 			`{"Action":"output","Package":"` + pkg + `","Test":"TestX","Output":"    x_test.go:1: boom\n"}`,
 			`{"Action":"fail","Package":"` + pkg + `","Test":"TestX"}`,
 			exitEvent(pkg, "1"),

@@ -84,6 +84,9 @@ func main() {
 				if r.Why != "" {
 					fmt.Println("  " + r.Why)
 				}
+				if r.Output != "" {
+					fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
+				}
 			}
 			if r.Evidence != cross.EvidenceWitness && strings.HasPrefix(r.FirstFailure, "witness:") {
 				fmt.Println("  this witness: tag is not the harness's: a tag counts only through the harness, or harness.WitnessErrorf in a test, on a *testing.T, B or F")

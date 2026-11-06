@@ -3,6 +3,7 @@
 trial-fixes review, through real pytest runs."""
 
 import os
+import shutil
 import tempfile
 import textwrap
 import time
@@ -835,3 +836,142 @@ def test_a_bracket_in_a_directory_is_no_parameter(tmp_path):
 
 def test_a_tests_parameters_are_left_out_of_its_id():
     assert cross._test_id("tests/[v2]/t.py::C::test_x[a::b[c]") == "tests/[v2]/t.py::C::test_x"
+
+
+# --- Review 7 ---
+
+def _failure(test, witness, message=None):
+    return {"kind": "failure", "test": test, "verdict": "assertion", "witness": witness, "message": message or test}
+
+
+def test_any_test_of_the_first_run_can_give_the_repeats_witness():
+    records = [{"kind": "collected", "tests": ["t.py::test_a", "t.py::test_b"]}, {"kind": "finished", "missing": []},
+               _failure("t.py::test_a", False), _failure("t.py::test_b", True)]
+    both = ["t.py::test_a", "t.py::test_b"]
+    assert cross._repeat_evidence(1, records, "", both) == ("witness", "t.py::test_b")
+
+
+def test_a_later_witness_in_a_test_redeems_nothing_on_the_repeat():
+    records = [{"kind": "collected", "tests": ["t.py::test_a"]}, {"kind": "finished", "missing": []},
+               _failure("t.py::test_a", False, "plain"), _failure("t.py::test_a", True, "later")]
+    assert cross._repeat_evidence(1, records, "", ["t.py::test_a"]) == ("other", "plain")
+
+
+SPELT = '''
+# subpoena:enforcement_point
+def gate(user):
+    if user == "mallory":  # subpoena:enforcement_guard false
+        return False
+    audit(user)  MARK
+    return True
+
+OWN
+NOTE = 1
+'''
+
+
+@pytest.mark.parametrize("mark,own", [
+    ("# Subpoena:enforcement", "#"),
+    ("# SUBPOENA:ENFORCEMENT", "#"),
+    ("# subpoena:Enforcement", "#"),
+    ("# subpoena:enfrocement", "#"),
+    ("# subpeona:enforcement", "#"),
+    ("# usbpoena:enforcement group=a", "#"),
+    ("# subpoena:enforcement_gaurd true", "#"),
+    ("# keep count  # Subpoena:enforcement", "#"),
+    ("# keep count  # subpoena:enfrocement", "#"),
+    ("#", "# Subpoena:enforcement"),
+    ("#", "# Subpoena: enforcement"),
+    ("#", "# subpoena:enfrocement_guard true"),
+    ("#", "# subpoena : enforcement"),
+    ("#", "# subpoena:enforcement_guard true and more"),
+    ("# see  # subpoena:enforcement_point  # subpoena:enforcement bad words", "#"),
+])
+def test_a_misspelt_marker_is_an_error(tmp_path, mark, own):
+    root = project(tmp_path, {"auth.py": SPELT.replace("MARK", mark).replace("OWN", own)})
+    with pytest.raises(cross.CrossError, match="reads as one"):
+        cross.find_mutants(root)
+
+
+@pytest.mark.parametrize("mark,own,mutants", [
+    ("#", "# subpoena: enforcement points are listed in docs.", 1),
+    ("#", "# Subpoena: enforcement points are listed in docs.", 1),
+    ("#", "# Subpoena: Enforcement is where the refusal happens.", 1),
+    ("#", "# Subpoena's enforcement markers are in the docs.", 1),
+    ("#", "# See subpoena:enforcement in the docs.", 1),
+    ("#", "# Note: enforcement is checked here.", 1),
+    ("# a Subpoena: enforcement note on this line", "#", 1),
+    ("# functions marked  # subpoena:enforcement_point", "#", 1),
+    ("# subpoena enforcement", "#", 1),
+    ("# see  # subpoena:enforcement_point  # subpoena:enforcement", "#", 2),
+    ("# subpoena:enforcement", "# subpoena: enforcement points are listed in docs.", 2),
+])
+def test_prose_is_no_marker(tmp_path, mark, own, mutants):
+    root = project(tmp_path, {"auth.py": SPELT.replace("MARK", mark).replace("OWN", own)})
+    assert len(cross.find_mutants(root)[1]) == mutants
+
+
+def test_a_file_with_only_a_misspelt_marker_is_read(tmp_path):
+    root = project(tmp_path, {"auth.py": GATE, "other.py": "x = 1  # Subpoena:Enforcement\n"})
+    with pytest.raises(cross.CrossError, match="other.py"):
+        cross.find_mutants(root)
+
+
+def test_a_file_with_no_marker_need_not_be_utf8(tmp_path):
+    root = project(tmp_path, {"auth.py": GATE})
+    (tmp_path / "latin.py").write_bytes(b"# caf\xe9: enforcement of nothing\n")
+    assert len(cross.find_mutants(root)[1]) == 1
+
+
+def test_the_marker_hint_fits_an_own_line():
+    assert not cross._PROSE_HINT.startswith("on a line of code")
+
+
+WRITER = '''
+    import subprocess
+    import auth
+
+    W = "i=0; while [ $i -lt 1500 ]; do mkdir -p d/$i; echo x > d/$i/f; i=$((i+1)); sleep 0.002; done"
+
+    def test_refused():
+        subprocess.Popen(["sh", "-c", W], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        assert auth.gate("mallory") == {"denied": True}
+'''
+
+
+def test_a_detached_writer_loses_no_verdict(tmp_path, monkeypatch):
+    left = tmp_path / "tmp"
+    left.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(left))
+    r = outcome(tmp_path / "p", {"auth.py": GATE, "test_a.py": WRITER})
+    assert r.outcome == KILLED, r.output
+    assert os.listdir(left) == []
+
+
+def test_a_cleanup_that_loses_to_a_writer_loses_no_verdict(tmp_path, monkeypatch):
+    # What a writer does to rmtree, on every run: Directory not empty.
+    real = shutil.rmtree
+
+    def rmtree(path, ignore_errors=False, **kw):
+        if not ignore_errors:
+            raise OSError(39, "Directory not empty", str(path))
+        return real(path, ignore_errors=True)
+
+    monkeypatch.setattr(shutil, "rmtree", rmtree)
+    monkeypatch.setattr(tempfile, "_rmtree", rmtree, raising=False)  # tempfile's own name for it
+    r = outcome(tmp_path, {"auth.py": GATE, "test_a.py": """
+        import auth
+
+        def test_refused():
+            assert auth.gate("mallory") == {"denied": True}
+    """})
+    assert r.outcome == KILLED, r.output
+
+
+def test_a_tree_that_will_not_go_is_named_and_raises_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(cross, "_remove_tree", lambda path: None)
+    monkeypatch.setattr(cross, "_REMOVE_TRIES", 2)
+    monkeypatch.setattr(cross, "_REMOVE_WAIT", 0)
+    said = []
+    cross._remove_leftovers(said.append, str(tmp_path))
+    assert len(said) == 1 and str(tmp_path) in said[0] and "mutated source" in said[0]

@@ -184,7 +184,11 @@ also pass.
   witness (`netbpf`) is not ported.
 
 Check: `pkg/witness/sinkhole_test.go` and `pkg/harness/network_test.go`
-hold the cases; the Python runner is `python/tests/test_network.py`.
+hold the cases; the Python runner is `python/tests/test_network.py`. An answering
+sinkhole reads a request as Go's `http.ReadRequest` does, so a port refuses what that
+refuses and gives `marked` the same bytes: `conformance/sinkhole.yaml` holds the requests
+both runners pass. Go's reading is its standard library's, so a Go release or
+`GODEBUG=httplaxcontentlength=1` can move it, and the table then fails.
 
 - **W7. File changes.** The file witness is not ported either: Go's
   `FileWatch` runs beside the tests (`subpoena-witness -file-root dir`, no
