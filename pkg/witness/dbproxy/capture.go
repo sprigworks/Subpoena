@@ -25,6 +25,8 @@ type capture struct {
 	faults      []string
 	connections int
 	tlsRefused  int
+	tlsLeft     []int // connections that asked for TLS, were told no, and left
+	plainStarts int   // connections that started in the clear without asking
 	stopped     bool
 	enc         *json.Encoder // nil without Config.Output
 }
@@ -49,6 +51,20 @@ func (c *capture) noteTLSRefused() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.tlsRefused++
+}
+
+// noteTLSLeft keeps a connection that was refused TLS and left. Whether that
+// means anything is decided at close: see close.
+func (c *capture) noteTLSLeft(id int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tlsLeft = append(c.tlsLeft, id)
+}
+
+func (c *capture) notePlainStart() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.plainStarts++
 }
 
 // record keeps e and writes it out, if there is a file.
@@ -82,11 +98,18 @@ func (c *capture) open(w io.Writer) error {
 
 // close ends the capture, and the file with a stop record carrying its health.
 //
+// A client that was refused TLS and left may have insisted on it, or may be pgx
+// with sslmode=prefer, which redials in the clear. Each plain connection answers
+// for one such departure; any left over insisted.
+//
 //subpoena:enforcement_point
 func (c *capture) close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.stopped = true
+	if len(c.tlsLeft) > c.plainStarts {
+		c.faults = append(c.faults, fmt.Sprintf("%d connections left when TLS was refused, and no plain connection followed: a client insists on TLS, and its traffic was not proxied", len(c.tlsLeft)-c.plainStarts)) //subpoena:enforcement
+	}
 	if c.enc == nil {
 		return
 	}

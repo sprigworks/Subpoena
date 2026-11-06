@@ -594,6 +594,45 @@ func TestPostgresClientInsistsOnTLS(t *testing.T) {
 	w := newPG(t)
 	w.client(pgStartup(codeSSL))
 	w.s.finish() // told no, and left: sslmode=require
+	w.cap.close()
+	w.faulted("TLS")
+}
+
+// pgx with sslmode=prefer does not go on after 'N': it redials in the clear.
+// Found against a real client; a fault here makes pgx's default DSN Inconclusive.
+func TestPostgresPreferRedialsInTheClear(t *testing.T) {
+	w := newPG(t)
+	w.client(pgStartup(codeSSL))
+	w.s.finish()
+	plain := newPostgresSession(w.cap, 2)
+	w.s = plain
+	w.client(pgStartup(codeV3, 0))
+	w.cap.close()
+	w.healthy()
+}
+
+// A plain connection answers for one departure, not two.
+func TestPostgresOnePlainConnectionDoesNotExcuseTwo(t *testing.T) {
+	w := newPG(t)
+	w.client(pgStartup(codeSSL))
+	w.s.finish()
+	w.s = newPostgresSession(w.cap, 2)
+	w.client(pgStartup(codeSSL))
+	w.s.finish()
+	w.s = newPostgresSession(w.cap, 3)
+	w.client(pgStartup(codeV3, 0))
+	w.cap.close()
+	w.faulted("TLS")
+}
+
+// A connection that asked, was told no and went on is no excuse for another.
+func TestPostgresGoingOnAfterRefusalExcusesNobody(t *testing.T) {
+	w := newPG(t)
+	w.client(pgStartup(codeSSL))
+	w.s.finish()
+	w.s = newPostgresSession(w.cap, 2)
+	w.client(pgStartup(codeSSL), pgStartup(codeV3, 0))
+	w.cap.close()
 	w.faulted("TLS")
 }
 

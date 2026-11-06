@@ -19,9 +19,10 @@ const (
 	myCapQueryAttrs   = 0x08000000
 
 	// myCapsCleared are what the witness takes out of the greeting: encryption
-	// and compression it could not read, and query attributes, which put values
-	// ahead of the SQL.
-	myCapsCleared = myCapSSL | myCapCompress | myCapZstd | myCapQueryAttrs
+	// and compression it could not read. Query attributes stay: libmysql sets
+	// that flag whatever the greeting offered and then writes no attribute prefix,
+	// which the server refuses as malformed.
+	myCapsCleared = myCapSSL | myCapCompress | myCapZstd
 
 	myStatusInTrans      = 0x0001
 	myStatusMoreResults  = 0x0008

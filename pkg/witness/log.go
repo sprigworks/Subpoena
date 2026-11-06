@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"reflect"
 	"strings"
 	"time"
@@ -87,11 +88,13 @@ func RowLineOf(e RowEvent) RowLine {
 // wrote, for tests that run the witness as a separate process.
 type Log struct {
 	lines  []Line
+	rows   []RowLine
 	health error // the first capture fault in the file, or nil
 }
 
 var (
 	_ Witness        = (*Log)(nil)
+	_ DBWitness      = (*Log)(nil)
 	_ HealthReporter = (*Log)(nil)
 )
 
@@ -155,6 +158,20 @@ func ReadLog(r io.Reader) (*Log, error) {
 			}
 			continue
 		}
+		if ev, ok := keys["event"]; ok && string(ev) != "null" {
+			row, err := readRow(b, keys)
+			if err != nil {
+				return nil, fmt.Errorf("witness: line %d: %w", n, err) //subpoena:enforcement
+			}
+			if open == 0 {
+				fault(fmt.Errorf("witness: line %d: a row outside any capture window", n)) //subpoena:enforcement
+			}
+			if row.Outcome == OutcomeUnknown {
+				fault(fmt.Errorf("witness: line %d: a write whose outcome was not seen", n)) //subpoena:enforcement
+			}
+			l.rows = append(l.rows, row)
+			continue
+		}
 		var ln Line
 		if err := json.Unmarshal(b, &ln); err != nil {
 			return nil, fmt.Errorf("witness: line %d: %w", n, err)
@@ -186,10 +203,37 @@ func ReadLog(r io.Reader) (*Log, error) {
 	return l, nil
 }
 
-// knownKeys are the field names of Line and Record.
+// readRow decodes a row line. A row it cannot read could be a write, so anything
+// out of shape is an error, as for an exec, and never a skip.
+//
+//subpoena:enforcement_point
+func readRow(b []byte, keys map[string]json.RawMessage) (RowLine, error) {
+	var row RowLine
+	if err := json.Unmarshal(b, &row); err != nil {
+		return row, err
+	}
+	// A missing count would decode as zero rows, which is no effect at all.
+	if rows, ok := keys["rows"]; !ok || string(rows) == "null" || row.Rows < RowsUnknown {
+		return row, errors.New("no usable rows field") //subpoena:enforcement
+	}
+	if row.Event != EventRow {
+		return row, fmt.Errorf("unknown event %q", row.Event) //subpoena:enforcement
+	}
+	if row.Time.IsZero() {
+		return row, errors.New("no time") //subpoena:enforcement
+	}
+	switch row.Outcome {
+	case OutcomeRead, OutcomeCommitted, OutcomeRolledBack, OutcomeFailed, OutcomeUnknown:
+	default:
+		return row, fmt.Errorf("unknown outcome %q", row.Outcome) //subpoena:enforcement
+	}
+	return row, nil
+}
+
+// knownKeys are the field names of Line, Record and RowLine.
 var knownKeys = func() []string {
 	var out []string
-	for _, v := range []any{Line{}, Record{}} {
+	for _, v := range []any{Line{}, Record{}, RowLine{}} {
 		t := reflect.TypeOf(v)
 		for i := 0; i < t.NumField(); i++ {
 			name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
@@ -265,3 +309,24 @@ func (l *Log) Spawned(traceID string) []ProcessEvent {
 	}
 	return out
 }
+
+// Committed returns every committed row line, for every trace: a database witness
+// attributes by destination, and a row line has no trace ID.
+func (l *Log) Committed(traceID string) []RowEvent {
+	var out []RowEvent
+	for _, r := range l.rows {
+		if r.Outcome != OutcomeCommitted {
+			continue
+		}
+		dest, _ := netip.ParseAddrPort(r.Dest)
+		out = append(out, RowEvent{
+			Engine: r.Engine, Conn: r.Conn, Dest: dest, Statement: r.Statement, Verb: r.Verb,
+			Tables: r.Tables, Opaque: r.Opaque, Reason: r.Reason, Rows: r.Rows, Outcome: r.Outcome,
+			Attribution: Attribution(r.Attribution), SeenAt: r.Time,
+		})
+	}
+	return out
+}
+
+// Rows returns the row lines read, in file order, whatever their outcome.
+func (l *Log) Rows() []RowLine { return append([]RowLine(nil), l.rows...) }

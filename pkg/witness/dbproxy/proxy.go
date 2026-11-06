@@ -42,10 +42,10 @@ const (
 	maxFrame = 64 << 20
 
 	dialTimeout = 5 * time.Second
-
-	// settleTimeout bounds how long Stop waits for replies already on their way.
-	settleTimeout = time.Second
 )
+
+// settleTimeout bounds how long Stop waits for replies already on their way.
+var settleTimeout = time.Second
 
 var (
 	// errBlind ends parsing on a connection; its bytes go on as a raw copy.

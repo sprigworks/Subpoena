@@ -183,6 +183,9 @@ func (s *pgSession) startup(r *bufio.Reader, up, back io.Writer) error {
 		return errClose
 	case code>>16 == 3:
 		s.inStartup = false
+		if !s.tlsAsked {
+			s.cap.notePlainStart()
+		}
 		_, err := io.CopyN(up, r, n)
 		return err
 	}
@@ -523,7 +526,7 @@ func (s *pgSession) finish() {
 	defer s.mu.Unlock()
 	switch {
 	case s.inStartup && s.tlsAsked:
-		s.cap.fault("connection %d: the client left when TLS was refused; it may insist on TLS, and its traffic was not proxied", s.id) //subpoena:enforcement
+		s.cap.noteTLSLeft(s.id) //subpoena:enforcement
 	case s.blind:
 		s.settleInFlight()
 		s.tx.abandon() //subpoena:enforcement

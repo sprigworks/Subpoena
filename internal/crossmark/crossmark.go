@@ -16,12 +16,18 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"regexp"
 	"strings"
 )
 
 // Env names the variable that hands the key to the test binary.
 const Env = "SUBPOENA_CROSS_WITNESS_KEY"
+
+// Active reports whether this process is a test binary cross started. It is read
+// here, before the harness takes the key out of the environment. It is for a
+// suite to leave out what must not run once per mutant, never for a verdict.
+var Active = os.Getenv(Env) != ""
 
 var markRE = regexp.MustCompile(` \[subpoena-cross:[0-9a-f]{32}\]`)
 

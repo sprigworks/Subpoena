@@ -561,7 +561,7 @@ func TestMySQLClearsTLSAndCompressionInTheGreeting(t *testing.T) {
 	offered := uint32(capProtocol41 | capSSL | capCompress | capZstd | capQueryAttrs | capDeprecateEOF | capLongPassword)
 	w.server(myGreeting(offered))
 	got := greetingCaps(t, w.back.Bytes())
-	if got != capProtocol41|capDeprecateEOF|capLongPassword {
+	if got != capProtocol41|capDeprecateEOF|capLongPassword|capQueryAttrs {
 		t.Fatalf("caps %#x", got)
 	}
 	if n := w.cap.coverage(); n.TLSRefused != 1 || n.Connections != 1 {
@@ -740,8 +740,8 @@ func TestMySQLUnreadable(t *testing.T) {
 	}
 }
 
-// A client that sets query attributes after they were cleared, with attributes,
-// puts values ahead of the SQL: what follows cannot be read as text.
+// With query attributes negotiated COM_QUERY has a prefix, and real attribute
+// values ahead of the SQL, which cannot be read as text.
 func TestMySQLQueryAttributes(t *testing.T) {
 	w := newMy(t)
 	w.server(myGreeting(capProtocol41 | capQueryAttrs))
