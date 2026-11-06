@@ -103,6 +103,7 @@ func TestFirstFailureReadsOnlyFailedTests(t *testing.T) {
 		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:10: ` + crossmark.Sign(testKey, "witness: later") + `\n"}`,
 		`{"Action":"fail","Package":"p","Test":"TestDeny"}`,
 		`not json: a go command message`,
+		exitEvent("p", "1"),
 	}, "\n")
 	ev, msg, crashed := firstFailure(raw, testKey)
 	if ev != EvidenceTestimony || msg != "testimony: denial span missing" || crashed {
@@ -122,6 +123,7 @@ func TestWitnessFailureAfterALogLine(t *testing.T) {
 		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:3: client error: EOF\n"}`,
 		`{"Action":"output","Package":"p","Test":"TestDeny","Output":"    a_test.go:4: ` + crossmark.Sign(testKey, "witness: saw a dial") + `\n"}`,
 		`{"Action":"fail","Package":"p","Test":"TestDeny"}`,
+		exitEvent("p", "1"),
 	}, "\n")
 	ev, msg, crashed := firstFailure(raw, testKey)
 	if ev != EvidenceOther || msg != "client error: EOF" || crashed {
@@ -198,7 +200,8 @@ func TestFirstFailureCrashes(t *testing.T) {
 			`{"Action":"fail","Package":"q","Test":"TestB"}`), false, "testimony: no span"},
 	}
 	for _, c := range cases {
-		_, msg, crashed := firstFailure(c.raw, testKey)
+		// Every package exited 1, so what is read here is the text, not the code.
+		_, msg, crashed := firstFailure(c.raw+"\n"+exitEvent("p", "1")+"\n"+exitEvent("q", "1")+"\n", testKey)
 		if crashed != c.crashed || msg != c.msg {
 			t.Errorf("%s: got %q crashed=%v", c.name, msg, crashed)
 		}
@@ -232,7 +235,7 @@ func jsonLines(pairs ...[2]string) string {
 // the text is under it. Shapes are from real suites (echo, oauth2-proxy,
 // traefik, webdav), including a log line from the code under test in between.
 func TestFirstFailureReadsTheTextUnderABlankHead(t *testing.T) {
-	failed := `{"Action":"fail","Package":"p","Test":"TestA"}` + "\n"
+	failed := `{"Action":"fail","Package":"p","Test":"TestA"}` + "\n" + exitEvent("p", "1") + "\n"
 	cases := []struct {
 		name string
 		out  [][2]string
@@ -278,7 +281,7 @@ func TestTextUnderABlankHeadIsNeverATag(t *testing.T) {
 		[2]string{"TestA", "    a_test.go:161: "},
 		[2]string{"TestA", "        \tError Trace:\t/tmp/x/a_test.go:161"},
 		[2]string{"TestA", "        \tError:      \twitness: saw a dial"},
-	) + `{"Action":"fail","Package":"p","Test":"TestA"}`
+	) + `{"Action":"fail","Package":"p","Test":"TestA"}` + "\n" + exitEvent("p", "1")
 	if ev, _, _ := firstFailure(raw, testKey); ev != EvidenceOther {
 		t.Fatalf("evidence = %q, want other", ev)
 	}
@@ -293,7 +296,7 @@ func TestLongFailureTextIsCut(t *testing.T) {
 	for range 100 {
 		pairs = append(pairs, [2]string{"TestA", "        " + strings.Repeat("x", 20)})
 	}
-	_, msg, _ := firstFailure(jsonLines(pairs...)+`{"Action":"fail","Package":"p","Test":"TestA"}`, testKey)
+	_, msg, _ := firstFailure(jsonLines(pairs...)+`{"Action":"fail","Package":"p","Test":"TestA"}`+"\n"+exitEvent("p", "1"), testKey)
 	if len(msg) > maxFailureText+21 {
 		t.Fatalf("text is %d bytes", len(msg))
 	}
@@ -337,7 +340,7 @@ func TestAssertionFrameworkFailures(t *testing.T) {
 		for _, test := range tests {
 			b.WriteString(`{"Action":"fail","Package":"p","Test":"` + test + `"}` + "\n")
 		}
-		return b.String()
+		return b.String() + exitEvent("p", "1") + "\n"
 	}
 	cases := []struct {
 		name    string

@@ -965,10 +965,13 @@ func notAKill(raw string, err error, key string, first map[testID]bool) string {
 // runs, so one that hangs on the mutant says nothing of another that caught it, and
 // that kill goes to the repeat like any other. A failed test in a package still
 // running is no such thing, as its binary can yet die. The exit events are cross's
-// own, so printed text cannot stand in for one.
-//
-//subpoena:enforcement_point
-func finishedFailure(raw string) bool {
+// own, so printed text cannot stand in for one, and failures reads no other package.
+func finishedFailure(raw string) bool { return len(failures(raw)) > 0 }
+
+// exitedOne is the packages whose binary exited 1. go test gives a package a fail
+// event only if it failed, and exit events follow those, so a package with a fail
+// event for a test and none of these went green, whatever its output said.
+func exitedOne(raw string) map[string]bool {
 	exited := map[string]bool{}
 	for _, line := range strings.Split(raw, "\n") {
 		var e struct{ Action, Package, Output string }
@@ -976,13 +979,7 @@ func finishedFailure(raw string) bool {
 			exited[e.Package] = true
 		}
 	}
-	for _, f := range failures(raw) {
-		if !exited[f.pkg] {
-			continue //subpoena:enforcement
-		}
-		return true
-	}
-	return false
+	return exited
 }
 
 // stoppedShort reports whether a red run hung, gave no clean failure, or lost a
@@ -1126,10 +1123,18 @@ func failEvents(raw string) []failEvent {
 	return evs
 }
 
-// failedPackages lists the packages in raw with a failed test.
+// failedPackages lists the packages in raw with a failed test whose binary exited
+// 1. A printed fail in a green package is no failure, and must not stand as the
+// failed package that links the mutant for a red one that does not.
+//
+//subpoena:enforcement_point
 func failedPackages(raw string) []string {
+	exited := exitedOne(raw)
 	var failed []string
 	for _, e := range failEvents(raw) {
+		if !exited[e.Package] {
+			continue //subpoena:enforcement
+		}
 		if !slices.Contains(failed, e.Package) {
 			failed = append(failed, e.Package)
 		}
@@ -1345,9 +1350,11 @@ func failures(raw string) []failure {
 	return fs
 }
 
-// readFailures is failures, and the packages that died. A package
-// gives none, whatever came first, if its test binary exited with anything but
-// 1, or a crash line sits in the output of a test that did not pass: Ginkgo runs
+// readFailures is failures, and the packages that died. A package gives none if
+// it has no exit event of 1: a test binary that exited 0 failed nothing, whatever
+// fail events its output made, and the exit code is the part printed text cannot
+// reach. A package also gives none, whatever came first, if its test binary exited
+// with anything but 1, or a crash line sits in the output of a test that did not pass: Ginkgo runs
 // a suite as one test, in random order, so order must not decide. The exit code
 // sees a real panic wherever its text fell, even beside an open line. The text
 // is for a panic that something recovered, as Ginkgo does, and only a test that
@@ -1466,9 +1473,13 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 			fs[n].addLine(line)
 		}
 	}
+	exited := exitedOne(raw)
 	var clean []failure
 	for _, f := range fs {
 		if dead[f.pkg] {
+			continue //subpoena:enforcement
+		}
+		if !exited[f.pkg] {
 			continue //subpoena:enforcement
 		}
 		clean = append(clean, f)

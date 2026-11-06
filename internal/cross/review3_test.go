@@ -255,7 +255,7 @@ func TestALongSignedLineKeepsItsMark(t *testing.T) {
 		raw.Write(append(b, '\n'))
 		full = full[n:]
 	}
-	raw.WriteString(`{"Action":"fail","Package":"p","Test":"TestA"}` + "\n")
+	raw.WriteString(`{"Action":"fail","Package":"p","Test":"TestA"}` + "\n" + exitEvent("p", "1") + "\n")
 	ev, _, crashed := firstFailure(raw.String(), testKey)
 	if crashed || ev != EvidenceWitness {
 		t.Fatalf("ev=%q crashed=%v", ev, crashed)

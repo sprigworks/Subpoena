@@ -554,7 +554,7 @@ func TestOnlyTheRunsMarkMakesAWitness(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return `{"Action":"output","Package":"p","Test":"TestA","Output":` + string(b) + `}` + "\n" + `{"Action":"fail","Package":"p","Test":"TestA"}`
+		return `{"Action":"output","Package":"p","Test":"TestA","Output":` + string(b) + `}` + "\n" + `{"Action":"fail","Package":"p","Test":"TestA"}` + "\n" + exitEvent("p", "1")
 	}
 	for _, c := range []struct {
 		name, head string
