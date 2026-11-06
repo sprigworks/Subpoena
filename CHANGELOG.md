@@ -9,8 +9,10 @@
 - **A recovered panic in a parallel test is a crash.** Package testing's own frames can put the
   `panic:` line of one parallel test on another that passed, where it read as a log line and the
   test's plain failure as a kill, with nothing forged. A crash line on a passing test now counts if
-  that test ran beside one that did not pass, read from `pause` and `cont` events, whatever slashes
-  the subtests' names hold. Sequential suites keep the log-line rule. New cost: a passing parallel test that logs such a line beside a real
+  that test ran beside one that did not pass, read from each test's events from `run`, or `cont` if
+  it paused, to its end, whatever slashes the subtests' names hold. That covers subtests started from
+  goroutines, except one whose name goes on from a sibling's, which passes and ends while that sibling runs. Sequential suites
+  keep the log-line rule. New cost: a passing parallel test that logs such a line beside a real
   failure reads crashed, and the run fails.
 - **A quiet first `m.Run` no longer reads survived.** A `TestMain` that threw away a first
   `m.Run`'s output left no fail event, and under `-test.failfast` the second `m.Run` ran nothing, so

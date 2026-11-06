@@ -1204,19 +1204,33 @@ func (e ending) last() int {
 	return e.to
 }
 
-// beside reports whether the two tests were running at once. go test gives a subtest's
-// end with its parent's, so this can say yes to subtests that took turns under
-// -parallel 1, which costs a kill and makes none.
+// began is where the test began to run beside others: where it first continued if it
+// paused, as a paused test is doing nothing, and where it started if not. 0 if it did
+// neither.
+func (e ending) began() int {
+	if e.from > 0 || e.paused > 0 {
+		return e.from
+	}
+	return e.start
+}
+
+// beside reports whether the two tests were running at once. Sequential tests do not
+// overlap: one ends before the next starts, and a parallel test continues only after
+// the sequential tests around it. Subtests started from goroutines do, with no pause or
+// cont. A parallel subtest ends a little after the next one continues, so this can say
+// yes to subtests that took turns under -parallel 1, which costs a kill and makes none.
 func (e ending) beside(o ending) bool {
-	return e.from > 0 && o.from > 0 && e.from < o.last() && o.from < e.last()
+	a, b := e.began(), o.began()
+	return a > 0 && b > 0 && a < o.last() && b < e.last()
 }
 
 // holds reports whether c, a test whose name goes on from e's, is e's subtest. A
-// subtest starts while its parent runs and ends before it. A name alone does not say:
-// go keeps a slash in a subtest's name, so "read/all" can be the sibling of "read", and
-// a sibling of a parallel test starts while that test is paused.
+// subtest starts while its parent runs and ends before it, and a failed one fails its
+// parent. A name alone does not say: go keeps a slash in a subtest's name, so
+// "read/all" can be the sibling of "read", and a sibling of a parallel test starts
+// while that test is paused.
 func (e ending) holds(c ending) bool {
-	if !e.ran || c.start < e.start || c.last() > e.last() {
+	if !e.ran || c.start < e.start || c.last() > e.last() || c.failed && !e.failed {
 		return false
 	}
 	return e.paused == 0 || c.start < e.paused || c.start > e.from && e.from > 0
@@ -1225,9 +1239,9 @@ func (e ending) holds(c ending) bool {
 // besideFailure reports whether a test that did not pass ran beside k. Package
 // testing's own frames carry a line printed with no frame to whichever test printed
 // last, so a parallel test's panic line can land on a test that passed, and no reading
-// of that line tells it from a log line. Where the two tests' names part, both
-// branches must have paused and continued: subtests in turn inside one parallel test
-// did not run beside each other, and a test does not run beside its own subtests.
+// of that line tells it from a log line. Where the two tests part, the two branches
+// must have run at once: subtests in turn inside one parallel test did not, and a test
+// does not run beside its own subtests.
 //
 //subpoena:enforcement_point
 func besideFailure(ends map[eventKey]ending, k eventKey) bool {

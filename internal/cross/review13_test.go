@@ -3,6 +3,7 @@
 package cross
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -199,6 +200,118 @@ func TestSlashesInSubtestNamesDoNotHideACrash(t *testing.T) {
 import ("fmt"; "os"; "testing"; "time")
 
 var _, _, _ = fmt.Sprint, os.Stdout, time.Now
+
+` + tc.tests})
+			if r := killOf(t, Options{Target: dir}); r.Outcome != tc.want {
+				t.Fatalf("got %+v", r)
+			}
+		})
+	}
+}
+
+// goTable is routeTable's subtests started from goroutines: concurrent, with no pause
+// or cont. second waits long enough, or not, to end after the first.
+func goTable(first, second string, wait int) string {
+	return `func TestRoutes(t *testing.T) {
+	var wg sync.WaitGroup
+	for _, tc := range []struct{ name, user string; wait time.Duration }{{"` + first + `", "mallory", 300 * time.Millisecond}, {"` + second + `", "admin", ` + strconv.Itoa(wait) + ` * time.Millisecond}} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t.Run(tc.name, func(t *testing.T) {
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Fprintf(os.Stderr, "panic: %v\n", r)
+						t.Fatal("handler died")
+					}
+				}()
+				time.Sleep(tc.wait)
+				if tc.user != "admin" && Check(tc.user) == nil { var m map[string]int; m["x"] = 1 }
+			})
+		}()
+		time.Sleep(100 * time.Millisecond)
+	}
+	wg.Wait()
+}
+`
+}
+
+// Review 13, H2. Subtests started from goroutines run at once with no pause or cont, so
+// overlap is read from run to end. A paused test is doing nothing, so one that paused
+// counts from cont: a sequential test around it did not run beside it. Every shape
+// here that is not concurrent keeps the log-line rule.
+func TestOverlapIsReadFromRunToEnd(t *testing.T) {
+	t.Parallel()
+	const logs = `fmt.Println("panic: recovered and logged")`
+	const refused = `if Check("mallory") == nil { t.Fatal("mallory let in") }`
+	for name, tc := range map[string]struct {
+		tests string
+		want  Outcome
+	}{
+		"from goroutines":               {goTable("mallory", "admin", 800), Crashed},
+		"from goroutines, slashes":      {goTable("GET /admin", "POST /users", 800), Crashed},
+		"from goroutines, name in name": {goTable("read", "read/all", 800), Crashed},
+		"parallel":                      {routeTable("mallory", "admin", "t.Parallel()"), Crashed},
+		// A line lands on the test that printed last. read/all has every sign of read's
+		// subtest but one: it failed, and read did not.
+		"a sibling that looks held": {`func TestRoutes(t *testing.T) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		t.Run("read", func(t *testing.T) { time.Sleep(200 * time.Millisecond); t.Log("tick"); time.Sleep(800 * time.Millisecond) })
+	}()
+	time.Sleep(100 * time.Millisecond)
+	go func() {
+		defer wg.Done()
+		t.Run("read/all", func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "panic: %v\n", r)
+					t.Fatal("handler died")
+				}
+			}()
+			time.Sleep(400 * time.Millisecond)
+			if Check("mallory") == nil { var m map[string]int; m["x"] = 1 }
+		})
+	}()
+	wg.Wait()
+}
+`, Crashed},
+		"sequential subtests": {`func TestRoutes(t *testing.T) {
+	t.Run("logs", func(t *testing.T) { ` + logs + ` })
+	t.Run("refused", func(t *testing.T) { ` + refused + ` })
+}
+`, Killed},
+		"sequential tests": {`func TestLogs(t *testing.T) { ` + logs + ` }
+
+func TestRefused(t *testing.T) { ` + refused + ` }
+`, Killed},
+		"a sequential test before a parallel one": {`func TestLogs(t *testing.T) { t.Parallel(); ` + logs + ` }
+
+func TestRefused(t *testing.T) { ` + refused + ` }
+`, Killed},
+		"a sequential subtest beside a paused one": {`func TestRoutes(t *testing.T) {
+	t.Run("logs", func(t *testing.T) { t.Parallel(); ` + logs + ` })
+	t.Run("refused", func(t *testing.T) { ` + refused + ` })
+}
+`, Killed},
+		"subtests in turn in a parallel test": {`func TestRoutes(t *testing.T) {
+	t.Parallel()
+	t.Run("logs", func(t *testing.T) { ` + logs + ` })
+	t.Run("refused", func(t *testing.T) { ` + refused + ` })
+}
+
+func TestOther(t *testing.T) { t.Parallel() }
+`, Killed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import ("fmt"; "os"; "sync"; "testing"; "time")
+
+var _, _, _, _ = fmt.Sprint, os.Stdout, time.Now, sync.Mutex{}
 
 ` + tc.tests})
 			if r := killOf(t, Options{Target: dir}); r.Outcome != tc.want {

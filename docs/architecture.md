@@ -199,13 +199,16 @@ sits in a test that did not pass, so a panic something recovered, with the
 binary exiting 1, stays a crash. So does one printed outside any test, from `TestMain` say, in a
 failed package, in any run. In a test that passed it is a log line, and
 order does not matter: the binary lived. The exception is a test that passed beside one that did
-not, read from `pause` and `cont` events: package testing's frames carry a line printed with no
+not, read from each test's events from `run`, or from `cont` if it paused, to its end, which covers subtests
+started from goroutines, as those never pause: package testing's frames carry a line printed with no
 frame to whichever test printed last, so a parallel test's `panic:` line can land on its neighbour.
 There it is a crash. The cost is a passing parallel test that logs such a line at the start of a
 line beside a real failure: that kill reads crashed, and the run fails, wherever the line lands. Sequential tests keep the
 rule, and so do subtests in turn inside one parallel test. Which test holds which is read from what ran, not cut
 from the names, as go keeps a slash in a subtest's name: `T/GET_/admin` is a subtest of `T`, and `T/read/all` a sibling of `T/read` if it
-started while that test was paused. Under `--require-witness` it is a crash there too (see
+started while that test was paused. One shape cannot be read: a subtest started from a goroutine, whose name goes on from a
+sibling's and which passes and ends while that sibling runs, has the same events as a real subtest of a test that failed later. If the
+sibling's recovered panic line lands on it, that line stays a log line and the sibling's failure a plain kill, exit 0. Under `--require-witness` it is a crash there too (see
 What forged output can do). A test with a `fail` event has not passed here,
 whatever `pass` sits beside it, so a printed pass does not make a crash a log line. testify's `suite` reports one it recovered through `t.Errorf`, as `test panicked:` after a
 file and line, and in a test that did not pass that counts as a crash too, wherever it falls on the
@@ -336,9 +339,9 @@ verify, and the kill reads `self-report`. That costs nothing: one random key per
 copied inside one command still verifies, in another package too. This closes replay only: code
 that can read the key signs a line of its own for the run it is in, as above.
 
-At least four forgeries read as plain kills and stay open. A pair of printed run and fail lines
-beside a real failure is above. Printed run and pass lines can carry a crash line to a test that
-never ran. A suite that hides `m.Run`'s `PASS` is above. In
+At least three forgeries read as plain kills and stay open. A pair of printed run and fail lines
+beside a real failure is above. Printed run and pass lines round a crash line inside a failing test do not, as
+that printed test ran beside the failure, so it reads crashed. A suite that hides `m.Run`'s `PASS` is above. In
 another, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test
 that passed, which takes the crash rule off it: without `--require-witness` that line is a log line,
 and the test's plain failure is a kill. Code that signs, by whatever route, is out of scope, as stated above.
