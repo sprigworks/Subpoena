@@ -72,6 +72,7 @@ type pgSession struct {
 	status     byte
 	failed     bool   // an error since the last ReadyForQuery
 	taint      string // why no statement on this connection can be read any more
+	skipping   bool   // the server is discarding messages up to the next Sync
 	queue      []*pgItem
 	prepared   map[string]*statement
 	portals    map[string]*statement
@@ -582,10 +583,10 @@ func (s *pgSession) serverError() {
 			return
 		}
 	}
-	// Everything up to the next Sync is skipped by the server, unanswered.
-	for len(s.queue) > 0 && s.queue[0].kind != pgItemSync {
-		s.queue = s.queue[1:]
-	}
+	// Everything up to the next Sync is skipped by the server, unanswered. Some of
+	// it may not have reached the queue yet, so it goes at ReadyForQuery.
+	s.queue = s.queue[1:]
+	s.skipping = true
 }
 
 // readyForQuery ends a cycle. Status 'I' after a cycle means any write still
@@ -596,6 +597,12 @@ func (s *pgSession) serverError() {
 //
 //subpoena:enforcement_point
 func (s *pgSession) readyForQuery(status byte) error {
+	if s.skipping {
+		s.skipping = false
+		for len(s.queue) > 0 && s.queue[0].kind != pgItemSync {
+			s.queue = s.queue[1:]
+		}
+	}
 	if len(s.queue) == 0 {
 		if s.ready {
 			return s.unreadableLocked("ReadyForQuery with no command waiting") //subpoena:enforcement

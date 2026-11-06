@@ -397,6 +397,23 @@ func TestPostgresPipelinedRefusalSkipsToSync(t *testing.T) {
 	w.healthy()
 }
 
+// The error can overtake the proxy: the rest of the pipeline reaches the queue
+// after the server has already refused the head of it.
+func TestPostgresErrorOvertakesThePipeline(t *testing.T) {
+	w := pgReadyWire(t)
+	w.client(pgParse("", "SELECT 1/0"), pgBind("", ""), pgExecute(""))
+	w.server(frame('1'), frame('2'), pgError())
+	w.client(pgParse("", "DELETE FROM a"), pgBind("", ""), pgExecute(""), pgSync())
+	w.server(pgReady('I'))
+	w.healthy()
+	w.client(pgQuery("SELECT 1"))
+	w.server(pgDone("SELECT 1"), pgReady('I'))
+	w.healthy()
+	if got := w.outcomes(); len(got) != 0 {
+		t.Fatalf("the skipped DELETE never ran: %q", got)
+	}
+}
+
 func TestPostgresPipelinedParseBindExecute(t *testing.T) {
 	w := pgReadyWire(t)
 	w.client(pgParse("", "DELETE FROM a"), pgBind("", ""), pgExecute(""), pgSync())
