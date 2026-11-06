@@ -145,8 +145,11 @@ finished, so in Go another package's plain failure takes nothing from it. In Go 
 that died on the repeat gets the same second look. `-evidence-dir` keeps each of these runs.
 If not, the kill is `enforcement-mutant-killed-by-self-report`: only one of the two
 runs had independent evidence. Then three runs without the mutant, each on a
-fresh copy: the first is the mutant run's whole command, because a failure can
-need a test in another package, and in Go the others are the failed packages. The
+fresh copy: the first is the whole command, because a failure can
+need a test in another package, and in Go the others are the failed packages. None has
+`-test.failfast`, as a `TestMain` that calls `m.Run` again would make a suite red by
+itself read green there. A rerun that passes runs the same tests either way, so this costs only
+the rest of a package's tests on a rerun that fails, which ends the mutant anyway. The
 baseline, the mutant run and the reruns all start their test binaries the same
 way, so a test red only under the way it was started is red on the baseline too.
 A kill that does not hold is `enforcement-mutant-unconfirmed`, the run fails, and
@@ -215,7 +218,9 @@ finished goes to the repeat, and with none it is a timeout. That flag can also t
 green run holding a test's `fail` event goes again without it. A red one can also say `PASS` after
 a real failure, so when that leaves no failed test, the failed tests come from a run without the
 flag. A suite whose second `m.Run` truly passes says `PASS` there too, and that kill reads
-unconfirmed. Each kill reports its first evidence, the
+unconfirmed. A `TestMain` that throws away a first `m.Run`'s output, a warm-up say, leaves nothing to
+show a test failed: the second `m.Run` runs nothing under the flag, so the mutant reads survived
+though the suite catches it. That run fails, and it is a lost kill, not a false one. Each kill reports its first evidence, the
 first failure message of a failed test, and in Go the first of each package, witness
 if any is, since packages finish in any order: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
@@ -297,6 +302,11 @@ Two forgeries read as plain kills and stay open. A suite that hides `m.Run`'s `P
 the other, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test
 that passed, which takes the crash rule off it: without `--require-witness` that line is a log line,
 and the test's plain failure is a kill. Forging through `/proc` is out of scope, as stated above.
+
+A suite need not forge to lose a kill the same way. One that hides a first `m.Run`'s output reads
+survived under `-test.failfast`, as above, with nothing in the run to tell it apart from a survivor.
+Cross does not run every survivor a second time to find these: the run fails, and that is the side
+to lose on.
 
 ### What a kill does not prove
 

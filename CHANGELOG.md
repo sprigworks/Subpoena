@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The reruns without the mutant are no longer blind to a second `m.Run`.** They kept
+  `-test.failfast`, under which a `TestMain` that calls `m.Run` again exits 0 after a real failure,
+  so a test that fails with no mutant at all read as a kill, witness kills included. They now run
+  without that flag, and such a suite reads unconfirmed. No extra runs: a rerun that passes runs the
+  same tests, and one that fails runs the rest of its package before the mutant ends. A `TestMain`
+  that hides a first `m.Run`'s output still reads survived on a mutant it catches, as it did: the
+  run fails, and this is now documented.
 - **A witness mark is good for one run of one mutant.** The key lasted all of cross's run, so a
   signed line kept from one mutant's run and printed in another's read as a witness kill, under
   `--require-witness`, on a mutant no witness saw. Each `go test` command now signs with its own

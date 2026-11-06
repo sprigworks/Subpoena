@@ -748,9 +748,10 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 // run hung, that says nothing of the tests it took with it, so lastTries goes, each
 // by the same rule: a flake still has to fail twice in one test. Under RequireWitness a test of the first run must give witness evidence
 // on the repeat too, wherever it ran, or only one of the two runs had any. Then
-// killReruns runs without the mutant, each on a fresh copy: the first the mutant
-// run's whole command, and the rest the failed packages. One that fails or does
-// not finish was red for a reason other than the mutant, or may have been.
+// killReruns runs without the mutant, each on a fresh copy and without -test.failfast
+// (rerunArgs): the first the whole command, and the rest the failed packages. One
+// that fails or does not finish was red for a reason other than the mutant, or may
+// have been.
 //
 //subpoena:enforcement_point
 func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, run testRun, ms []Mutant, mutated map[string][]byte, res *Result) error {
@@ -763,10 +764,6 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, run 
 		res.Why, res.Hint = why, separateProgramHint
 		res.Outcome = Unconfirmed //subpoena:enforcement
 		return nil
-	}
-	narrow := args
-	if len(failed) > 0 {
-		narrow = slices.Concat(args[:len(args)-3], failed, args[len(args)-2:])
 	}
 	whole := args[:max(0, len(args)-2)] // without -test.failfast
 	withMutant := func(a []string) (testRun, error, error) {
@@ -868,11 +865,7 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, run 
 			return err
 		}
 		fmt.Fprintf(o.Log, "  rerun %d of %d without the mutant\n", n+1, killReruns)
-		a := narrow
-		if n == 0 {
-			a = args
-		}
-		out, err := o.run.test(ctx, o, sb, a...)
+		out, err := o.run.test(ctx, o, sb, rerunArgs(args, failed, n)...)
 		if ctx.Err() != nil {
 			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
 		}
@@ -883,6 +876,19 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, run 
 		}
 	}
 	return nil
+}
+
+// rerunArgs is the command of rerun n without the mutant, from the mutant run's: whole
+// the first time and the failed packages after, each without -test.failfast. A
+// TestMain that calls m.Run again gets a run of nothing under that flag, exit 0 after
+// a real failure, so with it a suite that is red by itself reads green here. A rerun
+// that passes runs the same tests either way, so the flag saves nothing.
+func rerunArgs(args, failed []string, n int) []string {
+	whole := args[:max(0, len(args)-2)]
+	if n == 0 || len(failed) == 0 {
+		return whole
+	}
+	return slices.Concat(whole[:len(whole)-1], failed)
 }
 
 // lastTries is what runs when a repeat stops short, in order: the first run's own

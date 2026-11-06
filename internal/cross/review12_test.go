@@ -5,6 +5,7 @@ package cross
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -113,6 +114,113 @@ func TestRefused(t *testing.T) {
 `})
 	r := killOf(t, Options{Target: dir, RequireWitness: true})
 	if r.Outcome != KilledBySelfReport || !strings.Contains(r.Why, "no test of that run gave any on the repeat") {
+		t.Fatalf("got %+v", r)
+	}
+}
+
+// staleSuite gives a test that fails on any binary run after the first, for a reason
+// that has nothing to do with the code, through a TestMain that calls m.Run as main
+// says. Under -test.failfast a second m.Run is a run of nothing and exits 0, so a
+// rerun with that flag cannot see this.
+func staleSuite(t *testing.T, fails, main string) map[string]string {
+	state := filepath.Join(t.TempDir(), "state")
+	return map[string]string{"gate.go": gate3, "signed_test.go": signedHelper, "gate_test.go": `package mini
+
+import ("os"; "testing")
+
+const state = "` + state + `"
+
+var stale = func() bool { _, err := os.Stat(state); return err == nil }()
+
+func TestCache(t *testing.T) { if stale { ` + fails + ` } }
+
+func TestAdmin(t *testing.T) { if Check("admin") != nil { t.Fatal("admin refused") } }
+
+func TestMain(m *testing.M) {
+	` + main + `
+	os.WriteFile(state, nil, 0o644)
+	os.Exit(code)
+}
+`}
+}
+
+// Review 12, first High. The reruns without the mutant kept -test.failfast, so a
+// suite that fails with no mutant at all read green there and its red stood as a kill.
+func TestARerunIsNotBlindToATestMainThatCallsMRunAgain(t *testing.T) {
+	t.Parallel()
+	const plain = `t.Fatal("stale cache from a previous run")`
+	for name, tc := range map[string]struct {
+		fails, main string
+		witness     bool
+	}{
+		"the last m.Run decides": {plain, "m.Run(); code := m.Run()", false},
+		"a retry":                {plain, "code := 0; for i := 0; i < 3; i++ { if code = m.Run(); code == 0 { break } }", false},
+		"a retry, under witness": {`t.Error(signed("witness: a file from an earlier run is on disk"))`, "code := 0; for i := 0; i < 3; i++ { if code = m.Run(); code == 0 { break } }", true},
+		"control, one m.Run":     {plain, "code := m.Run()", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := killOf(t, Options{Target: module(t, staleSuite(t, tc.fails, tc.main)), RequireWitness: tc.witness})
+			if r.Outcome != Unconfirmed || r.Why != "the suite failed without the mutant" {
+				t.Fatalf("got %+v", r)
+			}
+		})
+	}
+}
+
+// The reruns without the flag take nothing from a real kill: green is green.
+func TestAKillThroughASecondMRunStillHoldsItsReruns(t *testing.T) {
+	t.Parallel()
+	dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import ("os"; "testing")
+
+func TestRefused(t *testing.T) { if Check("mallory") == nil { t.Fatal("mallory let in") } }
+
+func TestMain(m *testing.M) { first := m.Run(); second := m.Run(); os.Exit(first | second) }
+`})
+	if r := killOf(t, Options{Target: dir}); r.Outcome != Killed {
+		t.Fatalf("got %+v", r)
+	}
+}
+
+// killReruns is 1 in this package's tests, so the narrowed reruns are pinned here.
+func TestRerunsGoWithoutFailfastWholeThenNarrow(t *testing.T) {
+	t.Parallel()
+	whole := []string{"-json", "-count=1", "-failfast=false", "./...", "-args", "-test.failfast"}
+	for n, want := range [][]string{
+		{"-json", "-count=1", "-failfast=false", "./..."},
+		{"-json", "-count=1", "-failfast=false", "mini/a"},
+	} {
+		if got := rerunArgs(whole, []string{"mini/a"}, n); !slices.Equal(got, want) {
+			t.Fatalf("rerun %d: got %q", n, got)
+		}
+	}
+	if got := rerunArgs(whole, nil, 1); !slices.Equal(got, whole[:4]) {
+		t.Fatalf("no failed package: got %q", got)
+	}
+}
+
+// The cost that stays, pinned so it is a decision. TestMain throws away a first m.Run's
+// output, so -test.failfast leaves a green run with nothing in it to say a test failed.
+// The suite does catch the mutant, and a survivor is what cross says. It fails the run.
+func TestAFailureHiddenFromTheFirstRunReadsSurvived(t *testing.T) {
+	t.Parallel()
+	dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import ("os"; "testing")
+
+func TestRefused(t *testing.T) { if Check("mallory") == nil { t.Fatal("mallory let in") } }
+
+func TestMain(m *testing.M) {
+	out := os.Stdout
+	os.Stdout, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	m.Run()
+	os.Stdout = out
+	os.Exit(m.Run())
+}
+`})
+	if r := killOf(t, Options{Target: dir}); r.Outcome != Survived {
 		t.Fatalf("got %+v", r)
 	}
 }
