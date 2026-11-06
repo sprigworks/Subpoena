@@ -119,9 +119,12 @@ failed, whichever came first, as what is printed and what is real can come in ei
 Only a witness failure with this run's mark outlives a pass, printed ahead of it or after. That
 has a price, paid on purpose. A printed pass in a test with a plain failure costs that kill,
 wherever it lands: the run reads unconfirmed, and stays red. A lost kill says so, and a false
-one says nothing. What is left is a test that prints the framed run line and fail line of a test
-that never ran, in a package that exits 1: go test cannot tell that from the real thing, and
-neither can cross. In Go a repeat where
+one says nothing. A test can also print the framed run line and fail line of a test that never
+ran, and go test cannot tell those events from the real thing. But a binary that exits 1 with
+no test failed did so in `TestMain`, after `m.Run` said `PASS`, so a package that said `PASS` gives
+no failed test but a marked one. Printing `PASS` can cost a kill, as a printed pass can, and make
+none. What is left is such a pair of lines beside a real failure in the same package, where
+something in that package did fail with the mutant. In Go a repeat where
 a package crashes, or that hangs, can do so in a test the first run never reached, and
 under `-shuffle` such a test can come first. So the first run's own command goes again,
 as a test can need what ran before it. If that stops short too, each package with a test of

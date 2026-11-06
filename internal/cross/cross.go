@@ -1019,9 +1019,12 @@ func idOf(pkg, test string) testID {
 // so cost a real plain kill, which reads unconfirmed, and the run stays red. That is
 // the side to lose on: the other way a fail printed after a real pass, by TestMain
 // say, is a kill no test made. Only a witness failure outlives a pass, as its mark
-// is what printed text does not have. What is left is a test that prints the run line
-// and the fail line of a test that never ran, which go test cannot tell from the real
-// thing. See docs/architecture.md.
+// is what printed text does not have. A test that prints the run line and the fail
+// line of a test that never ran has events go test cannot tell from the real thing,
+// and a binary that said PASS is what gives those away: m.Run says it only when every
+// test passed, so a binary that said it and exited 1 did so in TestMain, and failed
+// no test. Printing PASS can cost a kill and make none. What is left is such a pair
+// of lines beside a real failure in its package. See docs/architecture.md.
 //
 //subpoena:enforcement_point
 func failedTests(raw, key string) map[testID]bool {
@@ -1033,7 +1036,8 @@ func failedTests(raw, key string) map[testID]bool {
 		}
 	}
 	tests := map[testID]bool{}
-	for k, e := range endings(raw) {
+	ends := endings(raw)
+	for k, e := range ends {
 		if k[1] == "" || !e.failed || !clean[k[0]] {
 			continue
 		}
@@ -1041,6 +1045,9 @@ func failedTests(raw, key string) map[testID]bool {
 			continue //subpoena:enforcement
 		}
 		if (e.passed || e.skipped) && !marked[k] {
+			continue //subpoena:enforcement
+		}
+		if ends[eventKey{k[0], ""}].saidPass && !marked[k] {
 			continue //subpoena:enforcement
 		}
 		tests[idOf(k[0], k[1])] = true
@@ -1052,7 +1059,7 @@ func failedTests(raw, key string) map[testID]bool {
 type eventKey [2]string
 
 // ending is what a test's events say happened to it. Any of it can be printed text.
-type ending struct{ ran, passed, skipped, failed bool }
+type ending struct{ ran, passed, skipped, failed, saidPass bool }
 
 // cleanPass reports whether the test passed and nothing says otherwise. A pass with
 // a fail beside it can be printed, ahead of the real fail or after it, so that is not
@@ -1065,13 +1072,15 @@ func (e ending) cleanPass() bool { return e.passed && !e.failed }
 func endings(raw string) map[eventKey]ending {
 	all := map[eventKey]ending{}
 	for _, line := range strings.Split(raw, "\n") {
-		var e failEvent
+		var e struct{ Action, Package, Test, Output string }
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
 			continue
 		}
 		k := eventKey{e.Package, e.Test}
 		end := all[k]
 		switch e.Action {
+		case "output":
+			end.saidPass = end.saidPass || e.Output == "PASS\n"
 		case "run":
 			end.ran = true
 		case "pass":

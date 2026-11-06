@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sprigworks/subpoena/internal/crossmark"
 )
 
 // Review 10, H1. A printed fail in a package that went green is no failure, however
@@ -82,6 +84,47 @@ func TestMain(m *testing.M) {
 				t.Fatalf("no test failed: %+v", r)
 			}
 		})
+	}
+}
+
+// The same with the run line printed too, so the test has no pass. Its binary said
+// PASS, which only m.Run with every test passed says.
+func TestAGhostFromABinaryThatSaidPassIsNoKill(t *testing.T) {
+	t.Parallel()
+	dir := module(t, map[string]string{"gate.go": gate3, "a/a_test.go": `package a
+
+import ("fmt"; "os"; "testing"; "mini")
+
+func TestLast(t *testing.T) {}
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if mini.Check("mallory") == nil {
+		` + framedGhost + `
+		code = 1
+	}
+	os.Exit(code)
+}
+`})
+	if r := killOf(t, Options{Target: dir}); r.Outcome != Unconfirmed {
+		t.Fatalf("no test failed: %+v", r)
+	}
+}
+
+func TestPassSaidByTheBinaryLeavesOnlyAMark(t *testing.T) {
+	end := event("output", "p", "", "PASS\n") + event("fail", "p", "", "") + exitEvent("p", "1") + "\n"
+	run, fail := event("run", "p", "TestA", ""), event("fail", "p", "TestA", "")
+	plain := event("output", "p", "TestA", "    a_test.go:1: boom\n")
+	witness := event("output", "p", "TestA", "    a_test.go:1: "+crossmark.Sign(testKey, "witness: boom")+"\n")
+	if got := failedTests(run+plain+fail+end, testKey); len(got) != 0 {
+		t.Errorf("plain: %v", got)
+	}
+	if got := failedTests(run+witness+fail+end, testKey); !got[testID{"p", "TestA"}] {
+		t.Errorf("witness: %v", got)
+	}
+	// A test's own output saying PASS is no word from the binary.
+	said := event("output", "p", "TestA", "PASS\n") + event("fail", "p", "", "") + exitEvent("p", "1") + "\n"
+	if got := failedTests(run+plain+fail+said, testKey); !got[testID{"p", "TestA"}] {
+		t.Errorf("a test's line: %v", got)
 	}
 }
 
