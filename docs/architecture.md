@@ -203,7 +203,9 @@ not, read from `pause` and `cont` events: package testing's frames carry a line 
 frame to whichever test printed last, so a parallel test's `panic:` line can land on its neighbour.
 There it is a crash. The cost is a passing parallel test that logs such a line at the start of a
 line beside a real failure: that kill reads crashed, and the run fails, wherever the line lands. Sequential tests keep the
-rule, and so do subtests in turn inside one parallel test. Under `--require-witness` it is a crash there too (see
+rule, and so do subtests in turn inside one parallel test. Which test holds which is read from what ran, not cut
+from the names, as go keeps a slash in a subtest's name: `T/GET_/admin` is a subtest of `T`, and `T/read/all` a sibling of `T/read` if it
+started while that test was paused. Under `--require-witness` it is a crash there too (see
 What forged output can do). A test with a `fail` event has not passed here,
 whatever `pass` sits beside it, so a printed pass does not make a crash a log line. testify's `suite` reports one it recovered through `t.Errorf`, as `test panicked:` after a
 file and line, and in a test that did not pass that counts as a crash too, wherever it falls on the

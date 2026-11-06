@@ -129,3 +129,81 @@ func TestASelectedRunLeavesQuietPackagesToTheWholeSuite(t *testing.T) {
 		}
 	})
 }
+
+// routeTable is parallel subtests by the two names, the first catching the mutant with
+// a recovered panic. Its line can land on the second, which passes.
+func routeTable(first, second, par string) string {
+	return `func TestRoutes(t *testing.T) {
+	for _, tc := range []struct{ name, user string; wait time.Duration }{{"` + first + `", "mallory", 100 * time.Millisecond}, {"` + second + `", "admin", 400 * time.Millisecond}} {
+		t.Run(tc.name, func(t *testing.T) {
+			` + par + `
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "panic: %v\n", r)
+					t.Fatal("handler died")
+				}
+			}()
+			time.Sleep(tc.wait)
+			if tc.user != "admin" && Check(tc.user) == nil { var m map[string]int; m["x"] = 1 }
+		})
+	}
+}
+`
+}
+
+// Review 13, H1. Go keeps a slash in a subtest's name, so cutting names on "/" looked
+// for tests that do not exist, or took a sibling for a parent. What ran says what holds
+// what. A real subtest is held, so its sequential neighbours keep the log-line rule.
+func TestSlashesInSubtestNamesDoNotHideACrash(t *testing.T) {
+	t.Parallel()
+	const logs = `fmt.Println("panic: recovered and logged")`
+	const refused = `if Check("mallory") == nil { t.Fatal("mallory let in") }`
+	for name, tc := range map[string]struct {
+		tests string
+		want  Outcome
+	}{
+		"route names":         {routeTable("GET /admin as mallory", "POST /users as admin", "t.Parallel()"), Crashed},
+		"one name holds next": {routeTable("read", "read/all", "t.Parallel()"), Crashed},
+		"the other way round": {routeTable("read/all", "read", "t.Parallel()"), Crashed},
+		"no slash":            {routeTable("mallory", "admin", "t.Parallel()"), Crashed},
+		"in turn, route names": {`func TestRoutes(t *testing.T) {
+	t.Run("GET /logs", func(t *testing.T) { ` + logs + ` })
+	t.Run("GET /refused", func(t *testing.T) { ` + refused + ` })
+}
+`, Killed},
+		"in turn, one name holds next": {`func TestRoutes(t *testing.T) {
+	t.Run("read/all", func(t *testing.T) { ` + logs + ` })
+	t.Run("read", func(t *testing.T) { ` + refused + ` })
+}
+`, Killed},
+		"a real subtest": {`func TestRoutes(t *testing.T) {
+	t.Run("read", func(t *testing.T) {
+		t.Run("logs", func(t *testing.T) { ` + logs + ` })
+		t.Run("refused", func(t *testing.T) { ` + refused + ` })
+	})
+}
+`, Killed},
+		"a real subtest of a parallel test": {`func TestRoutes(t *testing.T) {
+	t.Run("read", func(t *testing.T) {
+		t.Parallel()
+		t.Run("logs", func(t *testing.T) { ` + logs + ` })
+		t.Run("refused", func(t *testing.T) { ` + refused + ` })
+	})
+}
+`, Killed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+
+import ("fmt"; "os"; "testing"; "time")
+
+var _, _, _ = fmt.Sprint, os.Stdout, time.Now
+
+` + tc.tests})
+			if r := killOf(t, Options{Target: dir}); r.Outcome != tc.want {
+				t.Fatalf("got %+v", r)
+			}
+		})
+	}
+}

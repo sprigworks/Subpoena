@@ -1183,11 +1183,12 @@ type eventKey [2]string
 // ending is what a test's events say happened to it. Any of it can be printed text.
 // lateFail is a fail event after a pass with another test started in between, a
 // subtest of its own aside.
-// from and to are where it first continued after a pause and where it last ended,
-// as positions in the run, 0 if it did neither: from is what makes it parallel.
+// start, paused, from and to are where it first ran, first paused, first continued
+// after a pause and last ended, as positions in the run, 0 if it did not: from is
+// what makes it parallel.
 type ending struct {
 	ran, passed, skipped, failed, lateFail, saidPass bool
-	from, to                                         int
+	start, paused, from, to                          int
 }
 
 // cleanPass reports whether the test passed and nothing says otherwise. A pass with
@@ -1195,17 +1196,30 @@ type ending struct {
 // a test to take at its word: a line in it can be what it seems.
 func (e ending) cleanPass() bool { return e.passed && !e.failed }
 
-// beside reports whether the two tests were running at once. A test with no end was
-// still running. go test gives a subtest's end with its parent's, so this can say yes
-// to subtests that took turns under -parallel 1, which costs a kill and makes none.
-func (e ending) beside(o ending) bool {
-	last := func(x ending) int {
-		if x.to == 0 {
-			return math.MaxInt
-		}
-		return x.to
+// last is where the test ended. A test with no end was still running.
+func (e ending) last() int {
+	if e.to == 0 {
+		return math.MaxInt
 	}
-	return e.from > 0 && o.from > 0 && e.from < last(o) && o.from < last(e)
+	return e.to
+}
+
+// beside reports whether the two tests were running at once. go test gives a subtest's
+// end with its parent's, so this can say yes to subtests that took turns under
+// -parallel 1, which costs a kill and makes none.
+func (e ending) beside(o ending) bool {
+	return e.from > 0 && o.from > 0 && e.from < o.last() && o.from < e.last()
+}
+
+// holds reports whether c, a test whose name goes on from e's, is e's subtest. A
+// subtest starts while its parent runs and ends before it. A name alone does not say:
+// go keeps a slash in a subtest's name, so "read/all" can be the sibling of "read", and
+// a sibling of a parallel test starts while that test is paused.
+func (e ending) holds(c ending) bool {
+	if !e.ran || c.start < e.start || c.last() > e.last() {
+		return false
+	}
+	return e.paused == 0 || c.start < e.paused || c.start > e.from && e.from > 0
 }
 
 // besideFailure reports whether a test that did not pass ran beside k. Package
@@ -1221,7 +1235,7 @@ func besideFailure(ends map[eventKey]ending, k eventKey) bool {
 		if o[0] != k[0] || o[1] == "" || !e.failed {
 			continue
 		}
-		a, b, ok := branches(k[1], o[1])
+		a, b, ok := branches(ends, k[0], k[1], o[1])
 		if ok && ends[eventKey{k[0], a}].beside(ends[eventKey{k[0], b}]) {
 			return true //subpoena:enforcement
 		}
@@ -1229,16 +1243,29 @@ func besideFailure(ends map[eventKey]ending, k eventKey) bool {
 	return false
 }
 
-// branches gives the names of two tests cut to where they part, as the tests that
-// hold them. ok is false for a test and its own subtest, which do not part.
-func branches(a, b string) (string, string, bool) {
-	x, y := strings.Split(a, "/"), strings.Split(b, "/")
+// branches gives the tests of pkg that hold a and b where the two part. ok is false
+// for a test and its own subtest, which do not part.
+func branches(ends map[eventKey]ending, pkg, a, b string) (string, string, bool) {
+	x, y := lineage(ends, pkg, a), lineage(ends, pkg, b)
 	for i := range min(len(x), len(y)) {
 		if x[i] != y[i] {
-			return strings.Join(x[:i+1], "/"), strings.Join(y[:i+1], "/"), true
+			return x[i], y[i], true
 		}
 	}
 	return "", "", false
+}
+
+// lineage is the tests that hold a test, top-level first, then the test. It is read
+// from the tests that ran and not cut from the name on "/", which go keeps in a
+// subtest's name: "T/GET_/admin" is a subtest of T, and no test "T/GET_" exists.
+func lineage(ends map[eventKey]ending, pkg, test string) []string {
+	var line []string
+	for i, c := range test {
+		if c == '/' && ends[eventKey{pkg, test[:i]}].holds(ends[eventKey{pkg, test}]) {
+			line = append(line, test[:i])
+		}
+	}
+	return append(line, test)
 }
 
 // crashStands reports whether a crash line on k is a crash: on a test that passed
@@ -1266,10 +1293,17 @@ func endings(raw string) map[eventKey]ending {
 			end.saidPass = end.saidPass || e.Output == "PASS\n"
 		case "run":
 			end.ran = true
+			if end.start == 0 {
+				end.start = i + 1
+			}
 			for p := range ended {
 				if p[0] == e.Package && !strings.HasPrefix(e.Test, p[1]+"/") {
 					delete(ended, p) //subpoena:enforcement
 				}
+			}
+		case "pause":
+			if end.paused == 0 {
+				end.paused = i + 1
 			}
 		case "cont":
 			if end.from == 0 {
