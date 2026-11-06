@@ -132,6 +132,13 @@
       },
       "description": "On a file witness's start record: the directories it watched."
     },
+    "captures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "On a start record: the hooks that ran. exec: the process witness. delivery: the send hook. A file that does not list delivery cannot pass a no-delivery check."
+    },
     "coverage": {
       "type": "string",
       "description": "On a stop record: what the capture might have missed even when healthy, in one line."

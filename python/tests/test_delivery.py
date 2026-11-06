@@ -17,7 +17,7 @@ PUBLISHER = "127.0.0.1:40002"
 
 
 def log(*peers, stop=None):
-    lines = [{"time": "2026-11-05T12:00:00Z", "record": "start", "healthy": False}]
+    lines = [{"time": "2026-11-05T12:00:00Z", "record": "start", "healthy": False, "captures": ["exec", "delivery"]}]
     for p in peers:
         lines.append({"time": "2026-11-05T12:00:01Z", "delivery_op": OP_DELIVER, "pid": 7, "host_pid": 4007,
                       "comm": "broker", "protocol": "tcp", "peer": p, "local": "127.0.0.1:1883", "bytes": 21,
@@ -39,6 +39,23 @@ def test_the_empty_trace_matches_nothing_and_the_stop_record_gives_coverage():
     assert l.delivered("") == []
     assert l.coverage() == "2 send(s) reported"
     assert log(SUBSCRIBER, stop={"time": "2026-11-05T12:00:09Z", "record": "stop", "healthy": True}).coverage() == ""
+
+
+def test_a_file_with_no_delivery_capture_proves_no_absence():
+    def file(start):
+        lines = [{"time": "2026-11-05T12:00:00Z", "record": "start", "healthy": False, **start},
+                 {"time": "2026-11-05T12:00:09Z", "record": "stop", "healthy": True}]
+        return read_log(io.StringIO("\n".join(json.dumps(l) for l in lines) + "\n"))
+    assert no_delivery(file({}), TRACE)[0] is Verdict.INCONCLUSIVE
+    assert no_delivery(file({"captures": ["exec"]}), TRACE)[0] is Verdict.INCONCLUSIVE
+    assert no_delivery(file({"captures": ["exec", "delivery"]}), TRACE)[0] is Verdict.PASS
+    assert "no delivery capture" in check_no_delivery(file({}), TRACE)
+
+
+@pytest.mark.parametrize("bad", ["[1.2.3.4]:5", "1.2.3.4:5\n", "[fe80::1%eth0]:5"])
+def test_an_address_go_refuses_is_refused(bad):
+    with pytest.raises(ValueError):
+        AddrPort.of(bad)
 
 
 def test_a_delivery_line_is_not_an_exec():

@@ -38,10 +38,14 @@ type netEvent struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	netMapEvents         = "events"
+	netMapLeftSession    = "left_session"
 	netMapLost           = "lost"
 	netMapOtherSends     = "other_sends"
+	netMapTooDeep        = "too_deep"
+	netProgHandleAttach  = "handle_attach"
 	netProgHandleConnect = "handle_connect"
 	netProgHandleDeliver = "handle_deliver"
+	netProgHandleFork    = "handle_fork"
 	netProgHandleSendmsg = "handle_sendmsg"
 	netVarPidnsInum      = "pidns_inum"
 	netVarSessionBase    = "session_base"
@@ -90,8 +94,10 @@ type netSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type netProgramSpecs struct {
+	HandleAttach  *ebpf.ProgramSpec `ebpf:"handle_attach"`
 	HandleConnect *ebpf.ProgramSpec `ebpf:"handle_connect"`
 	HandleDeliver *ebpf.ProgramSpec `ebpf:"handle_deliver"`
+	HandleFork    *ebpf.ProgramSpec `ebpf:"handle_fork"`
 	HandleSendmsg *ebpf.ProgramSpec `ebpf:"handle_sendmsg"`
 }
 
@@ -99,9 +105,11 @@ type netProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type netMapSpecs struct {
-	Events     *ebpf.MapSpec `ebpf:"events"`
-	Lost       *ebpf.MapSpec `ebpf:"lost"`
-	OtherSends *ebpf.MapSpec `ebpf:"other_sends"`
+	Events      *ebpf.MapSpec `ebpf:"events"`
+	LeftSession *ebpf.MapSpec `ebpf:"left_session"`
+	Lost        *ebpf.MapSpec `ebpf:"lost"`
+	OtherSends  *ebpf.MapSpec `ebpf:"other_sends"`
+	TooDeep     *ebpf.MapSpec `ebpf:"too_deep"`
 }
 
 // netVariableSpecs contains global variables before they are loaded into the kernel.
@@ -133,16 +141,20 @@ func (o *netObjects) Close() error {
 //
 // It can be passed to loadNetObjects or ebpf.CollectionSpec.LoadAndAssign.
 type netMaps struct {
-	Events     *ebpf.Map `ebpf:"events"`
-	Lost       *ebpf.Map `ebpf:"lost"`
-	OtherSends *ebpf.Map `ebpf:"other_sends"`
+	Events      *ebpf.Map `ebpf:"events"`
+	LeftSession *ebpf.Map `ebpf:"left_session"`
+	Lost        *ebpf.Map `ebpf:"lost"`
+	OtherSends  *ebpf.Map `ebpf:"other_sends"`
+	TooDeep     *ebpf.Map `ebpf:"too_deep"`
 }
 
 func (m *netMaps) Close() error {
 	return _NetClose(
 		m.Events,
+		m.LeftSession,
 		m.Lost,
 		m.OtherSends,
+		m.TooDeep,
 	)
 }
 
@@ -159,15 +171,19 @@ type netVariables struct {
 //
 // It can be passed to loadNetObjects or ebpf.CollectionSpec.LoadAndAssign.
 type netPrograms struct {
+	HandleAttach  *ebpf.Program `ebpf:"handle_attach"`
 	HandleConnect *ebpf.Program `ebpf:"handle_connect"`
 	HandleDeliver *ebpf.Program `ebpf:"handle_deliver"`
+	HandleFork    *ebpf.Program `ebpf:"handle_fork"`
 	HandleSendmsg *ebpf.Program `ebpf:"handle_sendmsg"`
 }
 
 func (p *netPrograms) Close() error {
 	return _NetClose(
+		p.HandleAttach,
 		p.HandleConnect,
 		p.HandleDeliver,
+		p.HandleFork,
 		p.HandleSendmsg,
 	)
 }

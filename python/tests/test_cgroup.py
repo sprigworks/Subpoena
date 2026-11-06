@@ -125,10 +125,13 @@ HYBRID = "12:pids:/\n4:memory:/user\n1:name=systemd:/\n0::/subpoena/" + TID.uppe
     ("0::/" + TID + "\n", "subpoena", None),
     ("0::/subpoena\n", "subpoena", None),
     ("0::/lab/" + TID + "\n", "lab", TID),
+    ("0::/subpoena/a/subpoena/" + TID + "\n", "subpoena", None),
+    ("0::/subpoena/" + TID + "/a/subpoena/" + "b" * 32 + "\n", "subpoena", TID),
     ("not a cgroup file", "subpoena", None),
     ("", "subpoena", None),
 ], ids=["v2 line", "hybrid, any line", "nested under the session", "under a slice", "other base",
         "base but not a trace ID", "trace ID without the base", "base is last element", "custom base",
+        "a session built under the root is not one", "the real session wins over one nested in it",
         "garbage", "empty"])
 def test_session_trace(text, base, want):
     assert session_trace(text, base) == want

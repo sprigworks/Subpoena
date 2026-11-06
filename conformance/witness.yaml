@@ -492,7 +492,7 @@ cases:
   # A broker wrote to one subscriber and acked the publisher: the other subscriber's absence rests on the file.
   - name: delivery_to_one_peer
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40003","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
@@ -510,7 +510,7 @@ cases:
   # The same file, asked about the peer that was written to.
   - name: delivery_to_the_refused_peer
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
@@ -522,7 +522,7 @@ cases:
   # No peers named: every send counts, acks included.
   - name: delivery_any_peer
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
@@ -533,7 +533,7 @@ cases:
   # A send that named its destination is delivery to it. An IPv6 peer, and a mapped one read as its IPv4 form.
   - name: delivery_named_and_ipv6
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"sendmsg","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"[2001:db8::1]:53","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"[::ffff:127.0.0.1]:40001","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
@@ -547,7 +547,7 @@ cases:
   # The witness saw a send but not its peer: it may have gone to the refused one.
   - name: delivery_unknown_peer
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     health: "ok"
@@ -560,7 +560,7 @@ cases:
   # A lossy capture: what it saw still counts, and no absence rests on it.
   - name: delivery_unhealthy_stop
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":false,"error":"lost 3 kernel event(s)"}'
     health: "lost 3 kernel event(s)"
@@ -572,7 +572,7 @@ cases:
   # A delivery with no window around it proves the window was not there.
   - name: delivery_outside_window
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
       - '{"time":"2026-10-28T12:00:10Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
     health: "a delivery outside any capture window"
@@ -584,7 +584,7 @@ cases:
   # An op no reader knows is a read error, never a skip.
   - name: delivery_unknown_op
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"multicast","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -592,7 +592,7 @@ cases:
   # A peer that does not parse is a read error: only an empty one means unknown.
   - name: delivery_bad_peer
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"localhost:1883","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -600,7 +600,7 @@ cases:
   # So is a bad local address.
   - name: delivery_bad_local
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"nowhere","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -608,7 +608,7 @@ cases:
   # A delivery line must carry its time.
   - name: delivery_no_time
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"delivery_op":"deliver","pid":7,"peer":"127.0.0.1:40001"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -616,7 +616,7 @@ cases:
   # A byte count that is not one.
   - name: delivery_bytes_negative
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","peer":"127.0.0.1:40001","bytes":-1}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
@@ -624,8 +624,103 @@ cases:
   # A key in another case: Go would read it, another reader would not.
   - name: delivery_key_case
     lines:
-      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
       - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","Peer":"127.0.0.1:40001"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  # A file from a witness that never ran the delivery hook has no delivery lines
+  # because nothing looked, however healthy it is.
+  - name: delivery_no_capture_named
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Inconclusive
+
+  # Naming other captures does not name this one.
+  - name: delivery_capture_not_listed
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Inconclusive
+
+  # A capture counts from the start record alone: a stop record cannot claim one.
+  - name: delivery_capture_on_the_stop_record
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"captures":["delivery"]}'
+    health: ok
+    no_delivery:
+      A: Inconclusive
+
+  # With the capture named, the same empty file is a Pass.
+  - name: delivery_capture_named_and_empty
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Pass
+
+  # A sighting stands whatever the start record says.
+  - name: delivery_seen_with_no_capture_named
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: ok
+    no_delivery:
+      A: Fail
+
+  - name: delivery_captures_not_a_list
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":"delivery"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 1"
+
+  - name: delivery_peer_bracketed_ipv4
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"[1.2.3.4]:5","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  - name: delivery_local_bracketed_ipv4
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"[1.2.3.4]:5","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  - name: delivery_peer_final_newline
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"1.2.3.4:5\n","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  - name: delivery_local_final_newline
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"1.2.3.4:5\n","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  - name: delivery_peer_zone
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"[fe80::1%eth0]:5","local":"127.0.0.1:1883","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    read_error: "line 2"
+
+  - name: delivery_local_zone
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"captures":["exec","delivery"]}'
+      - '{"time":"2026-10-28T12:00:01Z","delivery_op":"deliver","pid":7,"host_pid":4007,"comm":"broker","protocol":"tcp","peer":"127.0.0.1:40001","local":"[fe80::1%eth0]:5","bytes":21,"cgroup_id":91,"cgroup":"subpoena/c0de00000000000000000000000000a1","trace_id":"c0de00000000000000000000000000a1","attribution":"cgroup"}'
       - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
     read_error: "line 2"
 

@@ -220,19 +220,31 @@ Check: the `file_` cases in `conformance/witness.yaml`; the Python runners are
   | `local` | string | this end, in the same form; empty when unknown |
   | `bytes` | integer (uint64) | what the caller asked to send, not what the peer received |
 
-  A stop record may carry `coverage`, one line on what the capture might have
-  missed even when healthy. W3 and W4 apply: `delivered(trace_id)` returns every
+  The start record's `captures` lists the hooks that ran (`"exec"`, `"delivery"`),
+  and only a start record's counts. A stop record may carry `coverage`, one line on
+  what the capture might have missed even when healthy. W3 and W4 apply: `delivered(trace_id)` returns every
   line whose `trace_id` equals it, the empty trace ID matches nothing, and a line
   outside the window is a capture fault. A read error, never a skip: an unknown
-  `delivery_op`, and a `peer` or `local` that is not empty and does not parse. An
-  empty `peer` is not an error: such a send may have gone to any peer.
-  `no_delivery(witness, trace_id, match)` follows W6's rule over `delivered`.
+  `delivery_op`, a `peer` or `local` that is not empty and does not parse (an IPv4
+  address in brackets, a trailing newline and a zone do not), and a `captures` that
+  is not a list of strings. An empty `peer` is not an error: such a send may have
+  gone to any peer.
+  `no_delivery(witness, trace_id, match)` follows W6's rule over `delivered`, and
+  with no matching send a file whose start record does not list `delivery` is
+  Inconclusive, however healthy: nothing was looking.
   `delivery_to(peers)` matches a send that may have gone to a peer: a zero port
   matches every port of the address, an unspecified address matches the port on
   any address, an IPv4-mapped address matches its IPv4 form, a send with an
   unknown peer or no port matches, and naming no peers matches every send. A port
   reads the file; it does not run this witness, which has no tier 1 in any
   language.
+
+  Health does the rest of the work, and a reader needs nothing more for it: the
+  witness writes an unhealthy stop record if a task left a session during the
+  capture, if the kernel skipped a program (recursion misses, host-wide), or if a
+  cgroup path was too long to walk. A task that left before the witness started,
+  and a process privileged enough to detach it, are outside what a file can say;
+  `witnesses/README.md` has the limits.
 
 Check: the `delivery_` cases in `conformance/witness.yaml` (`delivered`,
 `no_delivery`, `no_delivery_peers`); the matching rules are in

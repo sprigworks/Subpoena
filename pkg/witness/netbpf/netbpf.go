@@ -10,14 +10,21 @@
 // sockets from session cgroups, with the peer read from the socket. That is
 // witness.DeliveryWitness: a broker writing to a subscriber on a socket it
 // accepted, which involves no connect at all. The sender must be in the session
-// cgroup; a broker running inside the test binary, outside it, is not seen.
+// cgroup and stay there; a broker running inside the test binary, outside it, is
+// not seen.
 // It sees that bytes went to a peer, not what they were, and it reports the
 // attempt, before the send can fail. There is no tier-1 form of this: the
 // kernel is the only outside observer of a write on someone else's socket.
 //
 // It is the network sibling of execbpf, with the same loss accounting: a full
-// ring buffer, a failed drain or a reader error makes Health fail, so an empty
-// Dialed cannot certify absence by accident.
+// ring buffer, a failed drain or a reader error makes Health fail. So do the ways
+// a send can go unseen without any of those. The kernel skips a program that is
+// already active on a CPU, which a preempt=full kernel makes common, and counts it
+// only as a recursion miss. A task can leave its session, by a move or with
+// CLONE_INTO_CGROUP, and two more programs count that; attribution alone could
+// not, since it reads the cgroup at the moment of the send. A cgroup path too long
+// to walk, and a send from under the session root but in no session, count too.
+// An empty Dialed or Delivered means nothing until Health says so.
 //
 // What it does not see: packet sockets (AF_PACKET); raw sockets that write
 // their own IP header (the reported destination is the one passed to the
@@ -31,7 +38,8 @@
 //
 // Loading the programs needs root (or CAP_BPF plus CAP_PERFMON), cgroup v2 and
 // a kernel with BTF and fentry (5.8 or later on amd64, 6.0 or later on arm64).
-// It observes only; it does not block.
+// It observes only; it does not block. Health is host-wide: a miss on any CPU, or
+// a task leaving any session, makes every trace in this capture Inconclusive.
 //
 // Every inet connect and named send on the host is reported to user space,
 // not only those in session cgroups. On a busy host a full ring buffer fails
@@ -43,6 +51,7 @@ package netbpf
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,8 +92,10 @@ type Event struct {
 	Local    netip.AddrPort // this end of the socket, on a send
 	Bytes    uint64         // on a send, the bytes the caller asked to send
 	CgroupID uint64         // bpf_get_current_cgroup_id: equals pkg/cgroup Group.ID()
-	// Cgroup is the cgroup path as far up as the kernel walked (up to 8
-	// elements), root-most first, without the hierarchy root: "subpoena/<trace id>".
+	// Cgroup is the cgroup path, up to 8 elements, root-most first, without the
+	// hierarchy root: "subpoena/<trace id>". Longer paths lose elements above the
+	// session root, then the ones nearest the leaf, so the session root stays.
+	// It is empty if the kernel could not walk the path to the top.
 	Cgroup string
 	Time   time.Time
 
@@ -122,6 +133,8 @@ type Witness struct {
 	// events, since a named send is delivery to the peer it names.
 	deliveries []witness.DeliveryEvent
 	coverage   witness.DeliveryCoverage
+	// unattributed counts events under the session root that name no session.
+	unattributed uint64
 
 	k         *kernel // loaded programs; guarded by lifecycle
 	healthErr error
@@ -148,10 +161,16 @@ func New(cfg Config) *Witness {
 //
 // Attribution is by session cgroup only. execbpf's lineage fallback follows
 // fork events to a root PID; a connection carries no parent, so an attempt
-// from outside a session cgroup is not attributed to any trace.
+// from outside a session cgroup is not attributed to any trace. One from under
+// the session root that names no session is counted, and fails Health at Stop: a
+// task that left its session for the root looks like that.
 func (w *Witness) handle(e Event) {
 	if tid, ok := cgroup.SessionTrace("0::/"+e.Cgroup, w.base); ok {
 		e.TraceID, e.Attribution = tid, witness.ByCgroup
+	} else if slices.Contains(strings.Split(e.Cgroup, "/"), w.base) {
+		w.mu.Lock()
+		w.unattributed++
+		w.mu.Unlock()
 	}
 	if e.Attribution != "" {
 		w.record(e)
@@ -245,7 +264,8 @@ func (w *Witness) Delivered(traceID string) []witness.DeliveryEvent {
 }
 
 // DeliveryCoverage reports what this capture might have missed even when
-// healthy. OtherFamilySends and Lost are read at Stop.
+// healthy, and what failed Health. Everything but Sends and UnknownPeers is
+// final only after Stop.
 func (w *Witness) DeliveryCoverage() witness.DeliveryCoverage {
 	w.mu.Lock()
 	defer w.mu.Unlock()

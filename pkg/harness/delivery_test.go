@@ -5,6 +5,7 @@ package harness
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -84,6 +85,86 @@ func TestNoDeliveryNeedsHealthyCapture(t *testing.T) {
 				t.Fatalf("CheckNoDelivery failed=%v for %v", tb.failed, got)
 			}
 		})
+	}
+}
+
+// noCapture is a witness file that says no delivery hook ran.
+type noCapture struct {
+	healthDelivery
+	captured bool
+}
+
+func (w noCapture) CapturedDeliveries() bool { return w.captured }
+
+// An empty, healthy file proves nothing about sends if nothing watched for them.
+func TestNoDeliveryNeedsTheCaptureToHaveRun(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		w    witness.DeliveryWitness
+		want Verdict
+	}{
+		{"no capture", noCapture{}, Inconclusive},
+		{"capture", noCapture{captured: true}, Pass},
+		{"a sighting stands without one", noCapture{healthDelivery: healthDelivery{unknownDelivery: sent(subscriber)}}, Fail},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := NoDelivery(tc.w, "trace", nil); got != tc.want {
+				t.Fatalf("got %v, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+	tb := &cleanupTB{}
+	if checkDeliveries(tb, noCapture{}, "trace", DeliveryRule{Never: []netip.AddrPort{subscriber}}) {
+		t.Fatal("WatchDeliveries passed a file with no capture")
+	}
+	if len(tb.errs) != 1 || !strings.HasPrefix(tb.errs[0], TagInconclusive) {
+		t.Fatalf("errs = %q", tb.errs)
+	}
+}
+
+// The real reader: a file from subpoena-witness run without -deliveries.
+func TestNoDeliveryOverAFileWithNoCapture(t *testing.T) {
+	const (
+		start = `{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false%s}` + "\n"
+		stop  = `{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":true}` + "\n"
+	)
+	for _, tc := range []struct {
+		captures string
+		want     Verdict
+	}{
+		{"", Inconclusive},
+		{`,"captures":["exec"]`, Inconclusive},
+		{`,"captures":["exec","delivery"]`, Pass},
+	} {
+		l, err := witness.ReadLog(strings.NewReader(fmt.Sprintf(start, tc.captures) + stop))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := NoDelivery(l, "trace", nil); got != tc.want {
+			t.Errorf("%q: got %v, %v; want %v", tc.captures, got, err, tc.want)
+		}
+	}
+}
+
+// A subscriber's conn.LocalAddr() on a link-local address carries a zone, and the
+// kernel's peer never does.
+func TestALinkLocalRuleWithAZone(t *testing.T) {
+	peer := netip.MustParseAddrPort("[fe80::1]:40001")
+	zoned := netip.MustParseAddrPort("[fe80::1%eth0]:40001")
+	if !DeliveryTo(zoned)(witness.DeliveryEvent{Peer: peer}) {
+		t.Fatal("DeliveryTo with a zone missed the peer")
+	}
+	if v, _ := NoDelivery(healthDelivery{unknownDelivery: sent(peer)}, "trace", DeliveryTo(zoned)); v != Fail {
+		t.Fatalf("verdict = %v, want Fail", v)
+	}
+	never := &cleanupTB{}
+	if checkDeliveries(never, healthDelivery{unknownDelivery: sent(peer)}, "trace", DeliveryRule{Never: []netip.AddrPort{zoned}}) {
+		t.Fatal("Never with a zone excused the peer")
+	}
+	// Allowed excuses only what is known: the event does not say which link.
+	allowed := &cleanupTB{}
+	if checkDeliveries(allowed, healthDelivery{unknownDelivery: sent(peer)}, "trace", DeliveryRule{Allowed: []netip.AddrPort{zoned}}) {
+		t.Fatal("Allowed with a zone excused a peer on a link the event does not name")
 	}
 }
 

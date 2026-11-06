@@ -229,7 +229,10 @@ Needs root (or CAP_BPF plus CAP_PERFMON), cgroup v2 and BTF.
 `make test-ebpf` runs its kernel tests in a privileged container: execs in a
 real session cgroup are attributed with the right cgroup ID, a process that
 exits at once is seen, lineage follows a fork that never execs, and a burst
-of execs before `Stop` is not lost. In the OATS stack it is the witness for
+of execs before `Stop` is not lost. The checks `netbpf` has for a task leaving its
+session, for kernel recursion misses and for a deeply nested cgroup are not in
+`execbpf` yet, so `Spawned` still rests on the application staying where it was
+put. In the OATS stack it is the witness for
 both cases (`examples/gateway/oats/README.md`).
 
 ### Network, tier 1: `Sinkhole` (runs in `go test`)
@@ -515,7 +518,10 @@ non-nil `Allowed` allows none. Unlike `SpawnRule`, a rule that names no peer at 
 fails, as it claims nothing.
 
 In a peer, a zero port matches every port of the address, and a zero or
-unspecified address matches the port on any address. A send the witness could not
+unspecified address matches the port on any address. The kernel reports no zone,
+so `DeliveryTo` and `Never` leave a zone out, and the form above works for a
+link-local subscriber. An `Allowed` entry with a zone excuses nothing, since the
+event does not say which link the send took: write it without one. A send the witness could not
 place (`PeerUnknown`) is a hit for `DeliveryTo` and `Never`, and so is one to the
 right address with no port; no `Allowed` entry excuses either. Raw and SCTP
 sockets can give these, as can a send on a socket with no peer at all.
@@ -534,14 +540,25 @@ Read a Pass with these in mind:
   session cgroup is not even reported: unlike dials, these sends are filtered in
   the kernel, because host-wide they would fill the ring buffer. A worker the
   broker hands sends to, outside the cgroup, is not seen either.
+- **The sender must stay there.** Attribution reads the cgroup at the moment of
+  the send, so a task that leaves its session takes its sends out of the claim.
+  The witness cannot attribute those, so it counts the leaving instead: a write to
+  `cgroup.procs` or `cgroup.threads` that takes a task out of its session, to the
+  root, an ancestor or another session, and a child made elsewhere with
+  `CLONE_INTO_CGROUP`, each fail `Health` for the whole capture, every trace in it.
+  A move inside the session is fine. A send from under the root that names no
+  session fails `Health` too. A move by the operator counts just the same, so end
+  the capture first.
 - **A wrong peer passes.** Naming the broker's listener port instead of the
   subscriber's matches nothing. Pair the claim with a positive control, as with
   `Sinkhole`: a subscriber that was allowed, whose delivery `Delivered` shows.
 - **It records the attempt.** The hook runs before the send, so a send that then
   fails still counts, and `Bytes` is what the caller asked for, not what the peer
   got. That over-reports, the safe direction for absence, but it is not proof a
-  message arrived. It also reports a connected UDP socket's peer on a `sendto` to
-  somewhere else, and a TCP send's ignored name, each alongside the real peer.
+  message arrived. It also reports a TCP send's ignored name, alongside the real
+  peer. A datagram or raw socket goes to the name a send gives, so that send is
+  charged to the name, not to the peer the socket holds. A raw IPv6 name with
+  family 0 is a name; on UDP over IPv6 it is none, and the send goes to the peer.
 - **The peer is what the sender's kernel holds.** Behind NAT or a proxy it is the
   proxy. It is an address, not an identity: an ephemeral port reused inside the
   window is a different peer with the same name, and two network namespaces can
@@ -552,30 +569,73 @@ to report, so a broker serving subscribers over a Unix socket needs another
 witness; `sendfile` and `splice` before Linux 6.5, which by the kernel's history
 took a path without this hook (not tested; only Linux 6.17 has been run), with no
 fault raised, so do not rest this claim on an older kernel; kernel TCP
-retransmits; and a sender nested more than 6 levels below its session cgroup,
-which the 8-element path walk does not reach, for this and for `Dialed`. Not
-tested: `io_uring`, `sendmmsg`, MPTCP and SCTP.
+retransmits. Not tested: `io_uring`, `sendmmsg`, MPTCP and SCTP.
+
+A session may nest cgroups as it likes: the kernel walks up to 32 levels to the
+top of the hierarchy, and the session is the one nearest the top, so a cgroup the
+application names like another session changes nothing. `Cgroup` keeps 8 elements,
+so past that it loses those nearest the leaf. A path too long to walk, session or
+not, attributes nothing and fails `Health`, for this and for `Dialed`.
+
+Limits that remain, and why:
+
+- **What happened before `Start`.** The hooks count from when they attach. A task
+  that left its session earlier is simply not in it. Start the witness before the
+  session's first process.
+- **A process with the host's privileges.** One that can unload eBPF programs, or
+  kill the witness, can end the capture. A witness killed leaves no stop record,
+  which proves nothing, but a program detached by another root process is not
+  noticed. Run the code under test without `CAP_BPF` and `CAP_SYS_ADMIN` on the
+  host: this is a limit of any observer on the same kernel.
+- **A threaded cgroup that spans sessions.** A write to `cgroup.procs` is judged
+  by the thread group leader, so a leader outside the session with a thread inside
+  it would be missed. That needs write access to the session root, to make it a
+  threaded domain, and no session is set up that way.
+- **`cgroup_attach_task` is a kernel function, not an interface.** Should it go,
+  `Start` fails on attach. Should its arguments change, the check would read
+  the wrong thing, and only `make test-ebpf` on that kernel would show it.
 
 `DeliveryCoverage()` says what a capture might have missed: sends reported, how
 many have no known peer, sends in session cgroups on sockets that are not inet
-(counted in the kernel), and lost events. `WatchDeliveries` logs the count of
+(counted in the kernel), lost events, and the counts below that fail `Health`.
+`WatchDeliveries` logs the count of
 those other sends. A healthy capture with that count above zero means a peer
 reached over such a socket is simply not in `Delivered`.
 
 Capture health is `netbpf`'s, one ring buffer and one loss counter for both kinds
 of event. A failed reservation, a reader or decode error, a failed drain or an
 unreadable counter fails `Health`, and so does a failed load or attach of any of
-the three hooks, with the reason kept. A cgroup root name the kernel filter could
-never match (empty, or 64 bytes and over) fails `Start`. `make test-ebpf` runs its
+the five hooks, with the reason kept. A cgroup root name the kernel filter could
+never match (empty, `.`, `..`, or 64 bytes and over) fails `Start`. Any other
+wrong root gives a healthy, empty capture, so every claim needs the positive
+control above, not only one about a peer.
+
+Four more counts fail `Health`, as a send can go unseen with no ring-buffer loss.
+A task left a session (above). A path was too long to walk. A send or dial came
+from under the session root in no session. And the kernel skipped a program: an
+fentry program already active on a CPU is not run again there, and that is counted
+only as a recursion miss. On a `preempt=full` kernel a task preempted inside a
+program skips every send on that CPU until it runs. Under harsh load on one CPU a
+QEMU guest lost 12 to 20 percent of its sends this way, with no misses in the same
+runs under `voluntary` or `lazy`. The misses are host-wide, so on such a kernel
+under load a capture may be Inconclusive for a neighbour's traffic. That is the
+witness saying it cannot be sure, not a bug in the test. No test forces a miss on a
+`voluntary` kernel: `make test-ebpf` covers the reading of the counter, a unit test
+what a nonzero one does, and the QEMU run was by hand. `make test-ebpf` runs its
 kernel tests: a broker process in a real session cgroup writing on accepted
 sockets (IPv4, a dual-stack listener, IPv6), with the real subscribers' sockets
 as the check; a denied subscriber that was written to; connected and unconnected
 UDP; a child cgroup of the session; an `AF_UNIX` send counted and not reported; a
 burst drained at `Stop`; a real overflow, with the reader held so reservations
-fail; and a refused attach of the delivery hook.
+fail; a refused attach of the delivery hook; a raw IPv6 send with family 0, with
+and without a peer held; a task leaving its session each way above; and nesting,
+forged sessions and a path too long to walk.
 
 `subpoena-witness -deliveries` runs this next to `execbpf` and writes one line per
-send from a session cgroup, so a test in another language can read it. Python's
+send from a session cgroup, so a test in another language can read it. Its start
+record lists `"captures":["exec","delivery"]`. A file that does not name
+`delivery` has no delivery lines because nothing looked, so `NoDelivery` over it
+is Inconclusive in both languages, however healthy it is. Python's
 `Log.delivered`, `no_delivery`, `require_no_delivery`, `check_no_delivery` and
 `delivery_to` read that file. Running the witness stays Go-only, and Python has
 no `watch_deliveries`.

@@ -553,11 +553,16 @@ DeliveryMatch = Callable[[witness.DeliveryEvent], bool]
 def no_delivery(w: Any, trace_id: str, match: Optional[DeliveryMatch] = None) -> "tuple[Verdict, Optional[str]]":
     """Fail if the witness saw a send for trace_id that match selects (None:
     any send, which on a broker includes its acks; delivery_to names a peer),
-    even from an unhealthy capture. With none, missing or bad capture health
-    is Inconclusive; Pass needs a healthy witness."""
+    even from an unhealthy capture. With none, a witness file with no delivery
+    capture in it, or missing or bad capture health, is Inconclusive; Pass needs
+    a healthy witness."""
     hits = [e for e in w.delivered(trace_id) if match is None or match(e)]
     if hits:
         return Verdict.FAIL, f"witness saw sends for {trace_id}: {hits}"
+    captured = getattr(w, "captured_deliveries", None)
+    if captured is not None and not captured():
+        return Verdict.INCONCLUSIVE, ("the witness file's start record names no delivery capture, so a send "
+                                      "could not have been seen (run subpoena-witness with -deliveries)")
     err = _capture_health(w)
     if err is not None:
         return Verdict.INCONCLUSIVE, err

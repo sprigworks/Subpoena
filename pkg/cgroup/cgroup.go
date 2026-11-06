@@ -211,6 +211,9 @@ func (g *Group) Remove() error {
 // SessionTrace finds the session cgroup in the content of a /proc/<pid>/cgroup
 // file: a path element equal to rootBase followed by a trace-ID element. It
 // returns that trace ID. Hybrid hosts list many hierarchies; any line matches.
+// Only the first rootBase in a path counts: the application can make cgroups
+// below where it runs, so a later one, even one that looks like a session, may
+// be its own.
 func SessionTrace(procCgroup, rootBase string) (traceID string, ok bool) {
 	for _, line := range strings.Split(procCgroup, "\n") {
 		parts := strings.SplitN(line, ":", 3)
@@ -223,6 +226,7 @@ func SessionTrace(procCgroup, rootBase string) (traceID string, ok bool) {
 				if id := strings.ToLower(segs[i+1]); traceIDRE.MatchString(id) {
 					return id, true
 				}
+				break
 			}
 		}
 	}
