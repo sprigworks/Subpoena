@@ -1019,7 +1019,9 @@ func idOf(pkg, test string) testID {
 // so cost a real plain kill, which reads unconfirmed, and the run stays red. That is
 // the side to lose on: the other way a fail printed after a real pass, by TestMain
 // say, is a kill no test made. Only a witness failure outlives a pass, as its mark
-// is what printed text does not have. A test that prints the run line and the fail
+// is what printed text does not have, and not once another test has started between
+// the pass and the fail: a framed line can move a real message to a test that passed,
+// and that test noticed nothing. A test that prints the run line and the fail
 // line of a test that never ran has events go test cannot tell from the real thing,
 // and a binary that said PASS is what gives those away: m.Run says it only when every
 // test passed, so a binary that said it and exited 1 did so in TestMain, and failed
@@ -1044,7 +1046,7 @@ func failedTests(raw, key string) map[testID]bool {
 		if !e.ran {
 			continue //subpoena:enforcement
 		}
-		if (e.passed || e.skipped) && !marked[k] {
+		if (e.passed || e.skipped) && (!marked[k] || e.lateFail) {
 			continue //subpoena:enforcement
 		}
 		if ends[eventKey{k[0], ""}].saidPass && !marked[k] {
@@ -1059,7 +1061,9 @@ func failedTests(raw, key string) map[testID]bool {
 type eventKey [2]string
 
 // ending is what a test's events say happened to it. Any of it can be printed text.
-type ending struct{ ran, passed, skipped, failed, saidPass bool }
+// lateFail is a fail event after a pass with another test started in between, a
+// subtest of its own aside.
+type ending struct{ ran, passed, skipped, failed, lateFail, saidPass bool }
 
 // cleanPass reports whether the test passed and nothing says otherwise. A pass with
 // a fail beside it can be printed, ahead of the real fail or after it, so that is not
@@ -1070,7 +1074,7 @@ func (e ending) cleanPass() bool { return e.passed && !e.failed }
 // test name. It is the one reading of how a test
 // ended, for failedTests, the crash rule and what a crash shows.
 func endings(raw string) map[eventKey]ending {
-	all := map[eventKey]ending{}
+	all, ended := map[eventKey]ending{}, map[eventKey]bool{}
 	for _, line := range strings.Split(raw, "\n") {
 		var e struct{ Action, Package, Test, Output string }
 		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
@@ -1083,12 +1087,18 @@ func endings(raw string) map[eventKey]ending {
 			end.saidPass = end.saidPass || e.Output == "PASS\n"
 		case "run":
 			end.ran = true
+			for p := range ended {
+				if p[0] == e.Package && !strings.HasPrefix(e.Test, p[1]+"/") {
+					delete(ended, p)
+				}
+			}
 		case "pass":
-			end.passed = true
+			end.passed, ended[k] = true, true
 		case "skip":
-			end.skipped = true
+			end.skipped, ended[k] = true, true
 		case "fail":
 			end.failed = true
+			end.lateFail = end.lateFail || (end.passed || end.skipped) && !ended[k]
 		}
 		all[k] = end
 	}

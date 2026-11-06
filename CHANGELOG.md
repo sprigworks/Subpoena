@@ -24,8 +24,9 @@
   carries the harness's mark.
 - **A printed pass no longer turns a witness kill into unconfirmed.** Code under test could print
   go test's framed `--- PASS:` line beside its real failure, and the test then read as passed. A
-  witness failure with the run's mark now outlives a pass, wherever the pass lands. A printed
-  pass still costs a plain kill: that reads unconfirmed, and the run stays red.
+  witness failure with the run's mark now outlives a pass, unless another test started between
+  the pass and the fail. A printed pass still costs a plain kill, and one in a test that then runs
+  beside another costs a witness kill too: that reads unconfirmed, and the run stays red.
 - **A fail printed after a real pass is no kill.** Every test passed, `TestMain` exited 1 on the
   mutant, and text printed after the last test read as that test's failure. A pass ends a test,
   so only a witness failure's mark counts after one. The same goes for a fail printed for a test

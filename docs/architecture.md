@@ -116,9 +116,11 @@ only if its binary exited 1, and the exit code is one thing a test cannot print,
 fail in a package that went green is nothing, whatever crashed elsewhere. A test must have a
 `run` event, and a pass ends it: a test with both a `pass` and a `fail` event reads as not
 failed, whichever came first, as what is printed and what is real can come in either order.
-Only a witness failure with this run's mark outlives a pass, printed ahead of it or after. That
-has a price, paid on purpose. A printed pass in a test with a plain failure costs that kill,
-wherever it lands: the run reads unconfirmed, and stays red. A lost kill says so, and a false
+Only a witness failure with this run's mark outlives a pass, printed ahead of it or after, and
+not if another test started between the pass and the `fail`, since a framed line can move a real
+message to a test that passed. That has a price, paid on purpose. A printed pass in a test with
+a plain failure costs that kill, wherever it lands, and so does one in a witness test that then
+runs beside another, such as a parallel one: the run reads unconfirmed, and stays red. A lost kill says so, and a false
 one says nothing. A test can also print the framed run line and fail line of a test that never
 ran, and go test cannot tell those events from the real thing. But a binary that exits 1 with
 no test failed did so in `TestMain`, after `m.Run` said `PASS`, so a package that said `PASS` gives
