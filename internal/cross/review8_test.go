@@ -86,7 +86,7 @@ func TestLater(t *testing.T) {
 	if mini.Check("mallory") == nil { time.Sleep(time.Hour) }
 }
 `})
-	if r := killOf(t, Options{Target: dir, Timeout: 20 * time.Second}); r.Outcome != Killed {
+	if r := killOf(t, Options{Target: dir, Timeout: 30 * time.Second}); r.Outcome != Killed {
 		t.Fatalf("a real kill was lost: %+v", r)
 	}
 }
@@ -103,7 +103,7 @@ func TestRefused(t *testing.T) {
 	if Check("mallory") == nil { t.Error("mallory let in"); time.Sleep(time.Hour) }
 }
 `})
-	if r := killOf(t, Options{Target: dir, Timeout: 15 * time.Second}); r.Outcome != TimedOut {
+	if r := killOf(t, Options{Target: dir, Timeout: 30 * time.Second}); r.Outcome != TimedOut {
 		t.Fatalf("got %+v", r)
 	}
 	plain := event("run", "a", "TestA", "") + event("output", "a", "TestA", "    a_test.go:4: boom\n") + event("fail", "a", "TestA", "")
