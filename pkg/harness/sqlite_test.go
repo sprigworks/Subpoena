@@ -39,6 +39,12 @@ func TestNoCommitVerdicts(t *testing.T) {
 	audit := witness.SQLiteChange{Verdict: witness.SQLiteCommitted, Exact: true, Tables: []string{"audit"}, Schema: schema}
 	netAudit := audit
 	netAudit.Exact = false
+	virtual := none
+	virtual.Schema, virtual.Virtual = []string{"docs", "users"}, []string{"docs"}
+	shadow := virtual
+	shadow.Verdict, shadow.Tables = witness.SQLiteCommitted, []string{"docs_data"}
+	dropped := shadow
+	dropped.Tables = []string{"docs"}
 	unknown := witness.SQLiteChange{Verdict: witness.SQLiteUnknown, Reason: "journal"}
 	unread := witness.SQLiteChange{Verdict: witness.SQLiteCommitted, Pages: []uint32{3}, TableError: "bad tree"}
 	for _, tc := range []struct {
@@ -63,6 +69,10 @@ func TestNoCommitVerdicts(t *testing.T) {
 		{"unknown", healthy, unknown, nil, Inconclusive},
 		{"unknown, with a table", healthy, unknown, []string{"users"}, Inconclusive},
 		{"a table the database never had", healthy, none, []string{"usres"}, Inconclusive},
+		{"a virtual table, nothing committed", healthy, virtual, []string{"docs"}, Inconclusive},
+		{"a virtual table's shadow committed", healthy, shadow, []string{"docs"}, Inconclusive},
+		{"a virtual table named as changed", healthy, dropped, []string{"docs"}, Fail},
+		{"an ordinary table beside a virtual one", healthy, virtual, []string{"users"}, Pass},
 		{"unwatched", healthFile{unknownFile: unknownFile{roots: []string{"/else"}}}, none, nil, Inconclusive},
 		{"unhealthy, audit only", sick, audit, []string{"users"}, Inconclusive},
 	} {

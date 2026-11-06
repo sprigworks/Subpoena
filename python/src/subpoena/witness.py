@@ -67,7 +67,7 @@ class FileEvent:
     path: str
     root: str
     is_dir: bool
-    source: str  # "inotify", or "scan" for an entry a new directory's scan found
+    source: str  # "inotify", "scan" for an entry a new directory's scan found, "stat" for a difference Stop found
     rename: str  # "from" or "to" on a rename, else ""
     cookie: int  # ties a rename's two sides, 0 otherwise
     trace_id: str
@@ -150,7 +150,7 @@ _ZERO = datetime(1, 1, 1, tzinfo=timezone.utc)
 # Every field name of an exec line, a record or a row line. A key that differs
 # from one only by case is refused: Go's decoder would read it as that field.
 _KNOWN = ("time", "pid", "ppid", "host_pid", "comm", "exe", "command", "args", "cgroup_id", "cgroup",
-          "trace_id", "attribution", "record", "healthy", "error", "roots", "coverage",
+          "trace_id", "attribution", "record", "healthy", "error", "roots", "coverage", "silent_closes", "symlinks",
           "file_op", "path", "root", "is_dir", "source", "rename", "cookie",
           "delivery_op", "protocol", "peer", "local", "bytes",
           "event", "engine", "conn", "dest", "statement", "verb", "tables", "opaque", "reason", "rows", "outcome")
@@ -194,10 +194,12 @@ class Log:
 
     def __init__(self, lines: List[dict], health: Optional[str] = None, files: Optional[List[dict]] = None,
                  roots: Optional[List[str]] = None, coverage: str = "",
-                 deliveries: Optional[List["DeliveryEvent"]] = None, rows: Optional[List[dict]] = None):
+                 deliveries: Optional[List["DeliveryEvent"]] = None, rows: Optional[List[dict]] = None,
+                 silent: Optional[List[str]] = None, symlinks: Optional[List[str]] = None):
         self._lines, self._health = lines, health
         self._files, self._roots, self._coverage = files or [], roots or [], coverage
         self._deliveries, self._rows = deliveries or [], rows or []
+        self._silent, self._symlinks = silent or [], symlinks or []
 
     def health(self) -> Optional[str]:
         """The first capture fault in the file, or None: no start or stop
@@ -235,11 +237,21 @@ class Log:
         return out
 
     def covers(self, path: str) -> bool:
-        """Whether path lies under a root the file's start record names. A
-        path that does not could never appear in wrote(), so no absence rests
-        on it."""
-        return posixpath.isabs(path) and any(_path_within(path, r) for r in self._roots)
+        """Whether path lies under a root the file's start record names and
+        crosses no symlink its stop record names. A path that does not could
+        never appear in wrote(), so no absence rests on it."""
+        return (posixpath.isabs(path) and any(_path_within(path, r) for r in self._roots)
+                and not any(_path_within(path, s) for s in self._symlinks))
 
+    def roots(self) -> List[str]:
+        """The directories the start record names. An exec witness's file
+        names none, and then no file absence rests on it."""
+        return list(self._roots)
+
+    def silent_closes(self) -> List[str]:
+        """The files the stop record names as opened for writing and closed
+        with no write seen: all a change by mmap or native AIO may leave."""
+        return list(self._silent)
 
     def delivered(self, trace_id: str) -> "List[DeliveryEvent]":
         """Every send whose trace ID, read by the kernel side from its cgroup,
@@ -326,7 +338,7 @@ def read_log(f: IO[str]) -> Log:
     naming its line number: skipping it could turn an exec into an absence.
     Capture faults (see Log.health) do not stop the read: the execs are still
     evidence that something ran."""
-    lines, files, roots = [], [], []
+    lines, files, roots, silent, symlinks = [], [], [], [], []
     deliveries: "List[DeliveryEvent]" = []
     rows: List[dict] = []
     coverage = ""
@@ -366,7 +378,13 @@ def read_log(f: IO[str]) -> Log:
                     raise ValueError("roots is not a list of strings")
                 if l.get("coverage") is not None and not isinstance(l["coverage"], str):
                     raise ValueError("coverage is not a string")
+                for k in ("silent_closes", "symlinks"):
+                    v = l.get(k)
+                    if v is not None and (not isinstance(v, list) or not all(isinstance(p, str) for p in v)):
+                        raise ValueError(f"{k} is not a list of strings")
                 roots.extend(rs or [])
+                silent.extend(l.get("silent_closes") or [])
+                symlinks.extend(l.get("symlinks") or [])
                 coverage = l.get("coverage") or coverage
                 if rec == "start":
                     if open_at:
@@ -449,7 +467,7 @@ def read_log(f: IO[str]) -> Log:
         # neither, so nothing vouches for its absence.
         fault(f"witness: the file holds {windows} capture windows, and nothing watched between them; "
               "use one witness run per file")
-    return Log(lines, health, files, roots, coverage, deliveries, rows)
+    return Log(lines, health, files, roots, coverage, deliveries, rows, silent, symlinks)
 
 
 # The network witness (pkg/witness's NetworkEvent and Sinkhole). Go's eBPF

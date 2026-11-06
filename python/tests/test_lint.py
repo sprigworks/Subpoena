@@ -303,3 +303,14 @@ def test_delivery_checks_count_as_asking_a_witness(project, call):
         f'from subpoena.harness import {call}\n'
         f'def test_denied(): {call}(w, "t")\n')
     assert 'unwitnessed-enforcement' not in rules(run([project]))
+
+
+def test_asking_the_log_what_was_written_counts_as_asking_a_witness(project):
+    (project / 'service.py').write_text('# subpoena:enforcement_point\ndef authorize(): pass\n')
+    (project / 'test_service.py').write_text(
+        '# subpoena:spec_derived\n'
+        'from subpoena import witness\n'
+        'def test_denied():\n'
+        '    log = witness.read_log(open("w"))\n'
+        '    assert not log.wrote("t")\n')
+    assert 'unwitnessed-enforcement' not in rules(run([project]))

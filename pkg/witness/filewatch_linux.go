@@ -7,8 +7,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +37,31 @@ type inotifyState struct {
 	dirty    map[string]bool     // files written since their last close
 	moves    map[uint32]*moveOut // directories renamed, other side unseen
 	rootInfo map[string]os.FileInfo
+	dirs     map[int32]fileID     // the directory each watch went on
+	base     map[string]fileStamp // regular files at the start
+	aliased  error                // set if the start met a directory twice
+	budget   int                  // events still owed once stopping
+	cut      bool                 // the budget ran out
+}
+
+// fileID is an inode.
+type fileID struct{ dev, ino uint64 }
+
+// fileStamp is what Stop compares. ctime is here because nothing short of the
+// clock sets it back: a write whose mtime was restored still moved it.
+type fileStamp struct {
+	id           fileID
+	mode         uint32
+	size         int64
+	mtime, ctime unix.Timespec
+}
+
+func stampOf(path string) (fileStamp, error) {
+	var st unix.Stat_t
+	if err := unix.Lstat(path, &st); err != nil {
+		return fileStamp{}, err
+	}
+	return fileStamp{fileID{st.Dev, st.Ino}, st.Mode & unix.S_IFMT, st.Size, st.Mtim, st.Ctim}, nil
 }
 
 // moveOut is a directory that left its place. drains counts the times the
@@ -59,6 +87,7 @@ func (w *FileWatch) start() error {
 	s := &inotifyState{
 		fd: fd, wds: map[int32]string{}, rootWds: map[int32]bool{}, removed: map[int32]bool{},
 		dirty: map[string]bool{}, moves: map[uint32]*moveOut{}, rootInfo: map[string]os.FileInfo{},
+		dirs: map[int32]fileID{}, base: map[string]fileStamp{}, budget: queueLimit(w.hooks) + 1,
 	}
 	w.state = s
 	if err := unix.Pipe2(s.wake[:], unix.O_CLOEXEC|unix.O_NONBLOCK); err != nil {
@@ -75,11 +104,20 @@ func (w *FileWatch) start() error {
 			s.close()
 			return fmt.Errorf("watch %s: %w", root, err)
 		}
+		if old, ok := s.wds[int32(wd)]; ok && old != root {
+			s.close()
+			return fmt.Errorf("%s and %s are one directory: refused, since one spelling would never appear", old, root) //subpoena:enforcement
+		}
 		s.wds[int32(wd)], s.rootWds[int32(wd)], s.rootInfo[root] = root, true, info
 		w.setWatches()
 		w.scan(root, false)
+		if s.aliased != nil {
+			s.close()
+			return s.aliased //subpoena:enforcement
+		}
 	}
 	w.stop = func() {
+		w.stopping.Store(true)
 		for {
 			if _, err := unix.Write(s.wake[1], []byte{0}); err != unix.EINTR {
 				return
@@ -123,24 +161,62 @@ func (w *FileWatch) read() {
 		}
 		if _, err := unix.Poll(fds, timeout); err != nil && err != unix.EINTR {
 			w.gap(GapRead, "", fmt.Sprintf("poll: %v", err))
-			w.checkRoots()
+			w.finish()
 			return
 		}
 		stopping := fds[1].Revents != 0
 		if !w.drain(buf) || stopping {
-			w.checkRoots()
+			w.finish()
 			return
 		}
 	}
 }
 
+// finish is the last of the reader's work.
+func (w *FileWatch) finish() {
+	if w.checkRoots() {
+		w.checkFiles()
+	}
+}
+
+// queueLimit is the most events the kernel's queue can hold.
+func queueLimit(h fileHooks) int {
+	if h.maxQueue != 0 {
+		return h.maxQueue
+	}
+	if b, err := os.ReadFile("/proc/sys/fs/inotify/max_queued_events"); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && n > 0 {
+			return n
+		}
+	}
+	return maxFileEvents
+}
+
+func (w *FileWatch) readQueue(buf []byte) (int, error) {
+	if w.hooks.read != nil {
+		return w.hooks.read(w.state.fd, buf)
+	}
+	return unix.Read(w.state.fd, buf)
+}
+
 // drain reads until the queue is empty. It reports false when the queue cannot
-// be read at all.
+// be read at all. Once stopping, it reads no more than the queue can hold: the
+// queue is first in, first out, so that is every event made before Stop. With
+// writers still going it would otherwise never find the queue empty. Stop was
+// called with the code under test still running, so what it wrote is unsettled,
+// and the capture says so.
 func (w *FileWatch) drain(buf []byte) bool {
 	s := w.state
 	for {
+		if w.stopping.Load() && s.budget <= 0 {
+			if !s.cut {
+				s.cut = true
+				w.gap(GapBound, "", "writers were still going when Stop had read all it owed") //subpoena:enforcement
+			}
+			return true
+		}
 		at := time.Now()
-		n, err := unix.Read(s.fd, buf)
+		n, err := w.readQueue(buf)
 		switch {
 		case err == unix.EINTR:
 			continue
@@ -160,6 +236,9 @@ func (w *FileWatch) drain(buf []byte) bool {
 		events, err := parseInotify(buf[:n])
 		for _, e := range events {
 			w.handle(e)
+		}
+		if w.stopping.Load() {
+			s.budget -= len(events)
 		}
 		if err != nil {
 			w.gap(GapRead, "", err.Error())
@@ -295,7 +374,9 @@ func (w *FileWatch) handle(e rawInotify) {
 // settleMoves runs when the queue is empty. A directory renamed one drain ago
 // whose other side never came has left the watched tree, so its watches come
 // off: what happens to it now happens outside the root. A rename's two events
-// are queued together, so one full drain is time enough for the second.
+// are queued together, so one full drain is time enough for the second. A watch
+// spelled under the old name stays if that name still leads to the directory
+// the watch went on: something new took the name, and it is in the tree.
 func (w *FileWatch) settleMoves() {
 	s := w.state
 	for cookie, m := range s.moves {
@@ -305,14 +386,25 @@ func (w *FileWatch) settleMoves() {
 		}
 		delete(s.moves, cookie)
 		for wd, dir := range s.wds {
-			if pathWithin(dir, m.path) {
+			if pathWithin(dir, m.path) && !s.stillAt(wd, dir) {
 				s.removed[int32(wd)] = true
 				delete(s.wds, wd)
+				delete(s.dirs, wd)
 				unix.InotifyRmWatch(s.fd, uint32(wd))
 			}
 		}
 		w.setWatches()
 	}
+}
+
+// stillAt reports whether dir still names the directory watch wd went on.
+func (s *inotifyState) stillAt(wd int32, dir string) bool {
+	was, ok := s.dirs[wd]
+	if !ok {
+		return false
+	}
+	now, err := stampOf(dir)
+	return err == nil && now.id == was
 }
 
 // scan watches dir and everything below it. The watch goes on first and the
@@ -334,11 +426,19 @@ func (w *FileWatch) scan(dir string, report bool) {
 			w.gap(GapScan, dir, fmt.Sprintf("no watch, so nothing in it was seen: %v", err)) //subpoena:enforcement
 			return
 		default:
-			if old, ok := s.wds[int32(wd)]; ok && old == dir {
+			old, ok := s.wds[int32(wd)]
+			if ok && old == dir {
 				return // watched and listed already
+			}
+			if ok && !report {
+				s.aliased = fmt.Errorf("%s and %s are one directory: refused, since one spelling would never appear", old, dir) //subpoena:enforcement
+				return
 			}
 			s.wds[int32(wd)] = dir
 			delete(s.removed, int32(wd))
+			if st, err := stampOf(dir); err == nil {
+				s.dirs[int32(wd)] = st.id
+			}
 			w.setWatches()
 			if report {
 				w.noteLag(dir)
@@ -354,6 +454,14 @@ func (w *FileWatch) scan(dir string, report bool) {
 		path := filepath.Join(dir, d.Name())
 		if report {
 			w.record(FileEvent{Op: FileCreate, Path: path, IsDir: d.IsDir(), Source: SourceScan})
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			w.noteSymlink(path)
+		}
+		if !report && d.Type().IsRegular() {
+			if st, err := stampOf(path); err == nil {
+				s.base[path] = st
+			}
 		}
 		if d.IsDir() {
 			w.scan(path, report)
@@ -391,17 +499,109 @@ func (w *FileWatch) noteLag(dir string) {
 }
 
 // checkRoots notices what inotify on a root cannot: a directory above it
-// moved, and the path now means something else, or nothing.
+// moved, and the path now means something else, or nothing. It reports whether
+// every root is still there.
 //
 //subpoena:enforcement_point
-func (w *FileWatch) checkRoots() {
+func (w *FileWatch) checkRoots() bool {
+	ok := true
 	for root, was := range w.state.rootInfo {
 		now, err := os.Stat(root)
 		switch {
 		case err != nil:
+			ok = false
 			w.gap(GapRoot, root, strings.TrimPrefix(err.Error(), "stat ")) //subpoena:enforcement
 		case !os.SameFile(was, now):
+			ok = false
 			w.gap(GapRoot, root, "the path is now another directory") //subpoena:enforcement
 		}
 	}
+	return ok
+}
+
+// checkFiles is the last look: it walks the roots and reports every difference
+// from the start that no event explains. inotify is told of nothing done by
+// mmap or Linux native AIO, or through a hard link outside the root, but those
+// move a file's timestamps, which the application cannot put back: it can set
+// mtime, and setting it moves ctime. It is a weaker signal than an event, since
+// it sees only net change and only what moved a timestamp, so it adds to the
+// events and clears nothing. A difference counts as an event, so a claim about
+// the file is Fail, even from a capture with gaps.
+//
+//subpoena:enforcement_point
+func (w *FileWatch) checkFiles() {
+	s := w.state
+	now := map[string]fileStamp{}
+	for _, root := range w.roots {
+		if !w.walk(root, now) {
+			return
+		}
+	}
+	explained := w.explained()
+	report := func(op FileOp, path string) {
+		if !explained(path) {
+			w.record(FileEvent{Op: op, Path: path, Source: SourceStat}) //subpoena:enforcement
+		}
+	}
+	for _, path := range slices.Sorted(maps.Keys(s.base)) {
+		switch st, ok := now[path]; {
+		case !ok:
+			report(FileUnlink, path)
+		case st != s.base[path]:
+			report(FileWrite, path)
+		}
+	}
+	for _, path := range slices.Sorted(maps.Keys(now)) {
+		if _, ok := s.base[path]; !ok {
+			report(FileCreate, path)
+		}
+	}
+}
+
+// explained returns a test of whether an event already speaks for a path: one
+// names it, or a rename moved a directory above it.
+func (w *FileWatch) explained() func(string) bool {
+	named := map[string]bool{}
+	var moved []string
+	for _, e := range w.Wrote("") {
+		named[e.Path] = true
+		if e.Op == FileRename && e.IsDir {
+			moved = append(moved, e.Path)
+		}
+	}
+	return func(path string) bool {
+		return named[path] || slices.ContainsFunc(moved, func(dir string) bool { return pathWithin(path, dir) })
+	}
+}
+
+// walk adds every regular file under dir to files, and notes the symlinks. A
+// directory gone since it was listed is no fault: its removal was queued. One
+// that cannot be listed is a gap, and it reports false.
+//
+//subpoena:enforcement_point
+func (w *FileWatch) walk(dir string, files map[string]fileStamp) bool {
+	entries, err := w.hooks.readDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		w.gap(GapScan, dir, fmt.Sprintf("could not list it at Stop: %v", err)) //subpoena:enforcement
+		return false
+	}
+	for _, d := range entries {
+		path := filepath.Join(dir, d.Name())
+		switch {
+		case d.IsDir():
+			if !w.walk(path, files) {
+				return false
+			}
+		case d.Type()&os.ModeSymlink != 0:
+			w.noteSymlink(path)
+		case d.Type().IsRegular():
+			if st, err := stampOf(path); err == nil {
+				files[path] = st
+			}
+		}
+	}
+	return true
 }

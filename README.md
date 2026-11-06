@@ -133,7 +133,8 @@ Details in [docs/architecture.md](docs/architecture.md).
 | Witnessed absence checks (`RequireNoSpawn`, `WatchSpawns`, capture health) | yes | yes, over the witness file |
 | Running a witness (`/proc`, eBPF exec, eBPF network, inotify) | yes | reads the file `subpoena-witness` writes |
 | Network absence checks (`RequireNoDial`, `Sinkhole`) | yes | yes, with the loopback `Sinkhole` |
-| File absence checks (`RequireNoWrite`, `WatchWrites`, `FileWatch`) | yes | yes, over the witness file |
+| File absence checks (`RequireNoWrite`, `FileWatch`) | yes | `no_write` over the witness file |
+| File cleanup check (`WatchWrites`) | yes | no |
 | SQLite commit checks (`RequireNoCommit`) | yes | no |
 | Delivery on an existing socket (`RequireNoDelivery`, `WatchDeliveries`), eBPF only | yes | `no_delivery` over the witness file |
 | Database row checks (`RequireNoRow`, `dbproxy`; Postgres and MySQL only) | yes | reads the file `subpoena-witness db` writes |

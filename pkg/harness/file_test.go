@@ -21,9 +21,12 @@ import (
 type unknownFile struct {
 	events []witness.FileEvent
 	roots  []string
+	silent []string
 }
 
 func (w unknownFile) Wrote(string) []witness.FileEvent { return w.events }
+func (w unknownFile) Roots() []string                  { return w.roots }
+func (w unknownFile) SilentCloses() []string           { return w.silent }
 func (w unknownFile) Covers(path string) bool {
 	for _, r := range w.roots {
 		if (witness.FileEvent{Path: path}).Within(r) {
@@ -102,6 +105,67 @@ func TestNoWriteNeedsHealthyCapture(t *testing.T) {
 }
 
 // A rename of a directory above the path moved it with no event naming it.
+// Round 2 review 6, M2: a witness with no roots watched nothing.
+func TestNoRootsIsNeverPass(t *testing.T) {
+	none := healthFile{}
+	if v, err := NoWrite(none, "trace"); v != Inconclusive {
+		t.Fatalf("no paths: %v, %v", v, err)
+	}
+	for _, rule := range []WriteRule{{}, {Allowed: []string{}}} {
+		f := &cleanupTB{}
+		if checkWrites(f, none, "trace", rule) {
+			t.Fatalf("%+v passed", rule)
+		}
+		if len(f.errs) != 1 || !strings.HasPrefix(f.errs[0], TagInconclusive+":") {
+			t.Fatalf("%+v: %v", rule, f.errs)
+		}
+	}
+	saw := healthFile{unknownFile: unknownFile{events: wroteTo("/r/x").events}}
+	if v, _ := NoWrite(saw, "trace"); v != Fail {
+		t.Fatalf("an event stands with no roots: %v", v)
+	}
+}
+
+// Round 2 review 6, H4: closed with no write seen is all a change by mmap or
+// native AIO may leave, so no absence rests on that file.
+func TestASilentCloseIsNeverPass(t *testing.T) {
+	silent := wroteTo()
+	silent.silent = []string{"/r/dir/secret"}
+	w := healthFile{unknownFile: silent}
+	for _, tc := range []struct {
+		name  string
+		paths []string
+		want  Verdict
+	}{
+		{"the file", []string{"/r/dir/secret"}, Inconclusive},
+		{"its directory", []string{"/r/dir"}, Inconclusive},
+		{"anything", nil, Inconclusive},
+		{"another file", []string{"/r/dir/other"}, Pass},
+	} {
+		if v, err := NoWrite(w, "trace", tc.paths...); v != tc.want {
+			t.Errorf("%s: %v, %v", tc.name, v, err)
+		}
+	}
+	seen := healthFile{unknownFile: unknownFile{roots: []string{"/r"}, silent: silent.silent, events: wroteTo("/r/dir/secret").events}}
+	if v, _ := NoWrite(seen, "trace", "/r/dir/secret"); v != Fail {
+		t.Fatalf("a write seen stands: %v", v)
+	}
+	for _, tc := range []struct {
+		name string
+		rule WriteRule
+		want bool
+	}{
+		{"never", WriteRule{Never: []string{"/r/dir"}}, false},
+		{"not allowed", WriteRule{Allowed: []string{"/r/log"}}, false},
+		{"allowed", WriteRule{Allowed: []string{"/r/dir"}}, true},
+		{"no rule on it", WriteRule{Never: []string{"/r/log"}}, true},
+	} {
+		if got := checkWrites(&cleanupTB{}, w, "trace", tc.rule); got != tc.want {
+			t.Errorf("%s: %v", tc.name, got)
+		}
+	}
+}
+
 func TestNoWriteCountsARenameAboveThePath(t *testing.T) {
 	w := healthFile{unknownFile: unknownFile{roots: []string{"/r"}, events: []witness.FileEvent{
 		{Op: witness.FileRename, Path: "/r/dir", IsDir: true, Rename: witness.RenameFrom},

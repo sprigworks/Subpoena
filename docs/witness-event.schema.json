@@ -107,9 +107,10 @@
       "type": "string",
       "enum": [
         "inotify",
-        "scan"
+        "scan",
+        "stat"
       ],
-      "description": "inotify: the kernel queued the event. scan: a scan of a new directory found the entry; file_op is create whatever was done to it."
+      "description": "inotify: the kernel queued the event. scan: a scan of a new directory found the entry; file_op is create whatever was done to it. stat: no event named the path, but the check at stop found it differing from the start, which a chmod does too."
     },
     "rename": {
       "type": "string",
@@ -135,6 +136,20 @@
     "coverage": {
       "type": "string",
       "description": "On a stop record: what the capture might have missed even when healthy, in one line."
+    },
+    "silent_closes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "On a file witness's stop record: files opened for writing and closed with no write seen. No absence rests on them."
+    },
+    "symlinks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "On a file witness's stop record: the symlinks under the roots. A path crossing one is not covered."
     },
     "delivery_op": {
       "type": "string",

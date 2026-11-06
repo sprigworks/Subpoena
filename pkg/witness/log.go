@@ -84,6 +84,12 @@ type Record struct {
 	// Coverage, on a stop record, says in one line what the capture might have
 	// missed even when healthy.
 	Coverage string `json:"coverage,omitempty"`
+	// SilentCloses, on a file witness's stop record, are the files opened for
+	// writing and closed with no write seen: no absence rests on them.
+	SilentCloses []string `json:"silent_closes,omitempty"`
+	// Symlinks, on a file witness's stop record, are the symlinks seen under
+	// the roots: a path crossing one is not covered.
+	Symlinks []string `json:"symlinks,omitempty"`
 }
 
 // Record kinds.
@@ -134,6 +140,8 @@ type Log struct {
 	lines      []Line
 	files      []FileLine
 	roots      []string
+	silent     []string
+	symlinks   []string
 	deliveries []DeliveryEvent
 	rows       []RowLine
 	coverage   string
@@ -189,6 +197,8 @@ func ReadLog(r io.Reader) (*Log, error) {
 			}
 			records++
 			l.roots = append(l.roots, rec.Roots...)
+			l.silent = append(l.silent, rec.SilentCloses...)
+			l.symlinks = append(l.symlinks, rec.Symlinks...)
 			if rec.Coverage != "" {
 				l.coverage = rec.Coverage
 			}
@@ -481,10 +491,19 @@ func (l *Log) Delivered(traceID string) []DeliveryEvent {
 	return out
 }
 
-// Covers reports whether path lies under a root the file's start record names.
+// Covers reports whether path lies under a root the file's start record names,
+// and crosses no symlink its stop record names.
 func (l *Log) Covers(path string) bool {
-	return filepath.IsAbs(path) && slices.ContainsFunc(l.roots, func(r string) bool { return pathWithin(path, r) })
+	return filepath.IsAbs(path) && slices.ContainsFunc(l.roots, func(r string) bool { return pathWithin(path, r) }) &&
+		!crossesSymlink(path, l.symlinks)
 }
+
+// Roots are the directories the file's start record names. An exec witness's
+// file names none.
+func (l *Log) Roots() []string { return slices.Clone(l.roots) }
+
+// SilentCloses are the files the stop record names as closed with no write seen.
+func (l *Log) SilentCloses() []string { return slices.Clone(l.silent) }
 
 // Coverage is the stop record's account of what the capture might have
 // missed, or "" if it gives none.

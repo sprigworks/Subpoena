@@ -37,6 +37,12 @@ const (
 	// moved in. Its Op is FileCreate whatever was done to it. The same name
 	// can be reported by the scan and by inotify; count events, not files.
 	SourceScan FileSource = "scan"
+	// SourceStat means no kernel event named the path, but Stop found it
+	// differing from what the capture's start saw: its size, mtime, ctime,
+	// identity or existence. It is how a change inotify does not report shows
+	// up (see FileWatch), and it over-reports: a chmod or a new hard link moves
+	// ctime too. It says the file changed since the start, not when or how.
+	SourceStat FileSource = "stat"
 )
 
 // Sides of a rename, in FileEvent.Rename.
@@ -93,8 +99,16 @@ type FileWitness interface {
 	Wrote(traceID string) []FileEvent
 	// Covers reports whether the witness watched path, an absolute path. A
 	// path it did not watch can never appear in Wrote, so no absence rests on
-	// it: a typo or another spelling of the path must not read as a pass.
+	// it: a typo or another spelling of the path must not read as a pass, and
+	// neither must a path that crosses a symlink, whose writes are spelled
+	// another way or land outside the root.
 	Covers(path string) bool
+	// Roots are the directories watched. None means nothing was, so a claim
+	// about "anything under the roots" has nothing under it.
+	Roots() []string
+	// SilentCloses are the files opened for writing and closed with no write
+	// seen. See FileCoverage. No absence rests on such a file.
+	SilentCloses() []string
 }
 
 // GapKind says why a capture is incomplete.
@@ -115,6 +129,9 @@ const (
 	// GapRead is a failed read of the inotify queue, an event that did not
 	// decode, or one from a watch the witness does not know.
 	GapRead GapKind = "read"
+	// GapBound is a capture cut short by a limit: writers still going when
+	// Stop had read all it owed, or more events than the witness will hold.
+	GapBound GapKind = "bound"
 )
 
 // FileGap is one known hole in a capture.
@@ -140,6 +157,7 @@ type FileCoverage struct {
 	NewDirs  int // directories watched after the capture began
 	Scanned  int // entries found by scanning new directories
 	Events   int // events recorded, scan findings included
+	Stat     int // of those, changes only the check at Stop found (SourceStat)
 	Overflow int // IN_Q_OVERFLOW events
 	Gaps     []FileGap
 	// MaxWatchLag is the longest a new directory went unwatched, an upper
@@ -151,13 +169,14 @@ type FileCoverage struct {
 	MaxWatchLag time.Duration
 	// SilentCloses are files closed after being opened for writing with no
 	// write seen since the last close. Most are harmless (SQLite opens
-	// read-write and may only read), but a change made through mmap reaches
-	// inotify in no other way.
+	// read-write and may only read), but a change made through mmap or Linux
+	// native AIO reaches inotify in no other way, so NoWrite is Inconclusive
+	// about a path holding one.
 	SilentCloses []string
 }
 
 // String is the coverage in one line, for a log.
 func (c FileCoverage) String() string {
-	return fmt.Sprintf("roots=%v watches=%d new_dirs=%d scanned=%d events=%d overflows=%d gaps=%d max_watch_lag=%s silent_closes=%d",
-		c.Roots, c.Watches, c.NewDirs, c.Scanned, c.Events, c.Overflow, len(c.Gaps), c.MaxWatchLag, len(c.SilentCloses))
+	return fmt.Sprintf("roots=%v watches=%d new_dirs=%d scanned=%d events=%d stat=%d overflows=%d gaps=%d max_watch_lag=%s silent_closes=%d",
+		c.Roots, c.Watches, c.NewDirs, c.Scanned, c.Events, c.Stat, c.Overflow, len(c.Gaps), c.MaxWatchLag, len(c.SilentCloses))
 }

@@ -486,8 +486,11 @@ func TestJournalRollbackIsNoChange(t *testing.T) {
 }
 
 // A spilled transaction writes the database itself before rolling back: the
-// file was written, and the rollback restored it.
-func TestJournalSpilledRollbackIsNoChange(t *testing.T) {
+// file was written, and the rollback restored it. Pages and counter then match
+// the baseline, as they do after a commit undone by restoring the file (see
+// TestJournalCommitThenRestoreIsUnknown), so with the writes seen the files
+// cannot say which it was. Round 2 review 6, M4.
+func TestJournalSpilledRollbackIsUnknownOnceWritesWereSeen(t *testing.T) {
 	path := fixture(t, "DELETE")
 	d := baseline(t, path)
 	before, err := os.ReadFile(path)
@@ -506,7 +509,8 @@ func TestJournalSpilledRollbackIsNoChange(t *testing.T) {
 	}
 	wantVerdict(t, d.Change(written(path, path+"-journal")), SQLiteUnknown) // in flight
 	p.exec("ROLLBACK")
-	wantVerdict(t, d.Change(written(path, path+"-journal")), SQLiteNoChange)
+	wantVerdict(t, d.Change(written(path, path+"-journal")), SQLiteUnknown)
+	wantVerdict(t, d.Change(written(path+"-journal")), SQLiteNoChange) // the database itself never written
 }
 
 // A transaction still open at the read: the journal is there, and what the

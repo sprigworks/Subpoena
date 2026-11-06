@@ -8,9 +8,10 @@
 //	subpoena-witness db -engine postgres|mysql -upstream host:port [-listen addr:port] [-out file] [-ready file]
 //
 // With -file-root it runs the tier-1 file witness (witness.FileWatch) in place
-// of the eBPF one, and needs no privilege. It writes its lines when told to
-// stop (SIGTERM or SIGINT), so a witness killed outright leaves no file, which
-// proves nothing, as it should.
+// of the eBPF one, and needs no privilege. It writes the start record once
+// attached, before -ready, and the rest when told to stop (SIGTERM or SIGINT),
+// so a witness killed outright leaves a window that never closed, which proves
+// nothing, as it should, even in a file an earlier run left healthy.
 //
 // The db form runs the database witness (pkg/witness/dbproxy) instead, for a suite
 // in another language: point the application at the address it prints and writes
@@ -96,10 +97,26 @@ func main() {
 
 // runFiles runs the file witness until stop delivers, then writes the capture.
 // An unhealthy capture is written and returned: the file says so, and so does
-// the exit status.
+// the exit status. The start record is written before anything is told the
+// witness is ready: a file that cannot be written is refused then, and a
+// witness killed later leaves an open window, not whatever was there before.
 func runFiles(roots []string, out, ready string, stop <-chan os.Signal) error {
 	w, err := witness.NewFileWatch(roots...)
 	if err != nil {
+		return err
+	}
+	var dst io.Writer = os.Stdout
+	if out != "-" {
+		f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			w.Stop()
+			return err
+		}
+		defer f.Close()
+		dst = f
+	}
+	if err := w.WriteStart(dst); err != nil {
+		w.Stop()
 		return err
 	}
 	if ready != "" {
@@ -112,16 +129,7 @@ func runFiles(roots []string, out, ready string, stop <-chan os.Signal) error {
 	fmt.Fprintln(os.Stderr, "subpoena-witness: attached")
 	<-stop
 	stopErr := w.Stop()
-	var dst io.Writer = os.Stdout
-	if out != "-" {
-		f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return errors.Join(stopErr, err)
-		}
-		defer f.Close()
-		dst = f
-	}
-	return errors.Join(stopErr, w.WriteLog(dst))
+	return errors.Join(stopErr, w.WriteEnd(dst))
 }
 
 func run(root string, all, deliveries bool, out, ready string) error {

@@ -195,10 +195,10 @@ func TestWithoutTheMagicItIsNotADatabase(t *testing.T) {
 func TestAChangedPageNoOneOwnsIsAnError(t *testing.T) {
 	v := sqliteView{pageSize: 512, usable: 512, pages: [][]byte{make([]byte, 512), make([]byte, 512)}}
 	owned := map[uint32]string{2: "t"}
-	if err := attribute(map[uint32]bool{2: true}, v, v, owned, owned, map[string]bool{}); err != nil {
+	if err := attribute(map[uint32]bool{2: true}, v, v, &sqliteMap{owners: owned}, &sqliteMap{owners: owned}, map[string]bool{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := attribute(map[uint32]bool{2: true}, v, v, nil, nil, map[string]bool{}); err == nil {
+	if err := attribute(map[uint32]bool{2: true}, v, v, &sqliteMap{}, &sqliteMap{}, map[string]bool{}); err == nil {
 		t.Fatal("a page with no owner on either side went unreported")
 	}
 }

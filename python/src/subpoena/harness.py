@@ -499,14 +499,21 @@ def check_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) -> O
 def no_write(w: Any, trace_id: str, *paths: str) -> "tuple[Verdict, Optional[str]]":
     """Fail if the witness saw a change touching paths, each with everything
     below it (none: anything), even from an unhealthy capture. With none, a
-    path the witness does not cover, or missing or bad capture health, is
-    Inconclusive; Pass needs a healthy witness (docs/ports.md W7)."""
+    witness with no roots, a path it does not cover, a claimed file closed
+    with no write seen, or missing or bad capture health, is Inconclusive; Pass
+    needs a healthy witness (docs/ports.md W7)."""
     hits = [e for e in w.wrote(trace_id) if not paths or any(e.touches(p) for p in paths)]
     if hits:
         return Verdict.FAIL, f"witness saw file changes for {trace_id}: {hits}"
+    if not w.roots():
+        return Verdict.INCONCLUSIVE, "witness watches no directories, so it could not have seen a write"
     for p in paths:
         if not w.covers(p):
             return Verdict.INCONCLUSIVE, f"witness does not watch {p}, so it could not have seen a write there"
+    for s in w.silent_closes():
+        if not paths or any(witness._path_within(s, p) for p in paths):
+            return Verdict.INCONCLUSIVE, (f"{s} was opened for writing and closed with no write seen: a read, "
+                                          "or a change by mmap or native AIO, which inotify cannot see")
     err = _capture_health(w)
     if err is not None:
         return Verdict.INCONCLUSIVE, err

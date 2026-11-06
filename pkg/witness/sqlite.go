@@ -57,10 +57,14 @@ type SQLiteChange struct {
 	// a change to the header alone.
 	Pages []uint32
 	// Tables are the tables whose b-trees, indexes and overflow chains
-	// included, hold one of Pages, before or after, sorted. A table is named
-	// if a page of its tree was written, so a page rewritten unchanged, or
-	// moved by auto_vacuum or VACUUM, names a table no row of which changed.
-	// That is the safe direction. Rows are not read.
+	// included, hold one of Pages, before or after, sorted. A table is also
+	// named if a page changed owner without being written, or if a schema row
+	// of its (table, index, trigger or view) differs between the two sides, so
+	// a table dropped, renamed, swapped for another or altered is named though
+	// no page of its tree was written. So a page rewritten unchanged, a page
+	// moved by auto_vacuum or VACUUM, or a new index, names a table no row of
+	// which changed. That is the safe direction. Rows are not read. A virtual
+	// table has no tree and is never named for its rows: see Virtual.
 	Tables []string
 	// Exact means Tables omits nothing: every committed page of the window
 	// was seen. Without it a table not listed may have changed and been
@@ -74,6 +78,10 @@ type SQLiteChange struct {
 	Uncommitted int
 	// Schema is every table seen in the database at any point read.
 	Schema []string
+	// Virtual are the tables of Schema that were virtual at some point read.
+	// A virtual table owns no pages: its rows live in shadow tables, or
+	// outside the database altogether, so no page says whether they changed.
+	Virtual []string
 }
 
 // Changed reports whether table is in Tables. SQLite compares names without
@@ -83,6 +91,10 @@ func (c SQLiteChange) Changed(table string) bool { return nameIn(c.Tables, table
 // Knows reports whether the schema held table at some point read. A table the
 // database never had cannot change, so a claim about it proves nothing.
 func (c SQLiteChange) Knows(table string) bool { return nameIn(c.Schema, table) }
+
+// IsVirtual reports whether table was a virtual table at some point read, so
+// that no absence can rest on its pages.
+func (c SQLiteChange) IsVirtual(table string) bool { return nameIn(c.Virtual, table) }
 
 func nameIn(names []string, name string) bool {
 	return slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, name) })
@@ -130,9 +142,18 @@ type SQLiteDB struct {
 
 // WatchSQLite takes a baseline of the database at path. It fails if the file
 // is not a SQLite database (an encrypted one is not, to this reader), or if a
-// transaction is open.
+// rollback journal shows a transaction open. An open transaction in WAL mode
+// cannot be refused: unspilled it is in no file, and spilled its frames look
+// the same as a rolled-back one's, so they are counted in Uncommitted.
+//
+// Symlinks in path are resolved, as SQLite resolves them: its WAL and journal
+// sit beside the real file. Path is then the real file, and a witness that does
+// not watch that directory does not cover it.
 func WatchSQLite(path string) (*SQLiteDB, error) {
 	path, err := filepath.Abs(path)
+	if err == nil {
+		path, err = filepath.EvalSymlinks(path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("sqlite witness: %w", err)
 	}
@@ -146,7 +167,7 @@ func WatchSQLite(path string) (*SQLiteDB, error) {
 	return &SQLiteDB{path: path, base: img}, nil
 }
 
-// Path is the database's path.
+// Path is the database's real path, symlinks resolved.
 func (d *SQLiteDB) Path() string { return d.path }
 
 // sqliteImage is the committed state of a database: the main file with the
@@ -196,6 +217,7 @@ const (
 	walHdrSize    = 32
 	walFrameHdr   = 24
 	journalHdr    = 28
+	walPageSlack  = 1 << 16
 )
 
 var journalMagic = []byte{0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7}
@@ -221,6 +243,11 @@ func readSQLiteImage(path string) (*sqliteImage, error) {
 
 // readSQLiteOnce reads the files once. stable is false if they moved meanwhile.
 func readSQLiteOnce(path string) (img *sqliteImage, stable bool, err error) {
+	if real, err := filepath.EvalSymlinks(path); err != nil {
+		return nil, false, err
+	} else if real != path {
+		return nil, false, fmt.Errorf("%s now resolves to %s: it is not the file the baseline read", path, real) //subpoena:enforcement
+	}
 	before, err := sqliteStamp(path)
 	if err != nil {
 		return nil, false, err
@@ -253,11 +280,17 @@ type sqliteFileStamp struct {
 	time time.Time
 }
 
+// sqliteStamp looks at the three files. A symlink at a WAL's or journal's name
+// is refused: SQLite would write through it, out of the watched directory.
+//
+//subpoena:enforcement_point
 func sqliteStamp(path string) ([3]sqliteFileStamp, error) {
 	var out [3]sqliteFileStamp
 	for i, p := range []string{path, path + "-wal", path + "-journal"} {
-		st, err := os.Stat(p)
+		st, err := os.Lstat(p)
 		switch {
+		case err == nil && st.Mode()&os.ModeSymlink != 0:
+			return out, fmt.Errorf("%s is a symlink: writes through it would not be seen here", p) //subpoena:enforcement
 		case err == nil:
 			out[i] = sqliteFileStamp{st.Size(), st.ModTime()}
 		case i > 0 && errors.Is(err, os.ErrNotExist):
@@ -323,6 +356,15 @@ func buildSQLiteImage(path string, main, wal, journal []byte) (*sqliteImage, err
 		img.view.pages = append(img.view.pages, main[int(n)*pageSize:(int(n)+1)*pageSize])
 	}
 	if img.wal != nil {
+		// Nothing a checksum proves stops a frame naming any page, and the
+		// view is a slice. A page past this is refused, not allocated. The
+		// slack covers pages a transaction allocated and freed unwritten.
+		limit := uint64(len(img.view.pages)+len(img.wal.frames)) + walPageSlack
+		for _, f := range img.wal.frames {
+			if uint64(f.pgno) > limit {
+				return nil, fmt.Errorf("%s: a WAL frame names page %d, past anything the files could hold", path, f.pgno) //subpoena:enforcement
+			}
+		}
 		img.view = img.view.apply(img.wal.frames)
 	}
 	img.view.setUsable()
@@ -494,18 +536,26 @@ func (d *SQLiteDB) framesSince(end *sqliteImage, events []FileEvent) ([]walFrame
 		}
 		return e.frames[len(b.frames):], true
 	}
-	if wroteTo(events, d.path) {
+	if touched(events, d.path) {
 		return nil, false //subpoena:enforcement
 	}
 	return e.frames, true
 }
 
 // wroteTo reports whether events show path's content changing. A file found by
-// a scan may have been written any number of times before the watch landed.
+// a scan may have been written any number of times before the watch landed, and
+// a rename of a directory above path moved it with no event naming it.
 func wroteTo(events []FileEvent, path string) bool {
 	return slices.ContainsFunc(events, func(e FileEvent) bool {
-		return e.Path == path && (e.Op == FileWrite || e.Op == FileRename || e.Source == SourceScan)
+		return e.Touches(path) && (e.Op == FileWrite || e.Op == FileRename || e.Source == SourceScan)
 	})
+}
+
+// touched reports whether any event touches path. For the main file that is
+// stricter than wroteTo: SQLite neither creates nor removes it during a window,
+// and a hard link put back at its name needs no write.
+func touched(events []FileEvent, path string) bool {
+	return slices.ContainsFunc(events, func(e FileEvent) bool { return e.Touches(path) })
 }
 
 // readFrames fills c from frames: every committed page of the window, commit
@@ -513,9 +563,9 @@ func wroteTo(events []FileEvent, path string) bool {
 // it. A page that passes from one table to another inside the window, or a
 // table that came and went, is named.
 func (d *SQLiteDB) readFrames(c *SQLiteChange, frames []walFrame) {
-	tables, schema, pages := map[string]bool{}, map[string]bool{}, map[uint32]bool{}
+	tables, names, pages := map[string]bool{}, newSQLiteNames(), map[uint32]bool{}
 	view := d.base.view
-	owners, err := sqliteOwners(view, schema)
+	owners, err := sqliteOwners(view, names)
 	start := 0
 	for i, f := range frames {
 		if f.dbSize == 0 {
@@ -525,7 +575,7 @@ func (d *SQLiteDB) readFrames(c *SQLiteChange, frames []walFrame) {
 		commit := frames[start : i+1]
 		start = i + 1
 		next := view.apply(commit)
-		nextOwners, nextErr := sqliteOwners(next, schema)
+		nextOwners, nextErr := sqliteOwners(next, names)
 		if err == nil {
 			err = nextErr
 		}
@@ -545,7 +595,7 @@ func (d *SQLiteDB) readFrames(c *SQLiteChange, frames []walFrame) {
 		}
 		view, owners = next, nextOwners
 	}
-	c.finish(pages, tables, schema, err)
+	c.finish(pages, tables, names, err)
 }
 
 // readPages fills c from a comparison of the baseline's pages with the end's.
@@ -559,16 +609,16 @@ func (d *SQLiteDB) readPages(c *SQLiteChange, end *sqliteImage, events []FileEve
 			changed[uint32(n)] = true
 		}
 	}
-	tables, schema := map[string]bool{}, map[string]bool{}
-	bo, err := sqliteOwners(before, schema)
-	ao, aerr := sqliteOwners(after, schema)
+	tables, names := map[string]bool{}, newSQLiteNames()
+	bo, err := sqliteOwners(before, names)
+	ao, aerr := sqliteOwners(after, names)
 	if err == nil {
 		err = aerr
 	}
 	if err == nil {
 		err = attribute(changed, before, after, bo, ao, tables)
 	}
-	c.finish(changed, tables, schema, err)
+	c.finish(changed, tables, names, err)
 	if d.base.walMode || end.walMode {
 		// Frames are gone. Every commit in WAL mode writes the WAL, so with no
 		// such write the pages are the whole story; with one, a change undone
@@ -593,6 +643,12 @@ func (d *SQLiteDB) readPages(c *SQLiteChange, end *sqliteImage, events []FileEve
 	case c.Commits == 0 && len(changed) != 0:
 		c.Exact = false //subpoena:enforcement
 		c.Reason = "the pages changed and the change counter did not: this was not an ordinary commit"
+	case c.Commits == 0 && touched(events, d.path):
+		// A spilled transaction rolled back looks like this, and so does a
+		// commit whose file was then put back, counter and all.
+		c.Exact = false           //subpoena:enforcement
+		c.Verdict = SQLiteUnknown //subpoena:enforcement
+		c.Reason = "the database was written and its pages and counter match the baseline: a rollback, or a commit undone by restoring the file"
 	}
 }
 
@@ -600,7 +656,7 @@ func (d *SQLiteDB) readPages(c *SQLiteChange, end *sqliteImage, events []FileEve
 // list, so only the pages stand.
 //
 //subpoena:enforcement_point
-func (c *SQLiteChange) finish(pages map[uint32]bool, tables, schema map[string]bool, err error) {
+func (c *SQLiteChange) finish(pages map[uint32]bool, tables map[string]bool, names sqliteNames, err error) {
 	if len(pages) != 0 {
 		c.Pages = sortedPages(pages)
 	}
@@ -610,7 +666,8 @@ func (c *SQLiteChange) finish(pages map[uint32]bool, tables, schema map[string]b
 	}
 	c.Exact = true
 	c.Tables = sortedNames(tables)
-	c.Schema = sortedNames(schema)
+	c.Schema = sortedNames(names.tables)
+	c.Virtual = sortedNames(names.virtual)
 }
 
 func sortedPages(m map[uint32]bool) []uint32 {
@@ -641,12 +698,23 @@ const (
 	ownerLock   = "\x00lock"
 )
 
-// attribute adds to tables the owners of changed pages on each side of a
-// change. A changed page owned by nothing on both sides means the map is wrong
-// and is an error, so a table cannot go missing unnoticed.
+// attribute adds to tables what changed between two sides of a change: the
+// owners of changed pages on each side, the owners of any page that changed
+// hands without being written, and the tables of any schema row that differs.
+// The last two are how a table dropped with its pages left as they were, or
+// swapped for another by renames, is named: no page of its tree was written.
+// A changed page owned by nothing on both sides means the map is wrong and is
+// an error, so a table cannot go missing unnoticed. So is a header that now
+// decodes the same bytes differently, since every row would then read otherwise
+// with no page of any table touched.
 //
 //subpoena:enforcement_point
-func attribute(changed map[uint32]bool, before, after sqliteView, bo, ao map[uint32]string, tables map[string]bool) error {
+func attribute(changed map[uint32]bool, before, after sqliteView, bm, am *sqliteMap, tables map[string]bool) error {
+	name := func(owner string) {
+		if owner != "" && owner[0] != 0 {
+			tables[owner] = true //subpoena:enforcement
+		}
+	}
 	for p := range changed {
 		if p == 1 {
 			// Page 1 is the file header and the root of the schema. Only the
@@ -655,41 +723,96 @@ func attribute(changed map[uint32]bool, before, after sqliteView, bo, ao map[uin
 			if len(b) < sqliteHdrSize || len(a) < sqliteHdrSize || !bytes.Equal(b[sqliteHdrSize:], a[sqliteHdrSize:]) {
 				tables[SQLiteSchemaTable] = true //subpoena:enforcement
 			}
+			if len(b) >= sqliteHdrSize && len(a) >= sqliteHdrSize && !sameDecoding(b, a) {
+				return errors.New("the header changed how the file decodes") //subpoena:enforcement
+			}
 			continue
 		}
-		o1, ok1 := bo[p]
-		o2, ok2 := ao[p]
+		o1, ok1 := bm.owners[p]
+		o2, ok2 := am.owners[p]
 		if !ok1 && !ok2 {
 			return fmt.Errorf("page %d changed and nothing owns it", p) //subpoena:enforcement
 		}
-		for _, o := range []string{o1, o2} {
-			if o != "" && o[0] != 0 {
-				tables[o] = true //subpoena:enforcement
-			}
+		name(o1)
+		name(o2)
+	}
+	for p, o := range bm.owners {
+		if n := am.owners[p]; n != o {
+			name(o)
+			name(n)
+		}
+	}
+	for p, n := range am.owners {
+		if _, ok := bm.owners[p]; !ok {
+			name(n)
+		}
+	}
+	for k, r := range bm.rows {
+		if n, ok := am.rows[k]; !ok || n != r {
+			name(r.tbl)
+			name(n.tbl)
+		}
+	}
+	for k, r := range am.rows {
+		if _, ok := bm.rows[k]; !ok {
+			name(r.tbl)
 		}
 	}
 	return nil
 }
 
+// sameDecoding compares the header fields that say how pages and records
+// decode: page size, reserved space, payload fractions, schema format and text
+// encoding. A format or encoding of 0 means the database was empty and has not
+// set one, so a first table may set it.
+func sameDecoding(b, a []byte) bool {
+	set := func(f []byte) bool { return bytes.ContainsFunc(f, func(r rune) bool { return r != 0 }) }
+	for _, f := range [][2]int{{16, 18}, {20, 24}, {44, 48}, {56, 60}} {
+		x, y := b[f[0]:f[1]], a[f[0]:f[1]]
+		if !bytes.Equal(x, y) && (f[0] < 44 || set(x)) {
+			return false
+		}
+	}
+	return true
+}
+
+// sqliteMap is what a walk of one committed state found.
+type sqliteMap struct {
+	owners map[uint32]string
+	rows   map[string]schemaRow // every schema row, by type and name
+}
+
+// sqliteNames are the tables seen across every state read.
+type sqliteNames struct{ tables, virtual map[string]bool }
+
+func newSQLiteNames() sqliteNames {
+	return sqliteNames{tables: map[string]bool{}, virtual: map[string]bool{}}
+}
+
 // sqliteOwners maps every page of a view to what owns it, walking the schema
 // and each b-tree, overflow chains included, then the freelist. Table and
-// index names are added to schema, and an index's pages go to its table. A page
-// claimed twice, a pointer out of range or a page of the wrong type is an
-// error: the map would not be sound.
-func sqliteOwners(v sqliteView, schema map[string]bool) (map[uint32]string, error) {
-	owners := map[uint32]string{}
+// index names are added to names, and an index's pages go to its table. A
+// table with no root page is virtual, and owns nothing. A page claimed twice, a
+// pointer out of range or a page of the wrong type is an error: the map would
+// not be sound.
+func sqliteOwners(v sqliteView, names sqliteNames) (*sqliteMap, error) {
+	m := &sqliteMap{owners: map[uint32]string{}, rows: map[string]schemaRow{}}
 	if len(v.pages) == 0 {
-		return owners, nil
+		return m, nil
 	}
-	w := &btreeWalk{v: v, owners: owners}
+	w := &btreeWalk{v: v, owners: m.owners}
 	rows, err := w.walkSchema()
 	if err != nil {
 		return nil, err
 	}
-	schema[SQLiteSchemaTable] = true
+	names.tables[SQLiteSchemaTable] = true
 	for _, r := range rows {
+		m.rows[r.typ+"\x00"+strings.ToLower(r.name)] = r
 		if r.typ == "table" {
-			schema[r.tbl] = true
+			names.tables[r.tbl] = true
+			if r.root == 0 {
+				names.virtual[r.tbl] = true //subpoena:enforcement
+			}
 		}
 		if (r.typ == "table" || r.typ == "index") && r.root != 0 {
 			if err := w.walk(uint32(r.root), r.tbl, nil); err != nil {
@@ -701,12 +824,13 @@ func sqliteOwners(v sqliteView, schema map[string]bool) (map[uint32]string, erro
 		return nil, err
 	}
 	w.special()
-	return owners, nil
+	return m, nil
 }
 
 type schemaRow struct {
 	typ, name, tbl string
 	root           int64
+	sql            string
 }
 
 type btreeWalk struct {
@@ -913,7 +1037,7 @@ func sqliteVarint(b []byte) (v uint64, n int) {
 	return 0, 0
 }
 
-// parseSchemaRow reads a sqlite_schema record: type, name, tbl_name, rootpage.
+// parseSchemaRow reads a sqlite_schema record: type, name, tbl_name, rootpage, sql.
 func parseSchemaRow(p []byte) (schemaRow, error) {
 	var r schemaRow
 	hdr, n := sqliteVarint(p)
@@ -922,8 +1046,8 @@ func parseSchemaRow(p []byte) (schemaRow, error) {
 	}
 	types := p[n:hdr]
 	body := p[hdr:]
-	var col [4][]byte
-	var ints [4]int64
+	var col [5][]byte
+	var ints [5]int64
 	for i := range col {
 		t, n := sqliteVarint(types)
 		if n == 0 {
@@ -946,7 +1070,7 @@ func parseSchemaRow(p []byte) (schemaRow, error) {
 		}
 		body = body[size:]
 	}
-	r.typ, r.name, r.tbl, r.root = string(col[0]), string(col[1]), string(col[2]), ints[3]
+	r.typ, r.name, r.tbl, r.root, r.sql = string(col[0]), string(col[1]), string(col[2]), ints[3], string(col[4])
 	return r, nil
 }
 

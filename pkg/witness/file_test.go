@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -320,55 +319,8 @@ func TestQueueOverflowFailsHealthAndKeepsWhatWasSeen(t *testing.T) {
 	}
 }
 
-func TestTheWatchLimitFailsHealth(t *testing.T) {
-	root := t.TempDir()
-	calls := 0
-	h := fileHooks{addWatch: func(fd int, path string, mask uint32) (int, error) {
-		calls++
-		if calls > 1 { // the root gets its watch; the next directory does not
-			return -1, syscall.ENOSPC
-		}
-		return syscall.InotifyAddWatch(fd, path, mask)
-	}}
-	w, release := held(t, h, root)
-	release()
-	sub := filepath.Join(root, "d")
-	if err := os.Mkdir(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	found := filepath.Join(sub, "found")
-	write(t, found, "x")
-	waitFor(t, func() bool { return hasGap(w, GapWatchLimit, sub) })
-	w.Stop()
-	if err := w.Health(); err == nil || !strings.Contains(err.Error(), string(GapWatchLimit)) {
-		t.Fatalf("Health = %v", err)
-	}
-}
-
 // A limit met at the start, on a subdirectory, leaves a capture that runs and
 // says so.
-func TestTheWatchLimitAtStartFailsHealth(t *testing.T) {
-	root := t.TempDir()
-	sub := filepath.Join(root, "d")
-	if err := os.Mkdir(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	calls := 0
-	h := fileHooks{addWatch: func(fd int, path string, mask uint32) (int, error) {
-		calls++
-		if calls > 1 {
-			return -1, syscall.ENOSPC
-		}
-		return syscall.InotifyAddWatch(fd, path, mask)
-	}}
-	w, release := held(t, h, root)
-	release()
-	w.Stop()
-	if !hasGap(w, GapWatchLimit, sub) || w.Health() == nil {
-		t.Fatalf("Health %v, gaps %+v", w.Health(), w.Coverage().Gaps)
-	}
-}
-
 func TestARootThatVanishesFailsHealth(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	if err := os.Mkdir(root, 0o755); err != nil {

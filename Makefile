@@ -25,6 +25,7 @@ build:
 
 vet:
 	go vet ./...
+	GOOS=darwin go vet ./pkg/witness/ ./pkg/harness/
 
 fmt:
 	gofmt -l -w .

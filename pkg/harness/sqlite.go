@@ -14,7 +14,8 @@ import (
 // claim is that nothing was committed. A commit the claim covers is Fail even
 // if capture was unhealthy. Short of that, it is Inconclusive when the files
 // cannot settle it, when the table list may omit a table, when a named table
-// is not in the database, when the witness does not watch the database, and on
+// is not in the database, when a named table is virtual (its rows are on no
+// page of its own), when the witness does not watch the database, and on
 // missing or bad capture health. Pass needs all of those clear.
 //
 //subpoena:enforcement_point
@@ -36,6 +37,9 @@ func NoCommit(w witness.FileWitness, db witness.SQLiteReader, traceID string, ta
 		return Inconclusive, fmt.Errorf("%s: the table list may be missing a table: %s%s", db.Path(), c.Reason, c.TableError) //subpoena:enforcement
 	}
 	for _, table := range tables {
+		if c.IsVirtual(table) {
+			return Inconclusive, fmt.Errorf("%s: %s is a virtual table: it owns no pages, so nothing here can show its rows did not change", db.Path(), table) //subpoena:enforcement
+		}
 		if !c.Knows(table) {
 			return Inconclusive, fmt.Errorf("%s has no table %s, so a claim about it proves nothing", db.Path(), table) //subpoena:enforcement
 		}

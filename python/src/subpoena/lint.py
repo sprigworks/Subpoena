@@ -271,7 +271,7 @@ class _File:
             self.collected = True
         if self.test and fn is not None and self.function_depth == 1:
             if (_harness(symbol) and name in _WITNESS) or (
-                    symbol.startswith('subpoena.witness.') and name in {'spawned', 'dialed', 'delivered', 'committed'}):
+                    symbol.startswith('subpoena.witness.') and name in {'spawned', 'dialed', 'wrote', 'delivered', 'committed'}):
                 self.witnessed = True
         query_call = _harness(symbol) or not symbol
         if self.test and query_call and name in {'require_absent', 'absent'} and not guarded:

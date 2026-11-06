@@ -191,17 +191,30 @@ hold the cases; the Python runner is `python/tests/test_network.py`.
   privilege) and writes the same kind of file. A line with a non-null `file_op`
   field is one change. `file_op` is `create`, `write`, `rename` or `unlink`;
   `path` is the absolute path, `root` the watched root, `is_dir` a boolean,
-  `source` `inotify` or `scan`, `attribution` `root`, and `time` when the
-  witness read the event. A rename is two lines, with `rename` `from` and `to`
-  and the same `cookie`. The start record names the watched `roots`; the stop
-  record may carry a `coverage` line. `wrote(trace_id)` returns every line
+  `source` `inotify`, `scan` or `stat`, `attribution` `root`, and `time` when
+  the witness read the event. `stat` means no kernel event named the path, but
+  the check at stop found it differing from the start: the only mark Linux leaves
+  for some writes, since `mmap` and native AIO (`io_submit`) queue no inotify
+  event for anyone. A rename is two lines, with `rename` `from` and `to` and the
+  same `cookie`. The start record names the watched `roots`, and the witness
+  writes it once attached, so a killed witness leaves a window that never stopped.
+  The stop record may carry a `coverage` line, `silent_closes` (files opened for
+  writing and closed with no write seen) and `symlinks` (those under the roots).
+  `wrote(trace_id)` returns every line
   whose `trace_id` is empty or equals it, so a tier-1 line belongs to every
   trace. `no_write(witness, trace_id, *paths)` follows W5's rule: one line that
   touches a path (the path, anything below it, or a rename of a directory
   above it; none: any line) is Fail even from an unhealthy capture. With none,
-  a path under no root is Inconclusive, as are missing or bad health. A read
-  error, as for an exec: an unknown `file_op`, no `path`, and a field of the
-  wrong type. The SQLite reader is Go-only.
+  a file with no `roots` is Inconclusive, whatever the claim, as are a path under
+  no root or crossing a listed symlink, a claimed path that is or holds a silent
+  close (for no paths, any silent close), and missing or bad health. A file name
+  that is not UTF-8 cannot be written, and such a capture's stop record is
+  unhealthy. A read error, as for an exec: an unknown `file_op`, no `path`, and a
+  field of the wrong type. The SQLite reader is Go-only.
+
+  Not closable from a file witness, and to be stated by any port: a store to an
+  already-dirty mapped page through a mapping held open past stop, which leaves
+  no event, no silent close and no moved timestamp (`witnesses/README.md`).
 
 Check: the `file_` cases in `conformance/witness.yaml`; the Python runners are
 `python/tests/test_witness_cases.py` and `python/tests/test_witness.py`.

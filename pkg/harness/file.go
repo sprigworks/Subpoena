@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -12,8 +13,10 @@ import (
 // ended. paths are absolute paths the claim is about, each with everything
 // below it (none: anything under the witness's roots). One event that touches
 // them contradicts absence even if capture was unhealthy. With none, missing or
-// bad health makes the claim Inconclusive, and so does a path the witness does
-// not cover: it could never have been seen.
+// bad health makes the claim Inconclusive, and so do a path the witness does
+// not cover, which could never have been seen; a witness with no roots, which
+// watched nothing; and a claimed file opened for writing and closed with no
+// write seen, which is all a change by mmap or native AIO may leave.
 //
 //subpoena:enforcement_point
 func NoWrite(w witness.FileWitness, traceID string, paths ...string) (Verdict, error) {
@@ -29,18 +32,31 @@ func NoWrite(w witness.FileWitness, traceID string, paths ...string) (Verdict, e
 	if err := uncovered(w, paths); err != nil {
 		return Inconclusive, err //subpoena:enforcement
 	}
+	for _, s := range w.SilentCloses() {
+		if len(paths) == 0 || touchesAny(witness.FileEvent{Path: s}, paths) {
+			return Inconclusive, silentClose(s) //subpoena:enforcement
+		}
+	}
 	if err := captureHealth(w); err != nil {
 		return Inconclusive, err //subpoena:enforcement
 	}
 	return Pass, nil
 }
 
+func silentClose(path string) error {
+	return fmt.Errorf("%s was opened for writing and closed with no write seen: a read, or a change by mmap or native AIO, which inotify cannot see", path)
+}
+
 func touchesAny(e witness.FileEvent, paths []string) bool {
 	return slices.ContainsFunc(paths, e.Touches)
 }
 
-// uncovered is the fault of a claim about a path w does not cover.
+// uncovered is the fault of a claim about a path w does not cover, or of any
+// claim to a witness that watched nothing.
 func uncovered(w witness.FileWitness, paths []string) error {
+	if len(w.Roots()) == 0 {
+		return errors.New("witness watches no directories, so it could not have seen a write")
+	}
 	for _, p := range paths {
 		if !w.Covers(p) {
 			return fmt.Errorf("witness does not watch %s, so it could not have seen a write there", p)
@@ -93,9 +109,10 @@ type WriteRule struct {
 //
 // At cleanup it stops w (if w has a Stop method), then fails the test, with
 // messages tagged "witness:", for every change the rule refuses, and with
-// "inconclusive:" for a rule path the witness does not cover or for missing or
-// bad capture health. If the test has already failed, every change the witness
-// saw is logged as well.
+// "inconclusive:" for a witness with no roots, a rule path the witness does not
+// cover, a file the rule refuses that was closed with no write seen, or missing
+// or bad capture health. If the test has already failed, every change the
+// witness saw is logged as well.
 func WatchWrites(tb testing.TB, w witness.FileWitness, traceID string, rule WriteRule) {
 	tb.Helper()
 	tb.Cleanup(func() { checkWrites(tb, w, traceID, rule) })
@@ -123,6 +140,13 @@ func checkWrites(tb testing.TB, w witness.FileWitness, traceID string, rule Writ
 	if err := uncovered(w, slices.Concat(rule.Never, rule.Allowed)); err != nil {
 		tb.Errorf("%s: %s: %v", TagInconclusive, traceID, err) //subpoena:enforcement
 		return false
+	}
+	for _, s := range w.SilentCloses() {
+		e := witness.FileEvent{Path: s}
+		if touchesAny(e, rule.Never) || (rule.Allowed != nil && !slices.ContainsFunc(rule.Allowed, e.Within)) {
+			tb.Errorf("%s: %s: %v", TagInconclusive, traceID, silentClose(s)) //subpoena:enforcement
+			return false
+		}
 	}
 	if err := captureHealth(w); err != nil {
 		tb.Errorf("%s: %s: capture unhealthy, absence of refused writes is not proven: %v", TagInconclusive, traceID, err) //subpoena:enforcement

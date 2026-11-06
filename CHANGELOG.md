@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **The file witness no longer overstates.** A SQLite table claim is Inconclusive
+  for a virtual table, whose rows are on no page of its own, and the reader now
+  names any table whose schema row changed or whose pages changed owner, so a
+  drop, rename, swap or `ADD COLUMN` is Fail where it was Pass. `WatchSQLite`
+  resolves symlinks, as SQLite does, and `Path` is the real file. In rollback mode a
+  database written with no net change is `unknown`, so a commit undone by
+  restoring the file is Inconclusive, and so now is a spilled rollback. Linux
+  native AIO joins `mmap` as a write inotify cannot see, and is documented with
+  it: `Stop` now compares every file with the capture's start and reports a
+  difference no event explains (`Source` `stat`), which also finds a write through
+  a hard link, and reads a `chmod` as a write. `NoWrite` is Inconclusive about a
+  silent close, a path crossing a symlink, and on a witness with no roots.
+  `FileWitness` gains `Roots` and `SilentCloses`. `NewFileWatch` refuses one
+  directory under two spellings. `Stop` and memory are bounded with writers still
+  going. `subpoena-witness -file-root` writes its start record at attach, so a
+  killed run cannot read healthy.
 - **A broker's delivery has a witness.** gmqtt had none: a broker writes to a
   subscriber on a socket it accepted, and `Sinkhole` and `netbpf` see outbound
   dials only. `netbpf` has a second hook on `security_socket_sendmsg` that reports

@@ -375,6 +375,85 @@ cases:
       A: Inconclusive
     no_write_paths: ["/r/secret"]
 
+  # A witness with no roots watched nothing: a claim about "anything" has
+  # nothing under it either. An exec witness's file looks like this.
+  - name: file_no_roots_no_paths
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    no_write:
+      A: Inconclusive
+
+  # A line is still a line with no roots to put it under.
+  - name: file_no_roots_with_a_line
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false}'
+      - '{"time":"2026-10-28T12:00:01Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"inotify","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    no_write:
+      A: Fail
+
+  # A path through a symlink is spelled another way, or lands outside the root.
+  - name: file_path_crosses_a_symlink
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"symlinks":["/r/current"]}'
+    health: "ok"
+    no_write:
+      A: Inconclusive
+    no_write_paths: ["/r/current/conf"]
+
+  # A symlink elsewhere, or inside a claimed directory, is not crossed.
+  - name: file_path_beside_a_symlink
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"symlinks":["/r/dir/link"]}'
+    health: "ok"
+    no_write:
+      A: Pass
+    no_write_paths: ["/r/dir"]
+
+  # Closed with no write seen: all a change by mmap or native AIO may leave.
+  - name: file_silent_close
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"silent_closes":["/r/dir/a"]}'
+    health: "ok"
+    no_write:
+      A: Inconclusive
+    no_write_paths: ["/r/dir"]
+
+  # With no paths the claim is about everything, so any silent close counts.
+  - name: file_silent_close_no_paths
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"silent_closes":["/r/a"]}'
+    health: "ok"
+    no_write:
+      A: Inconclusive
+
+  - name: file_silent_close_elsewhere
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"silent_closes":["/r/a"]}'
+    health: "ok"
+    no_write:
+      A: Pass
+    no_write_paths: ["/r/b"]
+
+  # What the check at stop found counts as any other line.
+  - name: file_found_by_the_stop_check
+    lines:
+      - '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+      - '{"time":"2026-10-28T12:00:08Z","file_op":"write","path":"/r/a","root":"/r","is_dir":false,"source":"stat","attribution":"root"}'
+      - '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true}'
+    health: "ok"
+    no_write:
+      A: Fail
+    no_write_paths: ["/r/a"]
+
   # The queue overflowed: what was seen stands, silence proves nothing.
   - name: file_overflow
     lines:
