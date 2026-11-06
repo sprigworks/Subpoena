@@ -214,13 +214,14 @@ package stops at its first red test and every package runs: go test's own `-fail
 skips packages not yet started as soon as one fails. So a package can hang on the mutant
 after another has caught it: a run that timed out with a clean failure in a package that
 finished goes to the repeat, and with none it is a timeout. That flag can also turn a
-`TestMain` that calls `m.Run` a second time green, since the second run skips every test, so a
-green run holding a test's `fail` event goes again without it. A red one can also say `PASS` after
+`TestMain` that calls `m.Run` a second time green, since the second run skips every test, and a
+first `m.Run` whose output was thrown away leaves no `fail` event to show it. So every green run
+goes again without the flag: a mutant reads survived only if that run is green too. This costs a
+survivor one more suite run, and gives a flake one more first try at a kill, which still has to
+fail again in the same test and pass three times without the mutant. A red one can also say `PASS` after
 a real failure, so when that leaves no failed test, the failed tests come from a run without the
 flag. A suite whose second `m.Run` truly passes says `PASS` there too, and that kill reads
-unconfirmed. A `TestMain` that throws away a first `m.Run`'s output, a warm-up say, leaves nothing to
-show a test failed: the second `m.Run` runs nothing under the flag, so the mutant reads survived
-though the suite catches it. That run fails, and it is a lost kill, not a false one. Each kill reports its first evidence, the
+unconfirmed. Each kill reports its first evidence, the
 first failure message of a failed test, and in Go the first of each package, witness
 if any is, since packages finish in any order: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
@@ -302,11 +303,6 @@ Two forgeries read as plain kills and stay open. A suite that hides `m.Run`'s `P
 the other, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test
 that passed, which takes the crash rule off it: without `--require-witness` that line is a log line,
 and the test's plain failure is a kill. Forging through `/proc` is out of scope, as stated above.
-
-A suite need not forge to lose a kill the same way. One that hides a first `m.Run`'s output reads
-survived under `-test.failfast`, as above, with nothing in the run to tell it apart from a survivor.
-Cross does not run every survivor a second time to find these: the run fails, and that is the side
-to lose on.
 
 ### What a kill does not prove
 

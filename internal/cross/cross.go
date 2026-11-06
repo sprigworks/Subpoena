@@ -275,8 +275,9 @@ type Options struct {
 	RequireWitness bool
 	Target         string // directory to cross-examine, inside a Go module
 	// Timeout bounds each go command; 5 minutes if zero. A kill is a build and
-	// 1+killRepeats+killReruns test commands, one more for each repeat that
-	// crashed or hung, so a mutant can take that many times as long.
+	// 1+killRepeats+killReruns test commands, one more for a green first run and
+	// for each repeat that crashed or hung, so a mutant can take that many times as
+	// long.
 	Timeout time.Duration
 	Log     io.Writer // progress; io.Discard if nil
 	// EvidenceDir, if set, keeps the full go test -json output of every
@@ -675,12 +676,13 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 		if res.EvidenceFile, ferr = keepEvidence(o, ms, "", raw); ferr != nil {
 			return res, ferr
 		}
-		if err == nil && len(failEvents(raw)) > 0 {
-			// Green with a failed test in it. -test.failfast is why that can be: a
-			// TestMain that calls m.Run again gets a run of nothing, and exit 0. So
-			// it goes again as it would have run. Red there still has to hold as a
-			// kill, so printed text that made the fail event buys only this run.
-			fmt.Fprintf(o.Log, "  green with a failed test in it; running without -test.failfast\n")
+		if err == nil { //subpoena:enforcement_guard false
+			// Green proves nothing yet. -test.failfast can be why: a TestMain that
+			// calls m.Run again gets a run of nothing, and exit 0, and a first m.Run
+			// that threw its output away leaves no fail event to say so. So every
+			// green run goes again as it would have run. Red there still has to
+			// hold as a kill. The cost is one more test command for a survivor.
+			fmt.Fprintf(o.Log, "  green; running without -test.failfast\n")
 			run, err = o.run.test(ctx, o, sb, testArgs[:len(testArgs)-2]...)
 			if ctx.Err() != nil {
 				return res, fmt.Errorf("cross: run stopped: %w", ctx.Err())

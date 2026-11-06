@@ -245,7 +245,7 @@ func TestAnExampleReportIsTextOnly(t *testing.T) {
 }
 
 // Review 8, L5. -test.failfast turned a TestMain's retry into a run of nothing that
-// exits 0. A run green with a failed test in it goes again as it would have run.
+// exits 0. A green run goes again as it would have run.
 func TestARetryingTestMainDoesNotHideAKill(t *testing.T) {
 	t.Parallel()
 	const main = `package mini

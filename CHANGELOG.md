@@ -2,13 +2,15 @@
 
 ## Unreleased
 
+- **A quiet first `m.Run` no longer reads survived.** A `TestMain` that threw away a first
+  `m.Run`'s output left no fail event, and under `-test.failfast` the second `m.Run` ran nothing, so
+  a mutant the suite catches read as a survivor. Every green first run now goes again without that
+  flag, where before only one with a fail event did. New cost: one more suite run per survivor.
 - **The reruns without the mutant are no longer blind to a second `m.Run`.** They kept
   `-test.failfast`, under which a `TestMain` that calls `m.Run` again exits 0 after a real failure,
   so a test that fails with no mutant at all read as a kill, witness kills included. They now run
   without that flag, and such a suite reads unconfirmed. No extra runs: a rerun that passes runs the
-  same tests, and one that fails runs the rest of its package before the mutant ends. A `TestMain`
-  that hides a first `m.Run`'s output still reads survived on a mutant it catches, as it did: the
-  run fails, and this is now documented.
+  same tests, and one that fails runs the rest of its package before the mutant ends.
 - **A witness mark is good for one run of one mutant.** The key lasted all of cross's run, so a
   signed line kept from one mutant's run and printed in another's read as a witness kill, under
   `--require-witness`, on a mutant no witness saw. Each `go test` command now signs with its own
@@ -23,10 +25,10 @@
   record and no ready file, as it did after SIGKILL.
 - **A dangling link cannot put `-out` or `-ready` under a watched root.** `EvalSymlinks` refuses a
   link to a file not made yet, and the check then passed. Links are now followed one at a time.
-- **A `TestMain` that retries no longer hides a kill.** `-test.failfast` made a second `m.Run` a
-  run of nothing that exits 0, so a suite that caught the mutant read as survived. A green run
-  with a test's fail event in it now goes again without that flag. Red still has to hold as a
-  kill, and a retry that truly passes is still survived.
+- **A `TestMain` that retries and shows its output no longer hides a kill.** `-test.failfast` made a
+  second `m.Run` a run of nothing that exits 0, so a suite that caught the mutant read as survived.
+  A green run with a test's fail event in it now goes again without that flag. Red still has to
+  hold as a kill, and a retry that truly passes is still survived.
 - **A failed `Example` is a kill.** It has a fail event and no `file:line`, so it read as a crash.
   Package testing's own `got:` report now counts as its failure message, as `other` evidence.
 - **A printed log line after open text takes no witness kill.** A line such as

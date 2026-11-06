@@ -201,26 +201,52 @@ func TestRerunsGoWithoutFailfastWholeThenNarrow(t *testing.T) {
 	}
 }
 
-// The cost that stays, pinned so it is a decision. TestMain throws away a first m.Run's
-// output, so -test.failfast leaves a green run with nothing in it to say a test failed.
-// The suite does catch the mutant, and a survivor is what cross says. It fails the run.
-func TestAFailureHiddenFromTheFirstRunReadsSurvived(t *testing.T) {
+// Review 12, H4. TestMain throws away a first m.Run's output, so under -test.failfast
+// the second m.Run leaves a green run with nothing in it to say a test failed, though
+// the suite catches the mutant. A green first run goes again without the flag, always.
+func TestAQuietFirstMRunDoesNotHideAKill(t *testing.T) {
 	t.Parallel()
-	dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
+	const quiet = `out := os.Stdout
+	os.Stdout, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	code := m.Run()
+	os.Stdout = out
+`
+	const plain = `t.Fatal("mallory let in")`
+	for name, tc := range map[string]struct {
+		main, fails string
+		witness     bool
+		want        Outcome
+	}{
+		"warm-up":            {quiet + "code = m.Run()\n", plain, false, Killed},
+		"retry":              {quiet + "if code != 0 { code = m.Run() }\n", plain, false, Killed},
+		"retry, witness":     {quiet + "if code != 0 { code = m.Run() }\n", `t.Fatal(signed("witness: mallory reached the sink"))`, true, Killed},
+		"retry, self-report": {quiet + "if code != 0 { code = m.Run() }\n", plain, true, KilledBySelfReport},
+		// A real survivor: no test looks at mallory, with or without the flag.
+		"nothing catches it": {quiet + "code = m.Run()\n", "", false, Survived},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			body := `if Check("mallory") == nil { ` + tc.fails + ` }`
+			if tc.want == Survived {
+				body = ""
+			}
+			dir := module(t, map[string]string{"gate.go": gate3, "signed_test.go": signedHelper, "gate_test.go": `package mini
 
 import ("os"; "testing")
 
-func TestRefused(t *testing.T) { if Check("mallory") == nil { t.Fatal("mallory let in") } }
+func TestRefused(t *testing.T) { ` + body + ` }
 
 func TestMain(m *testing.M) {
-	out := os.Stdout
-	os.Stdout, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	m.Run()
-	os.Stdout = out
-	os.Exit(m.Run())
+	` + tc.main + `	os.Exit(code)
 }
 `})
-	if r := killOf(t, Options{Target: dir}); r.Outcome != Survived {
-		t.Fatalf("got %+v", r)
+			r := killOf(t, Options{Target: dir, RequireWitness: tc.witness})
+			if r.Outcome != tc.want {
+				t.Fatalf("got %+v", r)
+			}
+			if tc.witness && tc.want == Killed && r.Evidence != EvidenceWitness {
+				t.Fatalf("evidence: %+v", r)
+			}
+		})
 	}
 }
