@@ -71,8 +71,10 @@ tracepoint that reads each process's cgroup in the kernel, run as
 `cmd/subpoena-witness` with its events shipped to Loki. That command ships
 exec events only. Tier 1 network absence uses `witness.Sinkhole`, a listener
 the test stands up. The kernel sibling is `pkg/witness/netbpf`, in
-`make test-ebpf`; it is not what `cmd/subpoena-witness` runs. See
-`witnesses/README.md` for the gaps in each.
+`make test-ebpf`; it is not what `cmd/subpoena-witness` runs. Tier 1 file
+absence uses `witness.FileWatch`, inotify on a root the test names, with a
+reader of SQLite's WAL and pages on top; `subpoena-witness -file-root` runs it
+for a test in another language. See `witnesses/README.md` for the gaps in each.
 
 The tier-2 OATS fixture proxies test requests through an independent capture
 controller. Its final input stops and drains the witness before OATS judges

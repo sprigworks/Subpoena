@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"sync"
 	"time"
 )
@@ -134,6 +134,7 @@ func (w *FileWatch) Stop() error {
 	w.stopOnce.Do(func() {
 		w.stop()
 		<-w.done
+		w.state.close()
 		w.mu.Lock()
 		w.finished, w.stopped = true, time.Now()
 		w.mu.Unlock()
@@ -182,12 +183,8 @@ func (w *FileWatch) Coverage() FileCoverage {
 	defer w.mu.Unlock()
 	c := w.coverage
 	c.Roots = slices.Clone(c.Roots)
-	c.Gaps = slices.Clone(w.gaps) //subpoena:enforcement
-	c.SilentCloses = nil
-	for p := range w.silent {
-		c.SilentCloses = append(c.SilentCloses, p) //subpoena:enforcement
-	}
-	sort.Strings(c.SilentCloses)
+	c.Gaps = slices.Clone(w.gaps)                       //subpoena:enforcement
+	c.SilentCloses = slices.Sorted(maps.Keys(w.silent)) //subpoena:enforcement
 	return c
 }
 

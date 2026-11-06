@@ -7,7 +7,6 @@
 package witness
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -39,14 +38,18 @@ func held(t *testing.T, h fileHooks, roots ...string) (*FileWatch, func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { w.Stop() })
 	released := false
-	return w, func() {
+	release := func() {
 		if !released {
 			released = true
 			close(h.hold)
 		}
 	}
+	t.Cleanup(func() {
+		release()
+		w.Stop()
+	})
+	return w, release
 }
 
 func saw(events []FileEvent, op FileOp, path string) bool {
@@ -646,5 +649,3 @@ func TestASymlinkOutOfTheRootIsNotFollowed(t *testing.T) {
 		t.Fatalf("watches %d", c.Watches)
 	}
 }
-
-var _ = errors.New

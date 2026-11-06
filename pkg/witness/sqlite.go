@@ -201,38 +201,51 @@ const (
 var journalMagic = []byte{0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7}
 
 // readSQLiteImage reads the three files as one state. Nothing locks them, so
-// it reads until two looks at their sizes and times agree around a read.
+// it reads until two looks at their sizes and times agree around a read. On
+// failure the image is empty, never nil.
 func readSQLiteImage(path string) (*sqliteImage, error) {
 	const tries = 20
 	for i := 0; ; i++ {
-		before, err := sqliteStamp(path)
-		if err != nil {
-			return nil, err
-		}
-		main, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		wal, err := readIfThere(path + "-wal")
-		if err != nil {
-			return nil, err
-		}
-		journal, err := readIfThere(path + "-journal")
-		if err != nil {
-			return nil, err
-		}
-		after, err := sqliteStamp(path)
-		if err != nil {
-			return nil, err
-		}
-		if before == after {
-			return buildSQLiteImage(path, main, wal, journal)
-		}
-		if i == tries {
-			return nil, fmt.Errorf("%s: the files kept changing while being read", path)
+		img, stable, err := readSQLiteOnce(path)
+		switch {
+		case err != nil:
+			return &sqliteImage{}, err
+		case stable:
+			return img, nil
+		case i == tries:
+			return &sqliteImage{}, fmt.Errorf("%s: the files kept changing while being read", path)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// readSQLiteOnce reads the files once. stable is false if they moved meanwhile.
+func readSQLiteOnce(path string) (img *sqliteImage, stable bool, err error) {
+	before, err := sqliteStamp(path)
+	if err != nil {
+		return nil, false, err
+	}
+	main, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	wal, err := readIfThere(path + "-wal")
+	if err != nil {
+		return nil, false, err
+	}
+	journal, err := readIfThere(path + "-journal")
+	if err != nil {
+		return nil, false, err
+	}
+	after, err := sqliteStamp(path)
+	if err != nil {
+		return nil, false, err
+	}
+	if before != after {
+		return nil, false, nil
+	}
+	img, err = buildSQLiteImage(path, main, wal, journal)
+	return img, true, err
 }
 
 type sqliteFileStamp struct {
@@ -283,16 +296,17 @@ func buildSQLiteImage(path string, main, wal, journal []byte) (*sqliteImage, err
 		}
 		img.counter = binary.BigEndian.Uint32(main[24:])
 		img.walMode = main[18] == 2 || main[19] == 2
-		if !img.walMode {
-			// SQLite does not read a WAL beside a rollback-mode database, and
-			// its frames are not part of this database's state.
-			img.wal = nil //subpoena:enforcement
-		}
 		dbPages = uint32(len(main) / mainSize)
 		// The header's count holds only if the counter beside it is current.
 		if n := binary.BigEndian.Uint32(main[28:]); n != 0 && img.counter == binary.BigEndian.Uint32(main[92:]) {
 			dbPages = min(n, dbPages)
 		}
+	}
+	if len(main) == 0 || !img.walMode {
+		// SQLite does not read a WAL beside a rollback-mode database, and
+		// deletes one beside an empty file: its frames are not this
+		// database's state.
+		img.wal = nil //subpoena:enforcement
 	}
 	pageSize := mainSize
 	if img.wal != nil {

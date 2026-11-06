@@ -48,7 +48,7 @@ func TestAFrameWithOtherSaltsEndsTheLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if _, err := f.WriteAt([]byte{0xaa}, size+8); err != nil { // the first new frame's salt-1
+	if _, err := f.WriteAt([]byte{0xaa}, max(size, walHdrSize)+8); err != nil { // the first new frame's salt-1
 		t.Fatal(err)
 	}
 	wantVerdict(t, d.Change(nil), SQLiteNoChange)
@@ -149,6 +149,78 @@ func TestAScanFindingCountsAsAWrite(t *testing.T) {
 	if wroteTo([]FileEvent{{Op: FileCreate, Path: path, Source: SourceInotify}}, path) {
 		t.Fatal("a create alone writes nothing")
 	}
+}
+
+// The stored header checksum is what vouches for the WAL. A wrong one voids
+// every frame, though the frames chain from the header's true sum.
+func TestAWALWhoseStoredChecksumIsWrongIsIgnored(t *testing.T) {
+	path := fixture(t, "WAL")
+	p := openSQLite(t, path)
+	p.exec("SELECT * FROM users")
+	d := baseline(t, path)
+	p.exec("INSERT INTO audit(what) VALUES('x')")
+	f, err := os.OpenFile(path+"-wal", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var b [1]byte
+	if _, err := f.ReadAt(b[:], 24); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte{b[0] ^ 0xff}, 24); err != nil {
+		t.Fatal(err)
+	}
+	wantVerdict(t, d.Change(nil), SQLiteNoChange)
+}
+
+// A real database with its magic gone, which is how an encrypted one looks: the
+// rest may parse, and it still must not be read.
+func TestWithoutTheMagicItIsNotADatabase(t *testing.T) {
+	path := fixture(t, "DELETE")
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteAt([]byte{'X'}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WatchSQLite(path); err == nil {
+		t.Fatal("read a file that does not say it is SQLite")
+	}
+}
+
+// A page nothing owns means the owner map is wrong, so its table list is too.
+func TestAChangedPageNoOneOwnsIsAnError(t *testing.T) {
+	v := sqliteView{pageSize: 512, usable: 512, pages: [][]byte{make([]byte, 512), make([]byte, 512)}}
+	owned := map[uint32]string{2: "t"}
+	if err := attribute(map[uint32]bool{2: true}, v, v, owned, owned, map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := attribute(map[uint32]bool{2: true}, v, v, nil, nil, map[string]bool{}); err == nil {
+		t.Fatal("a page with no owner on either side went unreported")
+	}
+}
+
+// SQLite deletes a WAL beside an empty database, unread.
+func TestAWALBesideAnEmptyFileIsIgnored(t *testing.T) {
+	other := fixture(t, "WAL")
+	p := openSQLite(t, other)
+	p.exec("INSERT INTO users(name) VALUES('elsewhere')")
+	stale, err := os.ReadFile(other + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "new.db")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := baseline(t, path)
+	if err := os.WriteFile(path+"-wal", stale, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantVerdict(t, d.Change(nil), SQLiteNoChange)
 }
 
 // The soundness claim, against SQLite's own answer: a table whose rows differ

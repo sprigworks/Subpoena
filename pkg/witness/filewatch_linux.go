@@ -109,7 +109,6 @@ func (w *FileWatch) setWatches() {
 func (w *FileWatch) read() {
 	defer close(w.done)
 	s := w.state
-	defer s.close()
 	if w.hooks.hold != nil {
 		<-w.hooks.hold
 	}
