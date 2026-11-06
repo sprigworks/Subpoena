@@ -124,8 +124,12 @@ runs beside another, such as a parallel one: the run reads unconfirmed, and stay
 one says nothing. A test can also print the framed run line and fail line of a test that never
 ran, and go test cannot tell those events from the real thing. But a binary that exits 1 with
 no test failed did so in `TestMain`, after `m.Run` said `PASS`, so a package that said `PASS` gives
-no failed test but a marked one. Printing `PASS` can cost a kill, as a printed pass can, and make
-none. What is left is such a pair of lines beside a real failure in the same package, where
+no failed test but a marked one. Printing `PASS` can cost a kill, as a printed pass can. Hiding it
+can make one: `m.Run` writes `PASS` to the current `os.Stdout`, so a suite that swaps `os.Stdout`
+around it, prints such a pair of lines, and exits 1 from `TestMain` on the mutant reads as a plain
+kill, with every real test passed. Nothing in the output gives that away, since a missing line
+proves nothing and a printed `FAIL` could stand in for a real one. Only `--require-witness` stops
+it. The same pair of lines beside a real failure in the same package is left too, where
 something in that package did fail with the mutant. In Go a repeat where
 a package crashes, or that hangs, can do so in a test the first run never reached, and
 under `-shuffle` such a test can come first. So the first run's own command goes again,

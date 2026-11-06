@@ -1049,8 +1049,10 @@ func idOf(pkg, test string) testID {
 // and a binary that said PASS is what gives those away: m.Run says it only when every
 // test passed, so a binary that said it and exited 1 did so in TestMain, and failed
 // no test. Under -test.failfast a second m.Run says it after a real failure, which is
-// why confirmKill asks a run without it. Printing PASS can cost a kill and make none. What is left is such a pair
-// of lines beside a real failure in its package. See docs/architecture.md.
+// why confirmKill asks a run without it. Printing PASS can cost a kill. Hiding it, by
+// swapping os.Stdout around m.Run, can make one, and no output shows that: only
+// RequireWitness stops it. So can such a pair of lines beside a real failure in its
+// package. See docs/architecture.md.
 //
 //subpoena:enforcement_point
 func failedTests(raw, key string) map[testID]bool {
