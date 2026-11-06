@@ -229,7 +229,13 @@ survivor one more suite run, and gives a flake one more first try at a kill, whi
 fail again in the same test and pass three times without the mutant. A red one can also say `PASS` after
 a real failure, so when that leaves no failed test, the failed tests come from a run without the
 flag. A suite whose second `m.Run` truly passes says `PASS` there too, and that kill reads
-unconfirmed. Each kill reports its first evidence, the
+unconfirmed. Two more shapes of two `m.Run` calls lose a real kill the same way, and fail the run.
+Where the failure comes only in the second `m.Run`, a suite run once per backend say, the test
+passed, another test ran, then it failed: that reads as a fail printed after a pass, so even a
+signed witness failure is dropped and the kill reads unconfirmed. Where a later test panics on the
+mutant, the run without the flag reaches the panic and gives no failed test, and that reads
+unconfirmed too, though the same suite with one `m.Run` reads killed. The reason cross gives for
+these can be "a different test failed" with advice to look for a flake: no flake need be there. Each kill reports its first evidence, the
 first failure message of a failed test, and in Go the first of each package, witness
 if any is, since packages finish in any order: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
