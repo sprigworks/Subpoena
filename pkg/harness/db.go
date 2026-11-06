@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -12,7 +13,8 @@ import (
 // committed write that changed rows and counts against table (the empty table:
 // any) contradicts absence even if capture was unhealthy. A statement the
 // witness could not read counts against every table. With no such write, missing
-// or bad health makes the claim Inconclusive.
+// or bad health makes the claim Inconclusive, and so does a witness file with no
+// row capture in it.
 //
 //subpoena:enforcement_point
 func NoRow(w witness.DBWitness, traceID, table string) (Verdict, error) {
@@ -25,10 +27,24 @@ func NoRow(w witness.DBWitness, traceID, table string) (Verdict, error) {
 	if len(hits) != 0 {
 		return Fail, fmt.Errorf("witness saw committed writes for %s: %+v", traceID, hits) //subpoena:enforcement
 	}
+	if err := rowCapture(w); err != nil {
+		return Inconclusive, err //subpoena:enforcement
+	}
 	if err := captureHealth(w); err != nil {
 		return Inconclusive, err //subpoena:enforcement
 	}
 	return Pass, nil
+}
+
+// rowCapture is the fault of a witness file whose start record names no database
+// witness: it has no row lines because nothing looked.
+//
+//subpoena:enforcement_point
+func rowCapture(w any) error {
+	if c, ok := w.(interface{ CapturedRows() bool }); ok && !c.CapturedRows() {
+		return errors.New("the witness file's start record names no row capture, so a write could not have been seen (read the file subpoena-witness db wrote)") //subpoena:enforcement
+	}
+	return nil
 }
 
 // RequireNoRow fails the test unless a healthy witness reports no committed row

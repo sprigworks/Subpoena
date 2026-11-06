@@ -36,6 +36,7 @@ type witnessCases struct {
 		NoDelivery      map[string]string   `yaml:"no_delivery"`
 		NoDeliveryPeers []string            `yaml:"no_delivery_peers"`
 		Committed       map[string][]string `yaml:"committed"`
+		NoRow           map[string]string   `yaml:"no_row"`
 	} `yaml:"cases"`
 }
 
@@ -135,6 +136,11 @@ func TestWitnessCases(t *testing.T) {
 			for name, want := range c.NoDelivery {
 				if v, _ := harness.NoDelivery(log, trace(t, name), harness.DeliveryTo(peers...)); v.String() != want {
 					t.Errorf("no_delivery %s: got %s, want %s", name, v, want)
+				}
+			}
+			for name, want := range c.NoRow {
+				if v, _ := harness.NoRow(log, trace(t, name), ""); v.String() != want {
+					t.Errorf("no_row %s: got %s, want %s", name, v, want)
 				}
 			}
 			for name, want := range c.Committed {

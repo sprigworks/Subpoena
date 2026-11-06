@@ -47,6 +47,9 @@ func TestRunDBWritesACaptureWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	harness.RequireNoRow(t, l, "trace", "users")
+	if !l.CapturedRows() || l.CapturedExecs() || l.CapturedFiles() || l.CapturedDeliveries() {
+		t.Fatal("the database witness's file must name row, and only row")
+	}
 }
 
 func TestRunDBRefusesBadFlags(t *testing.T) {

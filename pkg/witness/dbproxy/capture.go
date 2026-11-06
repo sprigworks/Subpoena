@@ -93,7 +93,7 @@ func (c *capture) open(w io.Writer) error {
 		return nil
 	}
 	c.enc = json.NewEncoder(w)
-	return c.enc.Encode(witness.Record{Time: time.Now().UTC(), Record: witness.RecordStart})
+	return c.enc.Encode(witness.Record{Time: time.Now().UTC(), Record: witness.RecordStart, Captures: []string{witness.CaptureRow}})
 }
 
 // close ends the capture, and the file with a stop record carrying its health.

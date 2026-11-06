@@ -5,7 +5,8 @@
 // kernel at the moment of the call. A second hook reports sends on connected
 // sockets, delivery to a peer that dialled in, from session cgroups only. Two
 // more count a task leaving its session, which would otherwise take its sends
-// out of the session unseen.
+// out of the session unseen. A socket's IP options can route a send through
+// another host first, so the delivery hook reports that hop too.
 //
 // The hooks are the LSM entry points security_socket_connect and
 // security_socket_sendmsg, traced with fentry (no LSM boot parameter needed).
@@ -99,6 +100,7 @@ struct sock_common {
 	__be16 skc_dport;
 	u16 skc_num; // host byte order
 	unsigned short skc_family;
+	unsigned long skc_flags;
 	struct in6_addr skc_v6_daddr;     // only with CONFIG_IPV6
 	struct in6_addr skc_v6_rcv_saddr; // only with CONFIG_IPV6
 } __attribute__((preserve_access_index));
@@ -108,6 +110,10 @@ struct sock {
 	u16 sk_protocol; // a plain field from Linux 5.6; BTF needs 5.8 anyway
 } __attribute__((preserve_access_index));
 
+enum sock_flags {
+	SOCK_BROADCAST = 6, // relocated: only the name is relied on
+};
+
 struct socket {
 	short type;
 	struct sock *sk;
@@ -116,6 +122,30 @@ struct socket {
 struct msghdr {
 	void *msg_name;
 	int msg_namelen;
+	void *msg_control; // a kernel copy by the time this hook runs
+	unsigned long msg_controllen;
+} __attribute__((preserve_access_index));
+
+struct ip_options {
+	__be32 faddr; // with srr, the first hop: the send leaves for here
+	unsigned char srr;
+} __attribute__((preserve_access_index));
+
+struct ip_options_rcu {
+	struct ip_options opt;
+} __attribute__((preserve_access_index));
+
+struct ipv6_txoptions {
+	void *srcrt;
+} __attribute__((preserve_access_index));
+
+struct ipv6_pinfo {
+	struct ipv6_txoptions *opt;
+} __attribute__((preserve_access_index));
+
+struct inet_sock {
+	struct ipv6_pinfo *pinet6; // only with CONFIG_IPV6
+	struct ip_options_rcu *inet_opt;
 } __attribute__((preserve_access_index));
 
 #define AF_UNSPEC 0
@@ -123,6 +153,13 @@ struct msghdr {
 #define AF_INET6 10
 
 #define SOCK_STREAM 1
+
+#define SOL_IP 0
+#define SOL_IPV6 41
+#define IP_RETOPTS 7
+#define IPV6_2292RTHDR 5
+#define IPV6_RTHDR 57
+#define CMSG_WALK 16 // control messages read before a send counts as unreadable
 
 #define IPPROTO_UDP 17
 #define IPPROTO_UDPLITE 136
@@ -140,6 +177,7 @@ struct event {
 	u64 cgroup_id; // bpf_get_current_cgroup_id()
 	u64 kn_id;     // the cgroup's kernfs node id (equal to cgroup_id on cgroup v2)
 	u64 bytes;     // on a send, the bytes the caller asked to send
+	u64 root_id;   // the session root's kernfs node id; 0: not under one
 	u32 op;
 	u32 pid;      // process ID in the witness's PID namespace (0: not visible there)
 	u32 host_pid; // process ID in the initial PID namespace
@@ -147,6 +185,7 @@ struct event {
 	u32 sock_type; // SOCK_STREAM, SOCK_DGRAM, ...
 	u32 protocol;  // sk_protocol: IPPROTO_TCP, IPPROTO_UDP, ...
 	u32 depth;     // number of valid entries in cgroup
+	u32 broadcast; // 1: a datagram or raw socket with SO_BROADCAST set
 	u16 port;      // destination port, network byte order
 	u16 local_port; // this end's port, host byte order
 	u8 addr[16];   // destination address: 4 bytes for AF_INET, 16 for AF_INET6
@@ -277,6 +316,7 @@ __attribute__((noinline)) int name_is_base(u64 addr)
 // place is where a cgroup stands relative to the session root.
 struct place {
 	u64 session;  // kernfs id of the cgroup just below the root; 0: none
+	u64 root_id;  // kernfs id of the root, when found
 	u32 base_at;  // levels from the leaf up to the root, when found
 	u8 found;     // the path has the session root in it
 	u8 deep;      // the walk never reached the top, so nothing here can be relied on
@@ -289,6 +329,7 @@ static __always_inline void place_of(struct kernfs_node *kn, struct place *p)
 {
 	struct kernfs_node *below = 0;
 	p->session = 0;
+	p->root_id = 0;
 	p->base_at = 0;
 	p->found = 0;
 	p->deep = 0;
@@ -305,6 +346,7 @@ static __always_inline void place_of(struct kernfs_node *kn, struct place *p)
 			p->found = 1;
 			p->base_at = i;
 			p->session = below ? BPF_CORE_READ(below, id) : 0;
+			p->root_id = BPF_CORE_READ(kn, id);
 		}
 		below = kn;
 		kn = kn_parent(kn);
@@ -327,6 +369,7 @@ static __always_inline void fill_caller(struct event *e, struct task_struct *t, 
 	bpf_get_current_comm(e->comm, sizeof(e->comm));
 
 	e->kn_id = kn ? BPF_CORE_READ(kn, id) : 0;
+	e->root_id = p->root_id;
 	e->depth = 0;
 	if (p->deep) {
 		count(&too_deep);
@@ -366,6 +409,17 @@ static __always_inline void fill_local(struct event *e, struct sock *sk)
 	} else if (family == AF_INET6 && bpf_core_field_exists(sk->__sk_common.skc_v6_rcv_saddr)) {
 		BPF_CORE_READ_INTO((struct in6_addr *)e->local_addr, sk, __sk_common.skc_v6_rcv_saddr);
 	}
+}
+
+// may_broadcast reports whether a send on sock may go to a broadcast address. The
+// route decides that, and the kernel refuses it unless SO_BROADCAST is set, so the
+// option is what can be read here. A stream socket ignores the option.
+static __always_inline u32 may_broadcast(struct socket *sock)
+{
+	if ((u16)BPF_CORE_READ(sock, type) == SOCK_STREAM)
+		return 0;
+	u64 flags = BPF_CORE_READ(sock, sk, __sk_common.skc_flags);
+	return (flags >> bpf_core_enum_value(enum sock_flags, SOCK_BROADCAST)) & 1;
 }
 
 // dest_family says how report reads a destination at addr (a kernel sockaddr):
@@ -418,6 +472,7 @@ static __always_inline void report(u32 op, struct socket *sock, const void *addr
 	e->family = family;
 	e->sock_type = (u16)BPF_CORE_READ(sock, type);
 	e->protocol = BPF_CORE_READ(sock, sk, sk_protocol);
+	e->broadcast = may_broadcast(sock);
 	e->bytes = (u32)size;
 	fill_local(e, BPF_CORE_READ(sock, sk));
 	__builtin_memset(e->addr, 0, sizeof(e->addr));
@@ -462,6 +517,68 @@ int handle_sendmsg(u64 *ctx)
 	return 0;
 }
 
+struct cmsg_head {
+	u64 len;
+	int level;
+	int type;
+};
+
+// control_reroutes reports whether a send's control messages may carry a source
+// route. Only a stream socket ignores them. IP_RETOPTS and IPV6_RTHDR hold options
+// in the form the application wrote them, not parsed, so a send with one counts as
+// going somewhere unread. So does a list too long to walk, or one unreadable.
+static __always_inline int control_reroutes(struct socket *sock, struct msghdr *msg)
+{
+	u64 left = BPF_CORE_READ(msg, msg_controllen);
+	char *at = BPF_CORE_READ(msg, msg_control);
+	if (!left || (u16)BPF_CORE_READ(sock, type) == SOCK_STREAM)
+		return 0;
+	for (int i = 0; i < CMSG_WALK; i++) {
+		struct cmsg_head h;
+		if (left < sizeof(h))
+			return 0;
+		if (bpf_probe_read_kernel(&h, sizeof(h), at) < 0)
+			return 1;
+		if ((h.level == SOL_IP && h.type == IP_RETOPTS) ||
+		    (h.level == SOL_IPV6 && (h.type == IPV6_RTHDR || h.type == IPV6_2292RTHDR)))
+			return 1;
+		u64 step = (h.len + 7) & ~7ULL;
+		if (h.len < sizeof(h) || step > left)
+			return 0; // the kernel refuses such a send
+		at += step;
+		left -= step;
+	}
+	return 1;
+}
+
+// A detour is where a send leaves for instead of the peer or name it carries.
+struct detour {
+	__be32 hop; // 0: the witness cannot say where
+	u8 taken;
+};
+
+// detour_of reads a socket's and a send's source route. IPv4 options hold the first
+// hop, and udp_sendmsg, raw_sendmsg and tcp_v4_connect all route to it, whatever
+// peer or name the send carries. No privilege is needed to set one. An IPv6 routing
+// header is reported as a detour to an unread address.
+static __always_inline void detour_of(struct socket *sock, struct msghdr *msg, struct detour *d)
+{
+	struct inet_sock *inet = (struct inet_sock *)BPF_CORE_READ(sock, sk);
+	d->hop = 0;
+	d->taken = control_reroutes(sock, msg);
+	struct ip_options_rcu *opt = BPF_CORE_READ(inet, inet_opt);
+	if (opt && BPF_CORE_READ(opt, opt.srr)) {
+		d->hop = BPF_CORE_READ(opt, opt.faddr);
+		d->taken = 1;
+	}
+	if (bpf_core_field_exists(inet->pinet6)) {
+		struct ipv6_pinfo *np = BPF_CORE_READ(inet, pinet6);
+		struct ipv6_txoptions *o6 = np ? BPF_CORE_READ(np, opt) : 0;
+		if (o6 && BPF_CORE_READ(o6, srcrt))
+			d->taken = 1;
+	}
+}
+
 // Delivery: every send on an inet socket from a session cgroup, to the peer the
 // socket holds. An accepted socket had no connect here to report, which is why
 // this hook exists. A send named a destination handle_sendmsg reports is left to
@@ -472,6 +589,11 @@ int handle_sendmsg(u64 *ctx)
 // out here, with whatever peer the socket holds, a zero peer if it holds none: a
 // name nothing could read, and sends with no name, which raw and SCTP sockets can
 // make. Only the reader can say a rule may be hit by those.
+//
+// A send with a source route gets one more event first, whichever of those it is:
+// its first hop with port 0, which a rule on that address matches on any port, or a
+// zero peer if the hop cannot be read. The hook reads the route, so a send the
+// kernel then refuses still counts.
 SEC("fentry/security_socket_sendmsg")
 int handle_deliver(u64 *ctx)
 {
@@ -495,6 +617,29 @@ int handle_deliver(u64 *ctx)
 		return 0;
 	}
 
+	int type = (u16)BPF_CORE_READ(sock, type);
+	struct detour d;
+	detour_of(sock, msg, &d);
+	if (d.taken) {
+		struct event *r = bpf_ringbuf_reserve(&events, sizeof(*r), 0);
+		if (!r) {
+			record_loss();
+			return 0;
+		}
+		r->op = OP_DELIVER;
+		r->family = AF_INET;
+		r->sock_type = type;
+		r->protocol = BPF_CORE_READ(sk, sk_protocol);
+		r->broadcast = may_broadcast(sock);
+		r->bytes = (u32)(int)ctx[2];
+		r->port = 0;
+		__builtin_memset(r->addr, 0, sizeof(r->addr));
+		__builtin_memcpy(r->addr, &d.hop, 4);
+		fill_local(r, sk);
+		fill_caller(r, t, kn, &p);
+		bpf_ringbuf_submit(r, 0);
+	}
+
 	u8 peer[16] = {};
 	__be16 port = BPF_CORE_READ(sk, __sk_common.skc_dport);
 	if (family == AF_INET) {
@@ -506,7 +651,6 @@ int handle_deliver(u64 *ctx)
 	u64 half[2];
 	__builtin_memcpy(half, peer, 16);
 	int peerless = !port && !half[0] && !half[1];
-	int type = (u16)BPF_CORE_READ(sock, type);
 	if (dest_family(OP_SENDMSG, sock, BPF_CORE_READ(msg, msg_name), BPF_CORE_READ(msg, msg_namelen)) > 0 &&
 	    (peerless || type != SOCK_STREAM))
 		return 0;
@@ -520,6 +664,7 @@ int handle_deliver(u64 *ctx)
 	e->family = family;
 	e->sock_type = type;
 	e->protocol = BPF_CORE_READ(sk, sk_protocol);
+	e->broadcast = may_broadcast(sock);
 	e->bytes = (u32)(int)ctx[2];
 	e->port = port;
 	__builtin_memcpy(e->addr, peer, 16);

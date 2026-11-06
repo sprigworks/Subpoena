@@ -18,6 +18,7 @@ type netEvent struct {
 	CgroupId  uint64
 	KnId      uint64
 	Bytes     uint64
+	RootId    uint64
 	Op        uint32
 	Pid       uint32
 	HostPid   uint32
@@ -25,12 +26,14 @@ type netEvent struct {
 	SockType  uint32
 	Protocol  uint32
 	Depth     uint32
+	Broadcast uint32
 	Port      uint16
 	LocalPort uint16
 	Addr      [16]uint8
 	LocalAddr [16]uint8
 	Comm      [16]int8
 	Cgroup    [8][64]int8
+	_         [4]byte
 }
 
 // Names of all BPF objects in the ELF.

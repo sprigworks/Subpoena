@@ -11,7 +11,8 @@
 // of the eBPF one, and needs no privilege. It writes the start record once
 // attached, before -ready, and the rest when told to stop (SIGTERM or SIGINT),
 // so a witness killed outright leaves a window that never closed, which proves
-// nothing, as it should, even in a file an earlier run left healthy.
+// nothing, as it should, even in a file an earlier run left healthy. An -out or
+// -ready inside a watched root is refused: the witness would see its own file.
 //
 // The db form runs the database witness (pkg/witness/dbproxy) instead, for a suite
 // in another language: point the application at the address it prints and writes
@@ -30,7 +31,7 @@
 // lists the captures that ran, and a reader refuses a delivery claim on a file
 // that does not name this one.
 //
-// Stopping does not wait on a stalled output: if a line can make no progress for
+// Stopping the eBPF or file witness does not wait on a stalled output: if a line can make no progress for
 // stallLimit once told to stop, the capture is unhealthy and the process exits
 // non-zero, most likely with no stop record, which proves nothing, as it should.
 package main
@@ -43,6 +44,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -102,11 +104,17 @@ func main() {
 }
 
 // runFiles runs the file witness until stop delivers, then writes the capture.
+// Its output can stall as the eBPF path's can, and the same guard ends the wait.
 // An unhealthy capture is written and returned: the file says so, and so does
 // the exit status. The start record is written before anything is told the
 // witness is ready: a file that cannot be written is refused then, and a
 // witness killed later leaves an open window, not whatever was there before.
+//
+//subpoena:enforcement_point
 func runFiles(roots []string, out, ready string, stop <-chan os.Signal) error {
+	if err := ownFileWatched(roots, out, ready); err != nil {
+		return err //subpoena:enforcement
+	}
 	w, err := witness.NewFileWatch(roots...)
 	if err != nil {
 		return err
@@ -121,7 +129,8 @@ func runFiles(roots []string, out, ready string, stop <-chan os.Signal) error {
 		defer f.Close()
 		dst = f
 	}
-	if err := w.WriteStart(dst); err != nil {
+	guard := newStallGuard(dst, stallLimit)
+	if err := w.WriteStart(guard); err != nil {
 		w.Stop()
 		return err
 	}
@@ -134,8 +143,52 @@ func runFiles(roots []string, out, ready string, stop <-chan os.Signal) error {
 	}
 	fmt.Fprintln(os.Stderr, "subpoena-witness: attached")
 	<-stop
+	guard.stopping() //subpoena:enforcement
 	stopErr := w.Stop()
-	return errors.Join(stopErr, w.WriteEnd(dst))
+	return errors.Join(stopErr, w.WriteEnd(guard))
+}
+
+// ownFileWatched refuses an output or ready file under a watched root, whatever
+// the spelling: its own lines would read as changes there, and fail a claim about
+// the root.
+//
+//subpoena:enforcement_point
+func ownFileWatched(roots []string, files ...string) error {
+	for _, file := range files {
+		if file == "" || file == "-" {
+			continue
+		}
+		abs, err := filepath.Abs(file)
+		if err != nil {
+			return err
+		}
+		if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+			abs = filepath.Join(dir, filepath.Base(abs))
+		}
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = real
+		}
+		for dir := filepath.Dir(abs); ; dir = filepath.Dir(dir) {
+			for _, root := range roots {
+				if sameDir(dir, root) {
+					return fmt.Errorf("%s is under the watched root %s, so the witness would see its own file: put it elsewhere", file, root) //subpoena:enforcement
+				}
+			}
+			if dir == filepath.Dir(dir) {
+				break
+			}
+		}
+	}
+	return nil
+}
+
+func sameDir(a, b string) bool {
+	x, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	y, err := os.Stat(b)
+	return err == nil && os.SameFile(x, y)
 }
 
 // startRecord opens the capture window and says which hooks are behind it.

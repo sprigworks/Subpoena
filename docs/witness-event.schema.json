@@ -131,14 +131,14 @@
       "items": {
         "type": "string"
       },
-      "description": "On a file witness's start record: the directories it watched."
+      "description": "On a file witness's start record: the directories it watched. Only a start record's count."
     },
     "captures": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "On a start record: the hooks that ran. exec: the process witness. delivery: the send hook. A file that does not list delivery cannot pass a no-delivery check."
+      "description": "On a start record: the hooks that ran. exec: the process witness. delivery: the send hook. file: the file witness. row: the database witness. A file that does not list the capture a claim needs cannot pass that claim: no_spawn needs exec, no_write and no_commit need file, no_row needs row, no_delivery needs delivery. Only a start record's count."
     },
     "coverage": {
       "type": "string",
@@ -182,6 +182,10 @@
       "type": "integer",
       "minimum": 0,
       "description": "Bytes the caller asked to send, not bytes the peer received."
+    },
+    "broadcast": {
+      "type": "boolean",
+      "description": "On a delivery line: a datagram or raw socket had SO_BROADCAST set, so the peer may be a subnet's broadcast address. Absent when false."
     },
     "event": {
       "type": "string",

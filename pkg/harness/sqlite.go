@@ -15,7 +15,8 @@ import (
 // if capture was unhealthy. Short of that, it is Inconclusive when the files
 // cannot settle it, when the table list may omit a table, when a named table
 // is not in the database, when a named table is virtual (its rows are on no
-// page of its own), when the witness does not watch the database, and on
+// page of its own), when the witness does not watch the database, when a
+// witness file has no file capture in it, and on
 // missing or bad capture health. Pass needs all of those clear.
 //
 //subpoena:enforcement_point
@@ -26,6 +27,9 @@ func NoCommit(w witness.FileWitness, db witness.SQLiteReader, traceID string, ta
 	}
 	if slices.ContainsFunc(tables, c.Changed) {
 		return Fail, fmt.Errorf("witness saw a commit to %v in %s for %s: %+v", c.Tables, db.Path(), traceID, c) //subpoena:enforcement
+	}
+	if err := fileCapture(w); err != nil {
+		return Inconclusive, err //subpoena:enforcement
 	}
 	if !w.Covers(db.Path()) {
 		return Inconclusive, fmt.Errorf("witness does not watch %s, so the reader cannot be told what reached it", db.Path()) //subpoena:enforcement

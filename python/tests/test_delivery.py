@@ -113,3 +113,46 @@ def test_messages_are_tagged():
 def test_delivery_to(rule, peer, want):
     e = DeliveryEvent(op=OP_SENDMSG, peer=AddrPort.of(peer) if peer else None, local=None)
     assert delivery_to(*rule)(e) is want
+
+
+def sends(*lines):
+    start = {"time": "2026-11-05T12:00:00Z", "record": "start", "healthy": False, "captures": ["exec", "delivery"]}
+    stop = {"time": "2026-11-05T12:00:09Z", "record": "stop", "healthy": True}
+    body = [{"time": "2026-11-05T12:00:01Z", "delivery_op": OP_SENDMSG, "pid": 7, "comm": "app", "protocol": "udp",
+             "peer": peer, "trace_id": TRACE, "attribution": "cgroup", **extra} for peer, extra in lines]
+    return read_log(io.StringIO("\n".join(json.dumps(l) for l in [start, *body, stop]) + "\n"))
+
+
+@pytest.mark.parametrize("peer,extra,rule,want", [
+    ("172.17.255.255:41912", {"broadcast": True}, "172.17.0.3:41912", Verdict.INCONCLUSIVE),
+    ("255.255.255.255:41912", {}, "172.17.0.3:41912", Verdict.INCONCLUSIVE),
+    ("239.7.7.7:41912", {}, "172.17.0.3:41912", Verdict.INCONCLUSIVE),
+    ("[ff02::1]:41912", {}, "172.17.0.3:41912", Verdict.INCONCLUSIVE),
+    ("[::ffff:239.7.7.7]:41912", {}, "172.17.0.3:41912", Verdict.INCONCLUSIVE),
+    ("239.7.7.7:41999", {}, "172.17.0.3:41912", Verdict.PASS),
+    ("172.17.255.255:41999", {"broadcast": True}, "172.17.0.3:41912", Verdict.PASS),
+    ("239.7.7.7:41999", {}, "172.17.0.3:0", Verdict.INCONCLUSIVE),
+    ("239.7.7.7:0", {}, "172.17.0.3:41912", Verdict.INCONCLUSIVE),
+    ("172.17.0.11:41912", {"broadcast": True}, "172.17.0.3:41912", Verdict.INCONCLUSIVE),
+    ("172.17.0.11:41912", {}, "172.17.0.3:41912", Verdict.PASS),
+    ("172.17.0.9:41912", {"broadcast": True}, "172.17.0.3:41912", Verdict.PASS),
+    ("172.17.0.10:41912", {"broadcast": True}, "172.17.0.3:41912", Verdict.PASS),
+    ("[fd00::b]:41912", {"broadcast": True}, "172.17.0.3:41912", Verdict.PASS),
+    ("172.17.0.9:41912", {}, "172.17.0.3:41912", Verdict.PASS),
+    ("239.7.7.7:41912", {}, "239.7.7.7:41912", Verdict.FAIL),
+    ("172.17.0.3:41912", {"broadcast": True}, "172.17.0.3:41912", Verdict.FAIL),
+])
+def test_a_fanout_send_may_have_reached_the_peer(peer, extra, rule, want):
+    v, err = no_delivery(sends((peer, extra)), TRACE, delivery_to(rule))
+    assert v is want, err
+    if want is Verdict.INCONCLUSIVE:
+        assert "may have reached" in err
+
+
+def test_a_fanout_send_is_a_send_to_an_any_peer_claim():
+    assert no_delivery(sends(("239.7.7.7:41912", {})), TRACE)[0] is Verdict.FAIL
+
+
+def test_a_match_of_your_own_sees_only_the_peer():
+    sub = AddrPort.of("172.17.0.3:41912")
+    assert no_delivery(sends(("239.7.7.7:41912", {})), TRACE, lambda e: e.peer == sub)[0] is Verdict.PASS

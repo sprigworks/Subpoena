@@ -35,6 +35,37 @@ type DeliveryEvent struct {
 	TraceID     string // set when Attribution is ByCgroup
 	Attribution Attribution
 	SeenAt      time.Time // when the witness read the event, not when it was sent
+	// Broadcast says the socket had SO_BROADCAST set. Only the route can say an
+	// address like 172.17.255.255 is a subnet's broadcast, and no line holds the
+	// route, so the option stands for it: see Fanout. It alone means little: Go
+	// sets it on every socket it makes.
+	Broadcast bool
+	// AnyPeer asks a match whether it would take this send if the send reached
+	// everyone listening on its port. A witness never sets it; see AnyMember.
+	AnyPeer bool
+}
+
+// Fanout reports whether the send may reach sockets other than its Peer: Peer is
+// a multicast group or the limited broadcast address, or it may be a subnet's
+// broadcast address. Who was listening, the kernel does not say at the send, so a
+// claim about one of them cannot be settled either way.
+//
+// A subnet's broadcast address has every host bit set, and a subnet with one has at
+// least two, so with Broadcast only an IPv4 address ending in those two can be one.
+func (e DeliveryEvent) Fanout() bool {
+	a := e.Peer.Addr().Unmap()
+	if a.IsMulticast() || a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		return true
+	}
+	return e.Broadcast && a.Is4() && a.As4()[3]&3 == 3
+}
+
+// AnyMember is e as a send that reached everyone listening on its port, to ask a
+// match whether a Fanout send could be one it is about. harness.DeliveryTo reads
+// AnyPeer. A match of your own that does not cannot be asked, so it sees only Peer.
+func (e DeliveryEvent) AnyMember() DeliveryEvent {
+	e.AnyPeer = true
+	return e
 }
 
 // PeerUnknown reports whether the witness saw the send but not where it went.

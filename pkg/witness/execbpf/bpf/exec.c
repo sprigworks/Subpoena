@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: (MIT OR GPL-2.0-only)
 //
 // execbpf: report every process exec (and, optionally, every fork) with the
-// process's cgroup, read in the kernel at the moment of exec.
+// process's cgroup, read in the kernel at the moment of exec. Two more hooks count
+// a task leaving its session, which would otherwise take its execs out of the
+// session unseen. The walk and those hooks are netbpf's (net.c).
 //
 // The kernel requires a GPL-compatible license string for the tracing helpers
 // used here; this file is dual-licensed MIT or GPL-2.0 so that it can be. It is
@@ -18,6 +20,7 @@ typedef __u32 __be32;
 typedef __u32 __wsum;
 typedef __u64 u64;
 typedef __u32 u32;
+typedef __u8 u8;
 typedef int pid_t;
 
 enum bpf_map_type {
@@ -39,8 +42,11 @@ struct kernfs_node___v615 {
 	struct kernfs_node *__parent; // Linux 6.15 and later
 } __attribute__((preserve_access_index));
 
+struct cgroup_root;
+
 struct cgroup {
 	struct kernfs_node *kn;
+	struct cgroup_root *root;
 } __attribute__((preserve_access_index));
 
 struct css_set {
@@ -88,7 +94,8 @@ struct linux_binprm {
 #define KIND_FORK 2
 
 #define NAME_LEN 64  // one cgroup path element (a trace ID is 32)
-#define DEPTH 8      // cgroup path elements kept, leaf first
+#define DEPTH 8      // cgroup path elements kept
+#define WALK 32      // cgroup levels searched for the session root; deeper is counted, never guessed
 #define PATH_LEN 256 // executable path
 #define ARGS_LEN 512 // argv, NUL-separated, truncated
 #define PIDNS_DEPTH 8 // PID namespace nesting levels searched
@@ -104,7 +111,7 @@ struct event {
 	u32 args_len;
 	u32 depth; // number of valid entries in cgroup
 	char comm[16];
-	char cgroup[DEPTH][NAME_LEN]; // cgroup path elements: [0] is the leaf
+	char cgroup[DEPTH][NAME_LEN]; // cgroup path elements, leaf-most first (see fill_common)
 	char filename[PATH_LEN];
 	char args[ARGS_LEN];
 };
@@ -127,13 +134,37 @@ struct {
 	__type(value, u64);
 } lost SEC(".maps");
 
-static __always_inline void record_loss(void)
+static __always_inline void count(void *map)
 {
 	u32 key = 0;
-	u64 *count = bpf_map_lookup_elem(&lost, &key);
-	if (count)
-		__sync_fetch_and_add(count, 1);
+	u64 *n = bpf_map_lookup_elem(map, &key);
+	if (n)
+		__sync_fetch_and_add(n, 1);
 }
+
+static __always_inline void record_loss(void)
+{
+	count(&lost);
+}
+
+// Tasks that left a session during the capture: moved out of it, or forked out
+// of it with CLONE_INTO_CGROUP. An exec after that is not the session's, so it
+// cannot be attributed, and Go fails Health instead. Read like lost.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u64);
+} left_session SEC(".maps");
+
+// Execs and moves whose cgroup path is too long to walk to the top, so nothing can
+// say whether they are in a session. Go fails Health. Read like lost.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u64);
+} too_deep SEC(".maps");
 
 // Set from Go before loading: report forks too (needed for lineage).
 const volatile u32 track_forks = 0;
@@ -141,6 +172,9 @@ const volatile u32 track_forks = 0;
 // (/proc/self/ns/pid), so PIDs are reported as the witness sees them.
 // 0 reports initial-namespace PIDs.
 const volatile u32 pidns_inum = 0;
+// Set from Go before loading: the last element of the session cgroup root,
+// NUL-terminated.
+const volatile char session_base[NAME_LEN] = {};
 
 // ns_tgid returns t's process ID as seen in the namespace pidns_inum, or 0
 // when t is not visible there.
@@ -174,6 +208,68 @@ static __always_inline struct kernfs_node *kn_parent(struct kernfs_node *kn)
 	return BPF_CORE_READ(kn, parent);
 }
 
+// name_is_base reports whether the cgroup kn is named session_base: 1 if so, 0 if
+// not, -1 if its name cannot be read. Not inlined, and not static, for the verifier;
+// see net.c.
+__attribute__((noinline)) int name_is_base(u64 addr)
+{
+	struct kernfs_node *kn = (struct kernfs_node *)addr;
+	char name[NAME_LEN];
+	if (bpf_probe_read_kernel_str(name, NAME_LEN, BPF_CORE_READ(kn, name)) < 0)
+		return -1;
+	for (int i = 0; i < NAME_LEN; i++) {
+		if (name[i] != session_base[i])
+			return 0;
+		if (!name[i])
+			return 1;
+	}
+	return 1;
+}
+
+// place is where a cgroup stands relative to the session root.
+struct place {
+	u64 session;  // kernfs id of the cgroup just below the root; 0: none
+	u32 base_at;  // levels from the leaf up to the root, when found
+	u8 found;     // the path has the session root in it
+	u8 deep;      // the walk never reached the top, so nothing here can be relied on
+};
+
+// place_of walks from a cgroup all the way up. Only the element nearest the top
+// counts: the application can create anything below its session, a cgroup named
+// like the root included, but nothing above it.
+static __always_inline void place_of(struct kernfs_node *kn, struct place *p)
+{
+	struct kernfs_node *below = 0;
+	p->session = 0;
+	p->base_at = 0;
+	p->found = 0;
+	p->deep = 0;
+	for (int i = 0; i < WALK; i++) {
+		if (!kn)
+			return;
+		int base = name_is_base((u64)kn);
+		if (base < 0) {
+			record_loss(); // unreadable: cannot rule the session out
+			p->deep = 1;
+			return;
+		}
+		if (base) {
+			p->found = 1;
+			p->base_at = i;
+			p->session = below ? BPF_CORE_READ(below, id) : 0;
+		}
+		below = kn;
+		kn = kn_parent(kn);
+	}
+	if (kn)
+		p->deep = 1;
+}
+
+// fill_common sets the fields every event carries. The path keeps DEPTH elements.
+// Usually those are the leaf and up, but with the session root further up than that
+// they end at the root, dropping the leaf instead: Go attributes by <root>/<trace>,
+// and the elements nearest the leaf are the application's to choose. With no way to
+// find the root the path is left empty, so nothing can be attributed from it.
 static __always_inline void fill_common(struct event *e, struct task_struct *p, struct task_struct *parent, u32 kind)
 {
 	e->kind = kind;
@@ -189,6 +285,19 @@ static __always_inline void fill_common(struct event *e, struct task_struct *p, 
 	struct kernfs_node *kn = BPF_CORE_READ(p, cgroups, dfl_cgrp, kn);
 	e->kn_id = kn ? BPF_CORE_READ(kn, id) : 0;
 	e->depth = 0;
+	struct place at;
+	place_of(kn, &at);
+	if (at.deep) {
+		count(&too_deep);
+		kn = 0;
+	} else if (at.found && at.base_at >= DEPTH) {
+		u32 skip = at.base_at - (DEPTH - 1);
+		for (int i = 0; i < WALK; i++) {
+			if (i >= skip || !kn)
+				break;
+			kn = kn_parent(kn);
+		}
+	}
 #pragma unroll
 	for (int i = 0; i < DEPTH; i++) {
 		e->cgroup[i][0] = 0;
@@ -231,13 +340,53 @@ int handle_exec(u64 *ctx)
 	return 0;
 }
 
+// note_move counts a task going from one cgroup to another outside its session.
+// Which cgroup it goes to does not matter: the session root, an ancestor or
+// another session are all out of the claim about this one.
+static __always_inline void note_move(struct kernfs_node *from, struct kernfs_node *to)
+{
+	struct place a, b;
+	place_of(from, &a);
+	if (!a.deep && !a.session)
+		return;
+	place_of(to, &b);
+	if (a.deep || b.deep)
+		count(&too_deep);
+	else if (a.session != b.session)
+		count(&left_session);
+}
+
+// int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool threadgroup)
+//
+// Every write to cgroup.procs or cgroup.threads comes through here. The tracepoint
+// of the same name fires after the move, with the old cgroup gone, so this is the
+// entry instead; a move that then fails is counted, which only over-reports. A
+// task in a v1 hierarchy moves there too, and that is not its session.
+SEC("fentry/cgroup_attach_task")
+int handle_attach(u64 *ctx)
+{
+	struct cgroup *dst = (struct cgroup *)ctx[0];
+	struct task_struct *t = (struct task_struct *)ctx[1];
+	struct cgroup *src = BPF_CORE_READ(t, cgroups, dfl_cgrp);
+	if (src == dst || BPF_CORE_READ(src, root) != BPF_CORE_READ(dst, root))
+		return 0;
+	note_move(BPF_CORE_READ(src, kn), BPF_CORE_READ(dst, kn));
+	return 0;
+}
+
 SEC("tp_btf/sched_process_fork")
 int handle_fork(u64 *ctx)
 {
-	if (!track_forks)
-		return 0;
 	struct task_struct *parent = (struct task_struct *)ctx[0];
 	struct task_struct *child = (struct task_struct *)ctx[1];
+	// A child made with CLONE_INTO_CGROUP starts in another cgroup without a
+	// move, so handle_attach does not see it.
+	struct kernfs_node *from = BPF_CORE_READ(parent, cgroups, dfl_cgrp, kn);
+	struct kernfs_node *to = BPF_CORE_READ(child, cgroups, dfl_cgrp, kn);
+	if (from != to)
+		note_move(from, to);
+	if (!track_forks)
+		return 0;
 	u32 pid = BPF_CORE_READ(child, pid);
 	u32 tgid = BPF_CORE_READ(child, tgid);
 	if (pid != tgid)

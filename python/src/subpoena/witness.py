@@ -5,6 +5,7 @@ witness. Running a witness of files, deliveries or rows stays Go-only."""
 
 from __future__ import annotations
 
+import dataclasses
 import ipaddress
 import json
 import posixpath
@@ -153,7 +154,7 @@ _KNOWN = ("time", "pid", "ppid", "host_pid", "comm", "exe", "command", "args", "
           "trace_id", "attribution", "record", "healthy", "error", "roots", "captures", "coverage", "silent_closes",
           "symlinks",
           "file_op", "path", "root", "is_dir", "source", "rename", "cookie",
-          "delivery_op", "protocol", "peer", "local", "bytes",
+          "delivery_op", "protocol", "peer", "local", "bytes", "broadcast",
           "event", "engine", "conn", "dest", "statement", "verb", "tables", "opaque", "reason", "rows", "outcome")
 _FILE_STR_FIELDS = ("file_op", "path", "root", "source", "rename", "trace_id", "attribution")
 
@@ -269,6 +270,21 @@ class Log:
         it the file has no delivery lines because nothing looked, which says
         nothing about sends: no_delivery is then Inconclusive."""
         return "delivery" in self._captures
+
+    def captured_execs(self) -> bool:
+        """Whether the start record says the exec hook ran. Without it no_spawn
+        is Inconclusive."""
+        return "exec" in self._captures
+
+    def captured_files(self) -> bool:
+        """Whether the start record says a file witness ran. Without it no_write
+        is Inconclusive."""
+        return "file" in self._captures
+
+    def captured_rows(self) -> bool:
+        """Whether the start record says a database witness ran. Without it
+        no_row is Inconclusive."""
+        return "row" in self._captures
 
     def coverage(self) -> str:
         """The stop record's account of what the capture might have missed
@@ -393,7 +409,6 @@ def read_log(f: IO[str]) -> Log:
                     v = l.get(k)
                     if v is not None and (not isinstance(v, list) or not all(isinstance(p, str) for p in v)):
                         raise ValueError(f"{k} is not a list of strings")
-                roots.extend(rs or [])
                 silent.extend(l.get("silent_closes") or [])
                 symlinks.extend(l.get("symlinks") or [])
                 coverage = l.get("coverage") or coverage
@@ -403,6 +418,7 @@ def read_log(f: IO[str]) -> Log:
                     open_at = n
                     windows += 1
                     captures.extend(cs or [])
+                    roots.extend(rs or [])
                 elif rec == "stop":
                     if not open_at:
                         fault(f"witness: line {n}: a stop with no capture open")
@@ -583,12 +599,38 @@ class DeliveryEvent:
     trace_id: str = ""
     attribution: str = ""
     seen_at: Optional[datetime] = None
+    # The socket had SO_BROADCAST set. Only the route can say an address like
+    # 172.17.255.255 is a subnet's broadcast, so the option stands for it. It
+    # alone means little: Go sets it on every socket it makes.
+    broadcast: bool = False
+    # Asks a match whether it would take this send if it reached everyone
+    # listening on its port. A witness never sets it; see any_member.
+    any_peer: bool = False
 
     @property
     def peer_unknown(self) -> bool:
         """The send was seen, but not where it went: it may have gone to any
         peer."""
         return self.peer is None or self.peer.addr.is_unspecified
+
+    @property
+    def fanout(self) -> bool:
+        """The send may reach sockets other than its peer: the peer is a multicast
+        group or the limited broadcast address, or it may be a subnet's broadcast
+        address. That has every host bit set, and a subnet with one has at least
+        two, so with broadcast only an IPv4 address ending in those two can be one."""
+        if self.peer is None:
+            return False
+        a = self.peer.addr
+        if a.is_multicast or a == ipaddress.ip_address("255.255.255.255"):
+            return True
+        return self.broadcast and a.version == 4 and int(a) & 3 == 3
+
+    def any_member(self) -> "DeliveryEvent":
+        """This send as one that reached everyone listening on its port, to ask
+        a match whether a fanout send could be one it is about. delivery_to reads
+        any_peer. A match of your own that does not sees only peer."""
+        return dataclasses.replace(self, any_peer=True)
 
 
 def _delivery(l: dict) -> DeliveryEvent:
@@ -605,6 +647,8 @@ def _delivery(l: dict) -> DeliveryEvent:
             raise ValueError(f"{k} is not an integer")
         if not lo <= v <= hi:
             raise ValueError(f"{k} {v} is out of range")
+    if l.get("broadcast") is not None and not isinstance(l["broadcast"], bool):
+        raise ValueError("broadcast is not a boolean")
     if not l.get("time"):
         raise ValueError("no time")
     seen_at = _parse_time(l["time"])
@@ -616,6 +660,7 @@ def _delivery(l: dict) -> DeliveryEvent:
         local=AddrPort.of(l["local"]) if l.get("local") else None, protocol=g("protocol", ""),
         bytes=g("bytes", 0), pid=g("pid", 0), comm=g("comm", ""), cgroup=g("cgroup", ""),
         cgroup_id=g("cgroup_id", 0), trace_id=g("trace_id", ""), attribution=g("attribution", ""), seen_at=seen_at,
+        broadcast=g("broadcast", False),
     )
 
 

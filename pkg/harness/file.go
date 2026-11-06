@@ -13,8 +13,8 @@ import (
 // ended. paths are absolute paths the claim is about, each with everything
 // below it (none: anything under the witness's roots). One event that touches
 // them contradicts absence even if capture was unhealthy. With none, missing or
-// bad health makes the claim Inconclusive, and so do a path the witness does
-// not cover, which could never have been seen; a witness with no roots, which
+// bad health makes the claim Inconclusive, and so do a witness file with no
+// file capture in it; a path the witness does not cover, which could never have been seen; a witness with no roots, which
 // watched nothing; and a claimed file opened for writing and closed with no
 // write seen, which is all a change by mmap or native AIO may leave.
 //
@@ -51,9 +51,23 @@ func touchesAny(e witness.FileEvent, paths []string) bool {
 	return slices.ContainsFunc(paths, e.Touches)
 }
 
+// fileCapture is the fault of a witness file whose start record names no file
+// witness: roots alone are not one, as anyone can write them.
+//
+//subpoena:enforcement_point
+func fileCapture(w any) error {
+	if c, ok := w.(interface{ CapturedFiles() bool }); ok && !c.CapturedFiles() {
+		return errors.New("the witness file's start record names no file capture, so a write could not have been seen (run subpoena-witness with -file-root)") //subpoena:enforcement
+	}
+	return nil
+}
+
 // uncovered is the fault of a claim about a path w does not cover, or of any
-// claim to a witness that watched nothing.
+// claim to a witness that watched nothing or a file that names no file capture.
 func uncovered(w witness.FileWitness, paths []string) error {
+	if err := fileCapture(w); err != nil {
+		return err
+	}
 	if len(w.Roots()) == 0 {
 		return errors.New("witness watches no directories, so it could not have seen a write")
 	}
