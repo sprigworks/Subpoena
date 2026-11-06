@@ -29,6 +29,11 @@
 - **A fail printed after a real pass is no kill.** Every test passed, `TestMain` exited 1 on the
   mutant, and text printed after the last test read as that test's failure. A pass ends a test,
   so only a witness failure's mark counts after one.
+- **A printed pass does not hide a crash line.** A test that recovers a panic stays a crash, as
+  Ginkgo's does, and a printed pass switched that off for a test that really failed. A crash line
+  now counts in any test with a fail event, whatever pass sits beside it.
+- **A fail printed in a green package is no failure.** A package counts only if its binary exited
+  1, so such a line no longer carries a kill for a run that is red because another package crashed.
 - **A package that hangs no longer costs another package's kill.** Every package runs now, and a
   timed-out run went straight to `enforcement-mutant-timeout`, with a clean failure in the
   output. A run with a clean failure in a package that finished now goes to the repeat, and a

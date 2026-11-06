@@ -1034,7 +1034,7 @@ func failedTests(raw, key string) map[testID]bool {
 	}
 	tests := map[testID]bool{}
 	for k, e := range endings(raw) {
-		if !e.failed || !clean[k[0]] {
+		if k[1] == "" || !e.failed || !clean[k[0]] {
 			continue
 		}
 		if !e.ran {
@@ -1054,12 +1054,19 @@ type eventKey [2]string
 // ending is what a test's events say happened to it. Any of it can be printed text.
 type ending struct{ ran, passed, skipped, failed bool }
 
-// endings reads the events of each test in raw.
+// cleanPass reports whether the test passed and nothing says otherwise. A pass with
+// a fail beside it can be printed, ahead of the real fail or after it, so that is not
+// a test to take at its word: a line in it can be what it seems.
+func (e ending) cleanPass() bool { return e.passed && !e.failed }
+
+// endings reads the events of each test in raw, and of each package under an empty
+// test name. It is the one reading of how a test
+// ended, for failedTests, the crash rule and what a crash shows.
 func endings(raw string) map[eventKey]ending {
 	all := map[eventKey]ending{}
 	for _, line := range strings.Split(raw, "\n") {
 		var e failEvent
-		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || e.Test == "" {
+		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
 			continue
 		}
 		k := eventKey{e.Package, e.Test}
@@ -1378,9 +1385,9 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 	type event struct {
 		Action, Package, Test, Output string
 	}
-	type key [2]string
+	type key = eventKey
 	var evs []event
-	failed, passed, crash, dead := map[key]bool{}, map[key]bool{}, map[key]bool{}, map[string]bool{}
+	crash, dead := map[key]bool{}, map[string]bool{}
 	open := map[key]int{} // test -> index in evs of its line still being read
 	for _, line := range strings.Split(raw, "\n") {
 		var e event
@@ -1404,10 +1411,6 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 			}
 		}
 		switch e.Action {
-		case "fail":
-			failed[k] = true
-		case "pass":
-			passed[k] = true
 		case "output":
 			if crashRE.MatchString(e.Output) || ginkgoPanicRE.MatchString(e.Output) {
 				crash[k] = true
@@ -1418,8 +1421,9 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 			}
 		}
 	}
+	ends := endings(raw)
 	for k := range crash {
-		if !passed[k] {
+		if !ends[k].cleanPass() {
 			dead[k[0]] = true //subpoena:enforcement
 		}
 	}
@@ -1437,7 +1441,7 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 		if e.Test == "" {
 			continue //subpoena:enforcement
 		}
-		if e.Action != "output" || !failed[k] {
+		if e.Action != "output" || !ends[k].failed {
 			continue
 		}
 		line := strings.TrimRight(e.Output, "\n")
@@ -1621,11 +1625,10 @@ var framingRE = regexp.MustCompile(`^(=== (RUN|PAUSE|CONT|NAME)|\s*--- (PASS|SKI
 // the useful ones), or else the package's last n lines, as after log.Fatal,
 // which leaves no crash line. A panic in a test that passed is no crash.
 func crashOutput(raw string, n int) string {
-	type key [2]string
+	type key = eventKey
 	lines := map[string][]string{}
 	crashAt := map[key]int{}
 	var crashes []key
-	passed := map[key]bool{}
 	failedPkg := ""
 	for _, l := range strings.Split(raw, "\n") {
 		var e struct{ Action, Package, Test, Output string }
@@ -1634,8 +1637,6 @@ func crashOutput(raw string, n int) string {
 		}
 		k := key{e.Package, e.Test}
 		switch e.Action {
-		case "pass":
-			passed[k] = true
 		case "fail":
 			if e.Test == "" && failedPkg == "" {
 				failedPkg = e.Package
@@ -1652,8 +1653,9 @@ func crashOutput(raw string, n int) string {
 			lines[e.Package] = append(lines[e.Package], text)
 		}
 	}
+	ends := endings(raw)
 	for _, k := range crashes {
-		if !passed[k] {
+		if !ends[k].cleanPass() {
 			out := lines[k[0]][crashAt[k]:]
 			return "package " + k[0] + ":\n" + strings.Join(out[:min(n, len(out))], "\n")
 		}

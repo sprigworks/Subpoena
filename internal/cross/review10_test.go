@@ -4,6 +4,7 @@ package cross
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,75 @@ func TestRefused(t *testing.T) {
 `})
 	if r := killOf(t, Options{Target: dir}); r.Outcome != Unconfirmed {
 		t.Fatalf("got %+v", r)
+	}
+}
+
+// Review 10, H2. A crash line in a test that failed is a crash, and a printed pass
+// must not turn that off, ahead of the real fail or after it, witness failure or not.
+func TestAPrintedPassDoesNotHideACrashLine(t *testing.T) {
+	t.Parallel()
+	const pass = `fmt.Print("\x16--- PASS: TestRefused (0.00s)\n\x16=== NAME  TestRefused\n")`
+	test := func(failure, late string) string {
+		return `package mini
+
+import ("fmt"; "os"; "testing")
+
+func TestRefused(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("panic: %v\n", r)
+			t.Error(` + failure + `)
+		}
+	}()
+	if Check("mallory") == nil {
+		` + pass + `
+		var m map[string]int
+		m["x"] = 1
+	}
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	` + late + `
+	os.Exit(code)
+}
+`
+	}
+	for name, src := range map[string]string{
+		"plain":         test(`"mallory let in"`, ""),
+		"witness":       test(`signed("witness: mallory reached the sink")`, ""),
+		"pass after it": test(`signed("witness: mallory reached the sink")`, `fmt.Print("\x16--- PASS: TestRefused (0.00s)\n")`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := module(t, map[string]string{"gate.go": gate3, "signed_test.go": signedHelper, "gate_test.go": src})
+			r := killOf(t, Options{Target: dir, RequireWitness: true})
+			if r.Outcome != Crashed || !strings.Contains(r.Output, "panic: ") {
+				t.Fatalf("a crash was read as something else: %+v", r)
+			}
+		})
+	}
+}
+
+func TestACrashLineIsCrashUnlessTheTestCleanlyPassed(t *testing.T) {
+	end := event("fail", "p", "", "") + exitEvent("p", "1") + "\n"
+	run, boom := event("run", "p", "TestA", ""), event("output", "p", "TestA", "panic: boom\n")
+	line := event("output", "p", "TestA", "    a_test.go:1: boom\n")
+	pass, fail := event("pass", "p", "TestA", ""), event("fail", "p", "TestA", "")
+	for name, tc := range map[string]struct {
+		raw  string
+		dead bool
+	}{
+		"failed":                  {run + boom + line + fail + end, true},
+		"printed pass, real fail": {run + pass + boom + line + fail + end, true},
+		"real fail, printed pass": {run + boom + line + fail + pass + end, true},
+		"a passing test's log":    {run + boom + pass + failedRun("p", "TestB", "real"), false},
+	} {
+		if _, dead := readFailures(tc.raw); dead["p"] != tc.dead {
+			t.Errorf("%s: dead %v", name, dead)
+		}
+		if got := crashOutput(tc.raw, 5); tc.dead && !strings.Contains(got, "panic: boom") {
+			t.Errorf("%s: shown %q", name, got)
+		}
 	}
 }
