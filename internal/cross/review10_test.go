@@ -56,6 +56,11 @@ func TestOnlyAPackageThatExitedOneFails(t *testing.T) {
 	if len(fs) != 1 || fs[0].pkg != "red" {
 		t.Errorf("failures: %+v", fs)
 	}
+	// A binary that died is still named: stoppedShort goes by it.
+	raw := event("run", "d", "TestA", "") + event("fail", "d", "", "") + exitEvent("d", "2") + "\n"
+	if _, dead := readFailures(raw + red); !dead["d"] || dead["red"] {
+		t.Errorf("dead: %v", dead)
+	}
 }
 
 // Review 10, H3. Every test passed, TestMain exited 1 on the mutant, and a fail was

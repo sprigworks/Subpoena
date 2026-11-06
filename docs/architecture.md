@@ -188,7 +188,8 @@ overrides the wrapper's own flag, so on a single-package target every kill is a
 crash: unset it for a cross run. A `panic:` line also voids a package's kills when it
 sits in a test that did not pass, so a panic something recovered, with the
 binary exiting 1, stays a crash. In a test that passed it is a log line, and
-order does not matter: the binary lived. Ginkgo reports a recovered panic as `[PANICKED]`,
+order does not matter: the binary lived. A test with a `fail` event has not passed here,
+whatever `pass` sits beside it, so a printed pass does not make a crash a log line. Ginkgo reports a recovered panic as `[PANICKED]`,
 which counts as a crash wherever it falls in the suite, since Ginkgo runs a suite
 as one test in random order. Failures outside any test never count: a line
 printed while `TestMain` or `init` ran is package output, whatever its shape. A line a
