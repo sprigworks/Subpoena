@@ -10,6 +10,7 @@ package witness
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -125,8 +126,53 @@ func TestADirectoryThatCannotBeListedIsAGap(t *testing.T) {
 	}
 	release()
 	w.Stop()
-	if !hasGap(w, GapScan, sub) || w.Health() == nil {
+	// The listing at Stop fails too and says the same kind at the same path, so
+	// the detail names the guard under test: the one at the scan.
+	if !hasGapDetail(w, GapScan, sub, "could not list it: ") || w.Health() == nil {
 		t.Fatalf("Health %v, gaps %+v", w.Health(), w.Coverage().Gaps)
+	}
+}
+
+// The walk at Stop is a guard of its own: a directory the scan listed may be
+// one the walk cannot, and without the gap its files would count as unchanged.
+func TestADirectoryThatCannotBeListedAtStopIsAGap(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(sub, "f"), "x")
+	var failing atomic.Bool
+	h := fileHooks{readDir: func(dir string) ([]os.DirEntry, error) {
+		if dir == sub && failing.Load() {
+			return nil, syscall.EACCES
+		}
+		return os.ReadDir(dir)
+	}}
+	w, release := held(t, h, root)
+	release()
+	failing.Store(true) // after the start's scan, before Stop's walk
+	w.Stop()
+	if !hasGapDetail(w, GapScan, sub, "could not list it at Stop") || w.Health() == nil {
+		t.Fatalf("Health %v, gaps %+v", w.Health(), w.Coverage().Gaps)
+	}
+}
+
+// Past maxEvents the capture says it dropped some, in a gap of its own: the
+// reader was not cut short, so no other guard speaks.
+func TestMoreEventsThanAreKeptIsABoundGap(t *testing.T) {
+	root := t.TempDir()
+	w, release := held(t, fileHooks{maxEvents: 2}, root)
+	for _, n := range []string{"a", "b", "c", "d", "e"} {
+		write(t, filepath.Join(root, n), "x")
+	}
+	release()
+	w.Stop()
+	if !hasGapDetail(w, GapBound, "", "more than 2 events") || w.Health() == nil {
+		t.Fatalf("Health %v, gaps %+v", w.Health(), w.Coverage().Gaps)
+	}
+	if got := len(w.Wrote("")); got != 2 {
+		t.Fatalf("kept %d events", got)
 	}
 }
 
