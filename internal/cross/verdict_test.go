@@ -673,3 +673,33 @@ func TestRefused(t *testing.T) {
 		t.Fatalf("markers %d unplaced %v", rep.Markers, rep.Unplaced)
 	}
 }
+
+// A test whose binary holds none of the mutated code cannot have seen the
+// mutant, however often it fails (T34: go-kratos/gateway's circuitbreaker.go:68).
+func TestAFailureInABinaryThatDoesNotLinkTheMutantIsNoKill(t *testing.T) {
+	count := filepath.Join(t.TempDir(), "count")
+	test := `package other
+
+import (
+	"os"
+	"testing"
+)
+
+func TestFlaky(t *testing.T) {
+	const count = "` + count + `"
+	b, _ := os.ReadFile(count)
+	b = append(b, 'x')
+	os.WriteFile(count, b, 0o644)
+	if len(b) == 2 || len(b) == 3 {
+		t.Fatal("upstream was slow")
+	}
+}
+`
+	rep, err := run(t, module(t, map[string]string{"gate/gate.go": strings.Replace(gateGo, "package mini", "package gate", 1), "other/other_test.go": test}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Outcome != Unconfirmed || !strings.Contains(r.Output, "do not link") {
+		t.Fatalf("want unconfirmed, got %s %q\n%s", r.Outcome, r.FirstFailure, r.Output)
+	}
+}

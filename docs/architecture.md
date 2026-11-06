@@ -100,9 +100,10 @@ cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
 mutant that does not compile is "invalid", never "killed". Every run starts from
 a fresh copy, so no test sees what another case left there. After a kill, the
-mutant run's whole test command runs again: once with the mutant in place, then
-three times without it, each on a fresh copy. The whole command, because a
-failure can need the tests beside it. The baseline, the mutant run and the reruns
+packages that failed run again, all their tests: once with the mutant in place,
+then three times without it, each on a fresh copy. All their tests, because a
+failure can need the tests beside it. Python runs the mutant run's whole test
+selection. The baseline, the mutant run and the reruns
 all start their test binaries the same way, so a test red only under the way it
 was started is red on the baseline too. If the run with the mutant passes, or one
 without it fails or does not finish, the verdict is
@@ -114,7 +115,10 @@ that clears itself before the reruns passes them. A flake must fail twice in a r
 with the mutant, then pass three times without it: a test that fails one run in
 twenty-five does that on about one mutant in seven hundred, and a test that fails
 half the time on about one in thirty-two. Cross narrows this and does not close it: fix
-the flake, and confirm a surprising kill by rerunning cross. A removed `return`
+the flake, and confirm a surprising kill by rerunning cross. In Go a kill also
+needs a failed test whose binary links the mutated package (`go list -deps
+-test`). A suite that runs the code as a separate program links none of it, so
+its kills come back unconfirmed. A removed `return`
 the function cannot end without gets a return of zero values in its place only
 when that turns an error to nil and changes nothing else; any other such return
 stays invalid, since zero can be the refusal itself (`return p.Check(u)`). That

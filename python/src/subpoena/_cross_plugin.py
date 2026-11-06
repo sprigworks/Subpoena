@@ -53,14 +53,15 @@ _SELECTED = os.environ.pop("SUBPOENA_CROSS_SELECTED", "")
 _SELECTED = set(json.loads(_SELECTED)) if _SELECTED else None
 _COVERAGE = {os.path.realpath(p) for p in json.loads(os.environ.pop("SUBPOENA_CROSS_COVERAGE", "[]"))}
 _ROOT = os.path.realpath(os.environ.pop("SUBPOENA_CROSS_ROOT", ""))
+_TEST_HELPERS = json.loads(os.environ.pop("SUBPOENA_CROSS_TEST_HELPERS", "[]"))
 _WORKER_INPUT = "subpoena_cross"
 
 # The files pytest collected a test from, ahead of any deselection.
-_TEST_FILES = set()
+_TEST_FILES = {os.path.realpath(p) for p in _TEST_HELPERS}
 
 # Frames from these packages are assertion machinery, not where a failure
 # came from: skip past them to the code that called them.
-_HELPERS = {"_pytest", "pytest", "pluggy", "unittest", "subpoena"}
+_HELPERS = {"_pytest", "pytest", "pluggy", "unittest", "subpoena", "pytest_mock"}
 
 
 def _write(rec):
@@ -80,12 +81,14 @@ def pytest_configure(config):
     if settings:
         _REPORT, _NONCE, _MUTATED_FILES = settings["report"], settings["nonce"], settings["mutated"]
         _SELECTED = None if settings["selected"] is None else set(settings["selected"])
+        _TEST_FILES.update(os.path.realpath(p) for p in settings["helpers"])
 
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_configure_node(node):
     node.workerinput[_WORKER_INPUT] = {"report": _REPORT, "nonce": _NONCE, "mutated": _MUTATED_FILES,
-                                       "selected": None if _SELECTED is None else sorted(_SELECTED)}
+                                       "selected": None if _SELECTED is None else sorted(_SELECTED),
+                                       "helpers": _TEST_HELPERS}
 
 
 @pytest.hookimpl(optionalhook=True)

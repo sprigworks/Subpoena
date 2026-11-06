@@ -580,3 +580,60 @@ def test_markers_are_counted_and_lines_map_back(tmp_path):
     m = rep.results[0].mutant
     assert (m.line, m.upstream) == (4, 3)
     assert rep.markers == 2 and rep.unplaced == ["auth.py:8"]
+
+
+# --- T10: a helper module of test code; review 4, finding 6: pytest-mock ---
+
+DECLARED = {"auth.py": GATE, "checks.py": """
+    def assert_denied(body):
+        assert body == {"denied": True}, "not denied"
+""", "test_a.py": """
+    from auth import gate
+    from checks import assert_denied
+    def test_denied():
+        assert_denied(gate("mallory"))
+"""}
+
+
+def test_an_assert_in_an_undeclared_helper_is_a_crash(tmp_path):
+    assert outcome(tmp_path, DECLARED).outcome == "enforcement-mutant-crashed"
+
+
+def test_a_declared_helper_is_test_code(tmp_path):
+    assert outcome(tmp_path, DECLARED, test_helpers=["checks.py"]).outcome == KILLED
+
+
+def test_a_declared_helper_works_under_xdist(tmp_path):
+    assert outcome(tmp_path, DECLARED, "-n", "2", test_helpers=["checks.py"]).outcome == KILLED
+
+
+def test_a_file_with_markers_cannot_be_a_helper(tmp_path):
+    with pytest.raises(cross.CrossError, match="code under test"):
+        outcome(tmp_path, DECLARED, test_helpers=["auth.py"])
+
+
+def test_a_missing_helper_is_an_error(tmp_path):
+    with pytest.raises(cross.CrossError, match="no such file"):
+        outcome(tmp_path, DECLARED, test_helpers=["nope.py"])
+
+
+def test_a_mock_assert_under_pytest_mock_is_a_kill(tmp_path):
+    pytest.importorskip("pytest_mock")
+    r = outcome(tmp_path, {"app.py": """
+        def log(user):
+            pass
+
+        # subpoena:enforcement_point
+        def serve(user):
+            if user == "mallory":
+                return 403  # subpoena:enforcement
+            log(user)
+            return 200
+    """, "test_app.py": """
+        import app
+        def test_denied(mocker):
+            spy = mocker.spy(app, "log")
+            app.serve("mallory")
+            spy.assert_not_called()
+    """})
+    assert r.outcome == KILLED

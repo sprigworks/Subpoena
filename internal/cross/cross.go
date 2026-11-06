@@ -45,6 +45,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -64,13 +65,13 @@ const (
 	MarkerGuard            = "subpoena:enforcement_guard"
 )
 
-// killRepeats is how many times a kill's test command runs again with the
+// killRepeats is how many times a kill's failed packages run again with the
 // mutant still in place. A red run the mutant caused is red again; a rare flake
 // is not, and this is what stops one: runs without the mutant pass a flake that
 // fails one time in twenty-five nearly every time.
 var killRepeats = 1
 
-// killReruns is how many times a kill's test command runs again without the
+// killReruns is how many times a kill's failed packages run again without the
 // mutant, each on a fresh copy. One rerun catches a test that fails half the
 // time only half the time, so it is more than one. Together with killRepeats
 // these narrow a flake's way to a kill, and do not close it. See
@@ -674,7 +675,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 					if o.RequireWitness && ev != EvidenceWitness {
 						res.Outcome = KilledBySelfReport //subpoena:enforcement
 					}
-					if err := confirmKill(ctx, o, sb, testArgs, &res); err != nil {
+					if err := confirmKill(ctx, o, sb, testArgs, raw, ms, &res); err != nil {
 						return res, err
 					}
 				}
@@ -690,16 +691,30 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 	return res, nil
 }
 
-// confirmKill runs the mutant run's own test command again, whole, since a
-// failure can need the tests beside it. First with the mutant in place,
+// confirmKill runs the mutant run's own test command again on the packages that
+// failed, all their tests, since a failure can need the tests beside it. A test
+// binary shares memory only with its own package, and state outside the copy
+// reaches a package however it is run. First with the mutant in place,
 // killRepeats times: a run that passes means the red was not the mutant's, as a
 // flake's is not. Then without it, killReruns times, each on a fresh copy: a run
 // that fails or does not finish was red for a reason other than the mutant, or
 // may have been. That is state outside the copy, or a flake, and a kill needs
-// neither.
+// neither. Before any of that, a failed test whose binary does not link the
+// mutated code has nothing to do with the mutant, as far as a binary can show.
 //
 //subpoena:enforcement_point
-func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, res *Result) error {
+func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw string, ms []Mutant, res *Result) error {
+	failed := failedPackages(raw)
+	if why, err := linksMutant(ctx, o, sb, failed, ms); err != nil {
+		return err
+	} else if why != "" {
+		res.Output = why
+		res.Outcome = Unconfirmed //subpoena:enforcement
+		return nil
+	}
+	if len(failed) > 0 {
+		args = append(slices.Clone(args[:len(args)-1]), failed...)
+	}
 	for n := range killRepeats {
 		fmt.Fprintf(o.Log, "  repeat %d of %d with the mutant\n", n+1, killRepeats)
 		out, err := o.run.test(ctx, o, sb, args...)
@@ -728,6 +743,54 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, res 
 		}
 	}
 	return nil
+}
+
+// failedPackages lists the packages in raw with a failed test.
+func failedPackages(raw string) []string {
+	var failed []string
+	for _, line := range strings.Split(raw, "\n") {
+		var e struct{ Action, Package, Test string }
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &e) == nil && e.Action == "fail" && e.Test != "" && !slices.Contains(failed, e.Package) {
+			failed = append(failed, e.Package)
+		}
+	}
+	return failed
+}
+
+// linksMutant says why no failed package's test binary links a mutated package,
+// or "" if one does. Go list's -test form names the test binary's whole
+// dependency set. A suite that runs the code as a separate program links none of
+// it, so its kills read as unconfirmed: that costs a kill, and a false one costs
+// more. A failure with no test named, or a list that fails, decides nothing here.
+func linksMutant(ctx context.Context, o Options, sb sandbox, failed []string, ms []Mutant) (string, error) {
+	if len(failed) == 0 {
+		return "", nil
+	}
+	mutated := map[string]bool{}
+	for _, m := range ms {
+		out, err := goIn(ctx, o.Timeout, sb, "list", "-f", "{{.ImportPath}}", "./"+path.Dir(m.File))
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("cross: run stopped: %w", ctx.Err())
+		}
+		if err != nil {
+			return "", nil
+		}
+		mutated[strings.TrimSpace(out)] = true
+	}
+	out, err := goIn(ctx, o.Timeout, sb, append([]string{"list", "-deps", "-test", "-f", "{{.ImportPath}}"}, failed...)...)
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("cross: run stopped: %w", ctx.Err())
+	}
+	if err != nil {
+		return "", nil
+	}
+	for _, line := range strings.Split(out, "\n") {
+		name, _, _ := strings.Cut(strings.TrimSpace(line), " ") // "p [p.test]" is p
+		if mutated[name] {
+			return "", nil
+		}
+	}
+	return fmt.Sprintf("the failed tests' binaries do not link the mutated code: %s", strings.Join(failed, ", ")), nil
 }
 
 // testText turns go test -json output back into the plain text go test

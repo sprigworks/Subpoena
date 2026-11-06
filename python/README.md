@@ -203,6 +203,10 @@ it, each of those on a fresh copy. A pass with the mutant or a failure without i
 is `enforcement-mutant-unconfirmed`, which fails the run, and `-select` does not
 retry it on the whole suite.
 
+`--test-helper FILE`, repeatable, names a file of test code that holds no tests,
+such as a module of shared assertions, so an assertion there counts as a test's.
+A file with enforcement markers is refused.
+
 `--require-witness` accepts a mutant kill only when the first failure is a
 `harness.WitnessFailure`: the harness's own witness checks raise it, and a test
 that asks a witness itself raises it through `harness.witness_fail(message)`.

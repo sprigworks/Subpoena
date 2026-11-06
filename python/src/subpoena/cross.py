@@ -75,7 +75,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 import tokenize
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 KILLED = "enforcement-mutant-killed"
 KILLED_BY_SELF_REPORT = "enforcement-mutant-killed-by-self-report"
@@ -444,7 +444,7 @@ _PIPE_GRACE = 5.0
 
 def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report: str,
                nonce: str = "", *, selected=None, coverage=None, cancel=None,
-               mutated_files=None) -> Tuple[Optional[int], str]:
+               mutated_files=None, test_helpers=()) -> Tuple[Optional[int], str]:
     # The report is created fresh, by cross, before every run: nothing left
     # from an earlier run (or planted) is read as this one's.
     if os.path.lexists(report):
@@ -459,6 +459,7 @@ def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report:
     env["SUBPOENA_CROSS_SELECTED"] = json.dumps(selected) if selected is not None else ""
     env["SUBPOENA_CROSS_COVERAGE"] = json.dumps([os.path.join(copy, f) for f in (coverage or [])])
     env["SUBPOENA_CROSS_ROOT"] = copy
+    env["SUBPOENA_CROSS_TEST_HELPERS"] = json.dumps([os.path.join(copy, f) for f in test_helpers])
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = copy + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     # Every test runs, whatever the arguments say: pytest stopped at the first
@@ -648,7 +649,7 @@ def _accept_masked(rep, path):
 def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 300.0, log=None,
         _before_mutate: Optional[Callable[[str], None]] = None, *, jobs: int = 1,
         select: bool = False, evidence_dir: Optional[str] = None,
-        require_witness: bool = False) -> Report:
+        require_witness: bool = False, test_helpers: Sequence[str] = ()) -> Report:
     """Cross-examine immutable copies. Selection confirms every non-kill but an unconfirmed on the full suite.
     Parallel workers share no mutable files. Group runs always use the whole suite.
     """
@@ -685,6 +686,12 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
         if not mutants:
             raise CrossError(f"cross: no {_POINT} with a {_STATEMENT} statement under {target}")
         groups = _groups(mutants)
+        test_helpers = [os.path.normpath(f).replace(os.sep, "/") for f in test_helpers]
+        for f in test_helpers:
+            if not os.path.isfile(os.path.join(template, f)):
+                raise CrossError(f"cross: --test-helper {f}: no such file under {target}")
+            if any(m.file == f for m in mutants):
+                raise CrossError(f"cross: --test-helper {f}: it holds enforcement markers, so it is code under test")
         markers, unplaced = marker_count(template, mutants)
         rep = Report(enforcement_points=points, markers=markers, unplaced=unplaced,
                      snapshot={m.file: m.digest for m in mutants})
@@ -700,7 +707,8 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
             nonce = secrets.token_hex(16)
             code, out = _run_suite(copy, args, timeout, members[0].file if members else "",
                                    report, nonce, selected=selected, coverage=coverage,
-                                   cancel=cancel, mutated_files=sorted({m.file for m in members}))
+                                   cancel=cancel, mutated_files=sorted({m.file for m in members}),
+                                   test_helpers=test_helpers)
             records = _read_report(report, nonce)
             evidence_file = ""
             if evidence_dir:
@@ -929,6 +937,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                                  description="Remove each marked enforcement statement and require pytest to fail.")
     ap.add_argument("--require-witness", action="store_true",
                     help="accept a kill only when its first failure is independent witness evidence")
+    ap.add_argument("--test-helper", action="append", default=[], metavar="FILE",
+                    help="a file relative to the target that holds test code but no tests, "
+                         "so an assertion there counts as a test's; repeatable")
     ap.add_argument("target", help="project directory; pytest runs there")
     ap.add_argument("-j", "--jobs", type=int, default=1, help="isolated parallel single-mutant workers")
     ap.add_argument("-select", "--select", action="store_true", help="select tests by per-test line coverage")
@@ -939,7 +950,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         rep = run(a.target, a.pytest_args, a.timeout, log=lambda s: print(s, file=sys.stderr),
                   jobs=a.jobs, select=a.select, evidence_dir=a.evidence_dir,
-                  require_witness=a.require_witness)
+                  require_witness=a.require_witness, test_helpers=a.test_helper)
     except (CrossError, OSError) as e:
         # Exit 1 means a mutant was not killed; a setup fault must never read as that.
         print(f"subpoena-cross: {e}", file=sys.stderr)

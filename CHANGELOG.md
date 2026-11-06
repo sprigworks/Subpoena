@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A Go kill needs a failed test that links the mutant.** go-kratos/gateway got a
+  kill from a test whose binary did not contain the mutated package. Cross checks
+  with `go list -deps -test`, and such a kill is `unconfirmed`. A suite that runs
+  the code as a separate program links none of it, so its kills are lost too.
+- **Python helpers can be declared, and pytest-mock is assertion machinery.**
+  `--test-helper FILE` says a file holds test code, so an assertion there is a
+  kill and not a crash; a file with enforcement markers is refused. Every
+  `Mock.assert_*` under pytest-mock came back `crashed`, because the plugin wraps
+  them; those are kills now.
+- **Markers can follow a comment, are counted, and lines map upstream.** A marker
+  after an upstream comment was dropped silently, and now takes effect. Cross
+  prints markers beside mutants and names any that made no mutant. A mutant's
+  line prints with the line it has once marker-only lines are taken out.
 - **Sinkhole can answer.** It accepted and closed, so a proxy in front of it
   turned the hangup into a 502 and hid what the proxy did next.
   `NewAnsweringSinkhole` (`Sinkhole(answer=True)` in Python) replies 200 with an
@@ -55,10 +68,11 @@
 - **A kill needs its tests to pass without the mutant.** A suite that went red
   for any reason was a kill: a file a test left in the shared copy, a marker
   outside it, a flake, with the enforcement never called. Each Go case now gets
-  a fresh copy, as Python's did, and in both languages a kill's whole test command
-  runs again: once with the mutant, then three times without it, each on a fresh
-  copy and started the same way as the mutant run. The whole command, so a failure
-  that needs a sibling test comes back too, and with the mutant, so a rare flake
+  a fresh copy, as Python's did, and in both languages a kill's tests run again as a
+  whole, the failed packages in Go and the mutant run's selection in Python: once
+  with the mutant, then three times without it, each on a fresh copy and started
+  the same way as the mutant run. As a whole, so a failure that needs a sibling
+  test comes back too, and with the mutant, so a rare flake
   does not pass: runs without the mutant alone let one through nearly every time.
   A pass with the mutant, or a failure without it, is the new
   `enforcement-mutant-unconfirmed`, which fails the run, with or without `-select`.
