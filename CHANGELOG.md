@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`WatchRows` needs a row capture,** as `NoRow` and every other `Watch` check do. On a witness
+  file that names none it is Inconclusive, and a refused write in such a file still fails.
 - **The database witness goes by what the server shows.** A `SET` of a setting that
   changes lexing or lookup counts in any spelling, and the session survives only a
   plain value on an allow-list; the startup packet and `options` go by the same rule.

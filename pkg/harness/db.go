@@ -90,8 +90,9 @@ type RowRule struct {
 //
 // At cleanup it stops w (if w has a Stop method), then fails the test, tagged
 // "witness:", for every committed write the rule refuses, and with
-// "inconclusive:" for missing or bad capture health. If the test has already
-// failed, every committed write is logged as well.
+// "inconclusive:" for missing or bad capture health, or a witness file with no row
+// capture in it. If the test has already failed, every committed write is logged
+// as well.
 func WatchRows(tb testing.TB, w witness.DBWitness, traceID string, rule RowRule) {
 	tb.Helper()
 	tb.Cleanup(func() { checkRows(tb, w, traceID, rule) })
@@ -118,6 +119,10 @@ func checkRows(tb testing.TB, w witness.DBWitness, traceID string, rule RowRule)
 		case failedBefore:
 			tb.Logf("%s: after an earlier failure, saw %q %v (%s)", TagWitness, e.Statement, e.Tables, e.Attribution)
 		}
+	}
+	if err := rowCapture(w); err != nil {
+		tb.Errorf("%s: %s: %v", TagInconclusive, traceID, err) //subpoena:enforcement
+		return false
 	}
 	if err := captureHealth(w); err != nil {
 		tb.Errorf("%s: %s: capture unhealthy, absence of refused writes is not proven: %v", TagInconclusive, traceID, err) //subpoena:enforcement

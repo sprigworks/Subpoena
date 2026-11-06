@@ -111,6 +111,21 @@ func TestWatchChecksNeedTheirCapture(t *testing.T) {
 		{"writes, exec", func(tb testing.TB) bool {
 			return checkWrites(tb, fileWith(t, rootsButExec), captureTrace, WriteRule{Never: []string{"/r/x"}})
 		}, false},
+		{"rows, row", func(tb testing.TB) bool {
+			return checkRows(tb, fileWith(t, rowOnly), captureTrace, RowRule{Never: []string{"users"}})
+		}, true},
+		{"rows, no captures", func(tb testing.TB) bool {
+			return checkRows(tb, fileWith(t, noCaptures), captureTrace, RowRule{Never: []string{"users"}})
+		}, false},
+		{"rows, exec", func(tb testing.TB) bool {
+			return checkRows(tb, fileWith(t, execOnly), captureTrace, RowRule{Never: []string{"users"}})
+		}, false},
+		{"rows, deliveries", func(tb testing.TB) bool {
+			return checkRows(tb, fileWith(t, deliveryToo), captureTrace, RowRule{Allowed: []string{}})
+		}, false},
+		{"rows, file", func(tb testing.TB) bool {
+			return checkRows(tb, fileWith(t, fileOnly), captureTrace, RowRule{})
+		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &cleanupTB{}
@@ -124,6 +139,19 @@ func TestWatchChecksNeedTheirCapture(t *testing.T) {
 				t.Fatalf("errors = %q", f.errs)
 			}
 		})
+	}
+}
+
+// A refused write in a file naming no row capture is still evidence: the check
+// reports it as the witness's, then says the rest is unproven.
+func TestWatchRowsKeepsASightingWithNoRowCapture(t *testing.T) {
+	row := `{"time":"2026-11-06T12:00:01Z","event":"row","verb":"INSERT","tables":["users"],"rows":1,"outcome":"committed","attribution":"destination"}`
+	f := &cleanupTB{}
+	if checkRows(f, fileWith(t, noCaptures, row), captureTrace, RowRule{Never: []string{"users"}}) {
+		t.Fatal("check passed")
+	}
+	if len(f.errs) != 2 || !strings.HasPrefix(f.errs[0], TagWitness) || !strings.HasPrefix(f.errs[1], TagInconclusive) {
+		t.Fatalf("errors = %q, want the sighting, then Inconclusive", f.errs)
 	}
 }
 
