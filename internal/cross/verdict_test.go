@@ -861,6 +861,11 @@ func TestRefused(t *testing.T) {
 	if rep.Markers != 1 || len(rep.Unplaced) != 0 {
 		t.Fatalf("markers %d unplaced %v", rep.Markers, rep.Unplaced)
 	}
+	// A field comment that names the point marker, as cross.go's own Report does.
+	field := gateGo + "\ntype Report struct {\n\tPoints int // functions marked //subpoena:enforcement_point\n}\n"
+	if _, err := run(t, module(t, map[string]string{"gate.go": field, "gate_test.go": test})); err != nil {
+		t.Fatal(err)
+	}
 	bad := strings.Replace(gateGo, "return ErrDenied //subpoena:enforcement", "return ErrDenied // why //subpoena:enforcement grp=a", 1)
 	if _, err := run(t, module(t, map[string]string{"gate.go": bad, "gate_test.go": test})); err == nil {
 		t.Fatal("a bad trailing marker passed")

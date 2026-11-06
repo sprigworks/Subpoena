@@ -97,7 +97,7 @@ _RERUNS = 3
 
 _ANY_MARKER = re.compile(r"#\s*subpoena\s*:\s*enforc")  # cross's markers, misspelt ones too
 # A marker after an upstream comment on the same line: return x  # why  # subpoena:enforcement
-_TRAILING = re.compile(r"\s#\s*(subpoena:enforcement.*)$")
+_TRAILING = re.compile(r"\s#\s*(subpoena:enforcement(?:_guard)?(?:\s.*)?)$")
 _INLINE_MARKER = re.compile(r"\s#\s*subpoena:enforcement(_guard)?(\s|$)")
 _ONLY_MARKER = re.compile(r"^\s*#\s*subpoena\s*:\s*enforc")
 _POINT = "subpoena:enforcement_point"

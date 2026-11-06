@@ -1652,7 +1652,7 @@ var (
 	anyMarkerRE   = regexp.MustCompile(`^//\s*subpoena:enforcement`)
 	// trailingRE finds a marker after an upstream comment on a line of code:
 	// return nil // why //subpoena:enforcement
-	trailingRE = regexp.MustCompile(`\s//\s*subpoena:enforcement`)
+	trailingRE = regexp.MustCompile(`\s//\s*subpoena:enforcement(_guard)?(\s|$)`)
 	// inlineMarkerRE and onlyMarkerRE read source lines, so a marker the parser
 	// did not take is still counted, and a comment that names one in prose is not.
 	inlineMarkerRE = regexp.MustCompile(`\s//\s*subpoena:enforcement(_guard)?(\s|$)`)
