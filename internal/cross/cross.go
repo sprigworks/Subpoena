@@ -1097,6 +1097,8 @@ func (e ending) cleanPass() bool { return e.passed && !e.failed }
 // endings reads the events of each test in raw, and of each package under an empty
 // test name. It is the one reading of how a test
 // ended, for failedTests, the crash rule and what a crash shows.
+//
+//subpoena:enforcement_point
 func endings(raw string) map[eventKey]ending {
 	all, ended := map[eventKey]ending{}, map[eventKey]bool{}
 	for _, line := range strings.Split(raw, "\n") {
@@ -1113,7 +1115,7 @@ func endings(raw string) map[eventKey]ending {
 			end.ran = true
 			for p := range ended {
 				if p[0] == e.Package && !strings.HasPrefix(e.Test, p[1]+"/") {
-					delete(ended, p)
+					delete(ended, p) //subpoena:enforcement
 				}
 			}
 		case "pass":
