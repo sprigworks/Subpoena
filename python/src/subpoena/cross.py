@@ -746,8 +746,12 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
         log(f"baseline: pytest {' '.join(args)}")
         code, out, records, _ = baseline()
         if not _clean(code, records):
+            hint = ""
+            if "--randomly" in out and "unrecognized arguments" in out:
+                hint = ("cross turns pytest-randomly off, so a --randomly option in addopts is unknown; "
+                        "pass -- -o addopts= with the options you still want\n")
             raise CrossError("cross: baseline suite is not green, cannot judge mutants: "
-                             + _baseline_reason(code, records, timeout) + "\n" + _tail(out, 40))
+                             + _baseline_reason(code, records, timeout) + "\n" + hint + _tail(out, 40))
         selected_tests = {}
         if select:
             if any(r.get("kind") == "worker_finished" for r in records):

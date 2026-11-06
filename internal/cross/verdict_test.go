@@ -703,3 +703,18 @@ func TestFlaky(t *testing.T) {
 		t.Fatalf("want unconfirmed, got %s %q\n%s", r.Outcome, r.FirstFailure, r.Output)
 	}
 }
+
+// A noexec TMPDIR with GOTMPDIR set is the case GOTMPDIR exists for, so the
+// wrapper is built there (Review 4, finding 7).
+func TestTheWrapperIsBuiltInGOTMPDIR(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("GOTMPDIR", dir)
+	r, err := newRunner(context.Background(), module(t, map[string]string{"gate.go": gateGo}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.remove()
+	if filepath.Dir(r.dir) != dir {
+		t.Fatalf("runner dir %s, want under %s", r.dir, dir)
+	}
+}

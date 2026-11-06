@@ -41,9 +41,10 @@
   the harness now signs its witness failures with a key made for the run, and an
   unsigned tag is `other`. A Go test that wrote `witness:` by hand now calls the
   new `harness.WitnessErrorf`; a module pinned to an older harness gets `other`
-  until it updates. Only a `*testing.T`, `B` or `F` gets the mark, so production
-  code cannot sign through the harness with a `testing.TB` of its own, and a
-  wrapper such as `GinkgoTB` reads as `other`. This stops what a system prints in
+  until it updates. Only a `*testing.T`, `B` or `F` gets the mark, so a
+  `testing.TB` of production code's own gets none, and a wrapper such as
+  `GinkgoTB` reads as `other`. Code set on forging one can get a real `*testing.T`
+  from `testing.RunTests`, though a real test must fail too. This stops what a system prints in
   the ordinary way, and no more. The key stays readable: `/proc/<pid>/environ`
   keeps it after the harness unsets it, so in-process code, a child, or any process
   of the same user can compute a mark, and Python code can raise the type. Output
@@ -89,8 +90,10 @@
   stops if it cannot build it. An exit 1 is a failed test only if the binary
   finished testing, shown by a profile package testing writes when `m.Run` ends,
   so a printed `--- FAIL:` line and an `os.Exit(1)` is a crash. A project's runner
-  that runs the binary on another machine leaves no profile, so its kills are
-  crashes. The exit code also settles a `panic:` line a passing test printed, say
+  that runs the binary on another machine leaves no profile: its kills are
+  crashes, or cross stops at the baseline if the profile's path does not exist
+  there. `GOFLAGS=-memprofile=...` makes every kill a crash on a single-package
+  target, so unset it for a cross run. The exit code also settles a `panic:` line a passing test printed, say
   from a recover middleware: the binary lived, so the line voids no kill, in
   either test order. It did before, but only when the printing test ran first. A
   `panic:` line in a test that did not pass still voids the package's kills.

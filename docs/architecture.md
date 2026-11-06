@@ -145,8 +145,11 @@ wrapper asks for a heap profile, which package testing writes when `m.Run` ends,
 and an `os.Exit(1)` in the middle of a test leaves none. Output cannot show this,
 since `go test -json` trusts a `--- FAIL:` line behind the `^V` byte whoever wrote
 it. Code that goes looking can still write the profile path it finds in
-`os.Args`, and a runner that runs the binary elsewhere leaves no profile, so its
-kills are crashes. A `panic:` line also voids a package's kills when it
+`os.Args`. A runner that runs the binary elsewhere leaves no profile: if the path
+exists there, its kills are crashes, and if it does not, package testing exits 2
+on a passing suite and cross stops at the baseline. `GOFLAGS=-memprofile=...`
+overrides the wrapper's own flag, so on a single-package target every kill is a
+crash: unset it for a cross run. A `panic:` line also voids a package's kills when it
 sits in a test that did not pass, so a panic something recovered, with the
 binary exiting 1, stays a crash. In a test that passed it is a log line, and
 order does not matter: the binary lived. Ginkgo reports a recovered panic as `[PANICKED]`,
@@ -163,8 +166,10 @@ of a `t.Log`, so under cross the harness signs its witness failures with a key
 made for the run, and an unsigned `witness:` is `other`. A test that asks a
 witness itself reports through `harness.WitnessErrorf`, which signs. The output
 outside cross does not change. Only a `*testing.T`, `B` or `F` gets the mark, so
-production code cannot sign through the public harness with a `testing.TB` of its
-own, and a wrapper such as `GinkgoTB` reads as `other`. The key is not a secret
+a `testing.TB` of production code's own gets none, and a wrapper such as
+`GinkgoTB` reads as `other`. Production code set on it can still get a real
+`*testing.T` from `testing.RunTests` and sign with that, though a real test must
+fail too. The key is not a secret
 from the code under test. `/proc/<pid>/environ` keeps it after the harness unsets
 it, so in-process code, a child process, or any process of the same user can read
 it and compute a mark. The mark stops what a system prints in the ordinary way,

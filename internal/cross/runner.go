@@ -101,15 +101,17 @@ func main() {
 //
 //subpoena:enforcement_point
 func newRunner(ctx context.Context, root string) (*runner, error) {
-	out, err := goCmd(ctx, time.Minute, root, "env", "-json", "GOFLAGS", "GOOS", "GOARCH", "GOHOSTOS", "GOHOSTARCH")
+	out, err := goCmd(ctx, time.Minute, root, "env", "-json", "GOFLAGS", "GOOS", "GOARCH", "GOHOSTOS", "GOHOSTARCH", "GOTMPDIR")
 	if err != nil {
 		return nil, fmt.Errorf("cross: go env: %w\n%s", err, tail(out, 20))
 	}
-	var env struct{ GOFLAGS, GOOS, GOARCH, GOHOSTOS, GOHOSTARCH string }
+	var env struct{ GOFLAGS, GOOS, GOARCH, GOHOSTOS, GOHOSTARCH, GOTMPDIR string }
 	if err := json.Unmarshal([]byte(out), &env); err != nil {
 		return nil, fmt.Errorf("cross: go env output: %w", err)
 	}
-	dir, err := os.MkdirTemp("", "subpoena-cross-run-")
+	// GOTMPDIR is the setting for a TMPDIR that is mounted noexec, and the
+	// wrapper is a program too. Empty, this is TMPDIR.
+	dir, err := os.MkdirTemp(env.GOTMPDIR, "subpoena-cross-run-")
 	if err != nil {
 		return nil, err
 	}
