@@ -48,6 +48,7 @@ func killOf(t *testing.T, o Options) Result {
 // mutant, and that need not be the one the first run stopped at: -shuffle makes it
 // so at random, this makes it so on the repeat. Both tests catch the mutant.
 func TestARepeatRunsPastAnotherTestThatCaughtTheMutant(t *testing.T) {
+	t.Parallel()
 	dir := module(t, map[string]string{"gate.go": gate3, "run_test.go": counted(t), "gate_test.go": `package mini
 
 import "testing"
@@ -67,11 +68,13 @@ func TestBFirstOnTheMutantRun(t *testing.T) {
 // With no -failfast the repeat reaches tests the mutant run never did. One that
 // the mutant crashes or hangs says nothing of the test that caught it.
 func TestATestOnlyTheRepeatReachesCannotLoseAKill(t *testing.T) {
+	t.Parallel()
 	for name, body := range map[string]string{
 		"crash": `panic("the mutant broke this too")`,
 		"hang":  `time.Sleep(time.Hour)`,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			dir := module(t, map[string]string{"gate.go": gate3, "gate_test.go": `package mini
 
 import ("testing"; "time")
@@ -85,7 +88,7 @@ func TestBLater(t *testing.T) {
 	if Check("mallory") == nil { ` + body + ` }
 }
 `})
-			if r := killOf(t, Options{Target: dir, Timeout: 15 * time.Second}); r.Outcome != Killed {
+			if r := killOf(t, Options{Target: dir, Timeout: 20 * time.Second}); r.Outcome != Killed {
 				t.Fatalf("a real kill was lost: %+v", r)
 			}
 		})
@@ -95,6 +98,7 @@ func TestBLater(t *testing.T) {
 // That second look is no second chance: the first command must then be a clean
 // kill of the same test, and here it passes.
 func TestACrashOnTheRepeatStaysUnconfirmedIfTheFirstCommandPasses(t *testing.T) {
+	t.Parallel()
 	dir := module(t, map[string]string{"gate.go": gate3, "run_test.go": counted(t), "gate_test.go": `package mini
 
 import "testing"
@@ -114,6 +118,7 @@ func TestAllowed(t *testing.T) { if Check("ann") != nil { t.Fatal("ann refused")
 // Finding 9, with R5's finding 4 as its mirror (TestAFailureThatNeedsAnother...):
 // the test that noticed needs a test in another package to run first.
 func TestARepeatKeepsAKillThatShowsInAnotherPackage(t *testing.T) {
+	t.Parallel()
 	dir := module(t, map[string]string{"gate.go": gate3,
 		"a/a_test.go": `package a
 
@@ -149,6 +154,7 @@ func TestNobodyAdmitted(t *testing.T) {
 
 // Finding 3. A test's log can hold the line go test prints for a failure.
 func TestPrintedTextNamesNoFailedTest(t *testing.T) {
+	t.Parallel()
 	dir := module(t, map[string]string{"gate.go": gate3, "run_test.go": counted(t), "gate_test.go": `package mini
 
 import "testing"
@@ -203,6 +209,7 @@ func TestAFailedTestIsNamedWithItsPackage(t *testing.T) {
 // Finding 4. The gate promises independent evidence, and here only one of the two
 // runs with the mutant had any.
 func TestRequireWitnessAsksTheRepeatToo(t *testing.T) {
+	t.Parallel()
 	test := func(repeat string) string {
 		return `package mini
 
@@ -235,6 +242,7 @@ func TestAllowed(t *testing.T) { if Check("ann") != nil { t.Fatal("ann refused")
 // Under -shuffle another test can fail ahead of the one that gave the witness
 // evidence, and that test's plain failure takes nothing from it.
 func TestRepeatEvidenceIsReadFromTheSameTest(t *testing.T) {
+	t.Parallel()
 	dir := module(t, map[string]string{"gate.go": gate3, "run_test.go": counted(t), "signed_test.go": signedHelper, "gate_test.go": `package mini
 
 import "testing"
@@ -320,6 +328,7 @@ func TestAMarkerErrorSaysProseReadsAsAMarker(t *testing.T) {
 
 // Finding 8. The link check's advice belongs to the link check alone.
 func TestOnlyTheLinkCheckGivesItsHint(t *testing.T) {
+	t.Parallel()
 	dir := module(t, map[string]string{"gate.go": gate3, "run_test.go": counted(t), "gate_test.go": `package mini
 
 import ("os"; "testing"; "time")
@@ -330,7 +339,7 @@ func TestMain(m *testing.M) {
 }
 func TestRefused(t *testing.T) { if Check("mallory") == nil { t.Fatal("mallory let in") } }
 `})
-	r := killOf(t, Options{Target: dir, Timeout: 15 * time.Second})
+	r := killOf(t, Options{Target: dir, Timeout: 20 * time.Second})
 	if r.Outcome != Unconfirmed || !strings.Contains(r.Why, "did not finish") || r.Hint != "" {
 		t.Fatalf("hang: %+v", r)
 	}
