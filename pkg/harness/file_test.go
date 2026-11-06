@@ -226,6 +226,34 @@ func TestWriteRule(t *testing.T) {
 	}
 }
 
+// A file opened for writing and closed with no write seen may have changed by mmap
+// or native AIO, so a rule on that path can't pass, and a rule elsewhere isn't touched.
+func TestWatchWritesSilentCloseOnAClaimedPath(t *testing.T) {
+	silent := wroteTo()
+	silent.silent = []string{"/r/x"}
+	for _, tc := range []struct {
+		name string
+		rule WriteRule
+		ok   bool
+	}{
+		{name: "never", rule: WriteRule{Never: []string{"/r/x"}}},
+		{name: "not allowed", rule: WriteRule{Allowed: []string{"/r/log"}}},
+		{name: "allowed", rule: WriteRule{Allowed: []string{"/r/x"}}, ok: true},
+		{name: "no claim on it", rule: WriteRule{Never: []string{"/r/y"}}, ok: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &cleanupTB{}
+			ok := checkWrites(f, healthFile{unknownFile: silent}, "trace", tc.rule)
+			if ok != tc.ok || f.failed == tc.ok {
+				t.Fatalf("ok=%v failed=%v errs=%v", ok, f.failed, f.errs)
+			}
+			if !tc.ok && !strings.HasPrefix(f.errs[0], TagInconclusive+":") {
+				t.Fatalf("errs %v, want tag %s", f.errs, TagInconclusive)
+			}
+		})
+	}
+}
+
 // After another failure every write is logged, so the evidence is on the page.
 func TestWatchWritesLogsWhatItSawAfterAFailure(t *testing.T) {
 	f := &cleanupTB{failed: true}
