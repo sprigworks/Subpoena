@@ -18,9 +18,9 @@
 - **Sinkhole can answer.** It accepted and closed, so a proxy in front of it
   turned the hangup into a 502 and hid what the proxy did next.
   `NewAnsweringSinkhole` (`Sinkhole(answer=True)` in Python) replies 200 with an
-  empty body and records the request line and headers. A request marked with
-  `X-Subpoena-Mark` is told apart by trace; an unmarked arrival still holds for
-  every trace.
+  empty body and records the request line and headers. `Marked` finds arrivals by
+  their `X-Subpoena-Mark` header. A mark comes through the code under test, so it
+  hides nothing from `Dialed`.
 - **The wrong cause is no longer called a build failure.** A test or panic whose
   text held `[build failed]` or `[setup failed]` came back `invalid`, read from
   anywhere in the output. Cross now reads only `go test`'s own line. A package
@@ -69,17 +69,18 @@
 - **A kill needs its tests to pass without the mutant.** A suite that went red
   for any reason was a kill: a file a test left in the shared copy, a marker
   outside it, a flake, with the enforcement never called. Each Go case now gets
-  a fresh copy, as Python's did, and in both languages a kill's tests run again as a
-  whole, the failed packages in Go and the mutant run's selection in Python: once
-  with the mutant, then three times without it, each on a fresh copy and started
-  the same way as the mutant run. As a whole, so a failure that needs a sibling
-  test comes back too, and with the mutant, so a rare flake
-  does not pass: runs without the mutant alone let one through nearly every time.
-  A pass with the mutant, or a failure without it, is the new
-  `enforcement-mutant-unconfirmed`, which fails the run, with or without `-select`.
-  A kill now costs up to five suite runs. State that clears itself before the
-  reruns, or a flake that fails twice running, can still pass, so it stays a weak
-  spot, stated in `docs/architecture.md`.
+  a fresh copy, as Python's did, and in both languages a kill must hold. It runs
+  again once with the mutant, and must be a clean kill with a test of the first
+  run among the failed, so a rare flake does not pass: runs without the mutant
+  alone let one through nearly every time. Then three times without the mutant,
+  the first the mutant run's whole command, so a failure that needs a test in
+  another package comes back too, and in Go the rest the failed packages. Every
+  run is on a fresh copy and starts the same way as the mutant run. A kill that
+  does not hold is the new `enforcement-mutant-unconfirmed`, which fails the run,
+  with or without `-select`, and it says why. A kill now costs up to five runs.
+  State that clears itself before the reruns, or a flake that fails twice running
+  in the same test, can still pass, so it stays a weak spot, stated in
+  `docs/architecture.md`.
 - **Cross reads a test binary's exit code.** A panic beside another writer's
   open line (`....panic: runtime error`) matched no crash line, so a real panic
   came back a kill about half the time. `go test -json` gives no exit code, so

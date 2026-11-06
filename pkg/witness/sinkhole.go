@@ -17,14 +17,9 @@ import (
 // the safe direction for an absence claim, exact when one trace is in flight.
 const ByDestination Attribution = "destination"
 
-// ByMark means an answering Sinkhole read the trace from the request's
-// MarkHeader. The header comes through the code under test, so a mark can only
-// narrow an arrival to a trace: an arrival with no mark stays ByDestination and
-// is returned for every trace.
-const ByMark Attribution = "mark"
-
-// MarkHeader is the request header an answering Sinkhole reads a trace ID from.
-// The test sends it on the request it drives through the code under test.
+// MarkHeader is a request header the test sends through the code under test, so
+// that Marked can tell arrivals apart. It comes through the code under test, so
+// it decides nothing: Dialed returns every arrival whatever it says.
 const MarkHeader = "X-Subpoena-Mark"
 
 // answerRead bounds how long an answering Sinkhole waits on one connection. The
@@ -133,12 +128,7 @@ func (s *Sinkhole) serve(c *net.TCPConn, i int) {
 		return
 	}
 	s.mu.Lock()
-	e := &s.events[i]
-	e.Request = req.Method + " " + req.RequestURI + " " + req.Proto
-	e.Headers = req.Header
-	if mark := req.Header.Get(MarkHeader); mark != "" {
-		e.TraceID, e.Attribution = mark, ByMark
-	}
+	s.events[i].HTTP = &HTTPRequest{Line: req.Method + " " + req.RequestURI + " " + req.Proto, Headers: req.Header}
 	s.mu.Unlock()
 	io.WriteString(c, answer200)
 	io.Copy(io.Discard, req.Body) // closing on unread bytes can reset the answer away
@@ -194,15 +184,23 @@ func (s *Sinkhole) Stop() error {
 	return s.err
 }
 
-// Dialed returns every connection that reached the sinkhole, leaving out only
-// an arrival marked with a different trace. An arrival with no mark cannot be
-// told apart by trace, so it is returned for every trace.
-func (s *Sinkhole) Dialed(traceID string) []NetworkEvent {
+// Dialed returns every connection that reached the sinkhole, whatever the
+// trace: arrivals cannot be told apart by trace, and a mark does not change that,
+// because the code under test could send any mark it liked.
+func (s *Sinkhole) Dialed(string) []NetworkEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]NetworkEvent(nil), s.events...)
+}
+
+// Marked returns the arrivals whose first MarkHeader is mark, for telling one
+// request from another. It is no absence check: ask Dialed for that.
+func (s *Sinkhole) Marked(mark string) []NetworkEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []NetworkEvent
 	for _, e := range s.events {
-		if e.Attribution != ByMark || e.TraceID == traceID {
+		if e.HTTP != nil && e.HTTP.Headers.Get(MarkHeader) == mark {
 			out = append(out, e)
 		}
 	}

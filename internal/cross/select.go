@@ -249,7 +249,7 @@ func confirmOnWholeSuite(ctx context.Context, o Options, workers []sandbox, pkgs
 	var again []Mutant
 	var at []int
 	for i, r := range results {
-		// An unconfirmed is a test seen failing without the mutant. It stands: a
+		// An unconfirmed is a kill that did not hold. It stands: a
 		// second run could only let a flake pass, and call that a kill.
 		if r.Outcome == Unconfirmed {
 			continue //subpoena:enforcement

@@ -8,7 +8,7 @@ import pytest
 
 from subpoena import witness
 from subpoena.harness import (Verdict, check_no_dial, check_no_spawn, dial_to, no_dial, require_no_dial)
-from subpoena.witness import BY_DESTINATION, BY_MARK, MARK_HEADER, OP_CONNECT, AddrPort, NetworkEvent, Sinkhole
+from subpoena.witness import BY_DESTINATION, MARK_HEADER, OP_CONNECT, AddrPort, NetworkEvent, Sinkhole
 
 
 def dial(s, n=1):
@@ -242,19 +242,39 @@ def test_answering_sinkhole_answers_and_records_the_request():
     s = Sinkhole(answer=True)
     assert _get(s, "a") == (200, b"")
     assert s.stop() is None and s.health() is None
-    (e,) = s.dialed("a")
+    (e,) = s.marked("a")
     assert e.request == "POST /secret?x=1 HTTP/1.1"
-    assert e.attribution == BY_MARK and e.trace_id == "a"
+    assert e.attribution == BY_DESTINATION
     assert e.headers[MARK_HEADER.lower()] == "a"
+    assert "secret" not in repr(e)
 
 
-def test_marked_arrivals_are_told_apart():
+def test_a_mark_hides_no_arrival():
     s = Sinkhole(answer=True)
     for mark in ("a", "b", ""):
         _get(s, mark)
     s.stop()
-    assert len(s.dialed("a")) == 2
-    assert [e.attribution for e in s.dialed("c")] == [BY_DESTINATION]
+    assert len(s.marked("a")) == 1
+    assert len(s.dialed("c")) == 3
+
+
+def test_a_client_that_keeps_sending_does_not_hold_stop():
+    import socket
+    import time
+    s = Sinkhole(answer=True)
+    c = socket.create_connection((str(s.addr.addr), s.addr.port))
+    c.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    done = time.monotonic() + 4
+    try:
+        while time.monotonic() < 1 + (done - 4):
+            c.sendall(b"x")
+            time.sleep(0.05)
+    except OSError:
+        pass
+    start = time.monotonic()
+    s.stop()
+    c.close()
+    assert time.monotonic() - start < 2.5
 
 
 def test_an_arrival_that_is_not_http_still_counts():

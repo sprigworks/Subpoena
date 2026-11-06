@@ -200,17 +200,15 @@ func TestAnsweringSinkholeStandsInForAnUpstream(t *testing.T) {
 	if err := s.Health(); err != nil {
 		t.Fatal(err)
 	}
-	got := s.Dialed("trace-a")
-	if len(got) != 1 || got[0].Request != "POST /secret?x=1 HTTP/1.1" || got[0].Attribution != ByMark || got[0].TraceID != "trace-a" {
+	got := s.Marked("trace-a")
+	if len(got) != 1 || got[0].HTTP.Line != "POST /secret?x=1 HTTP/1.1" || got[0].Attribution != ByDestination {
 		t.Fatalf("events %+v", got)
-	}
-	if got[0].Headers.Get(MarkHeader) != "trace-a" {
-		t.Fatalf("headers %v", got[0].Headers)
 	}
 }
 
-// A mark tells two arrivals apart; only a different mark leaves one out.
-func TestMarkedArrivalsAreToldApart(t *testing.T) {
+// A mark tells two arrivals apart for the test, and hides none from an absence
+// check: it comes through the code under test (Review 5, finding 5).
+func TestAMarkHidesNoArrival(t *testing.T) {
 	s := answering(t)
 	for _, mark := range []string{"a", "b", ""} {
 		req, _ := http.NewRequest("GET", "http://"+s.Addr().String()+"/", nil)
@@ -224,11 +222,11 @@ func TestMarkedArrivalsAreToldApart(t *testing.T) {
 		resp.Body.Close()
 	}
 	s.Stop()
-	if got := s.Dialed("a"); len(got) != 2 {
-		t.Fatalf("Dialed(a) = %+v, want its own and the unmarked one", got)
+	if got := s.Marked("a"); len(got) != 1 {
+		t.Fatalf("Marked(a) = %+v", got)
 	}
-	if got := s.Dialed("c"); len(got) != 1 || got[0].Attribution != ByDestination {
-		t.Fatalf("Dialed(c) = %+v, want the unmarked one", got)
+	if got := s.Dialed("c"); len(got) != 3 {
+		t.Fatalf("Dialed(c) = %+v, want all three", got)
 	}
 }
 
@@ -244,7 +242,7 @@ func TestAnArrivalThatIsNotHTTPStillCounts(t *testing.T) {
 	if err := s.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Dialed("any"); len(got) != 1 || got[0].Request != "" || got[0].Attribution != ByDestination {
+	if got := s.Dialed("any"); len(got) != 1 || got[0].HTTP != nil || got[0].Attribution != ByDestination {
 		t.Fatalf("events %+v", got)
 	}
 }

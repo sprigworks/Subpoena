@@ -569,7 +569,8 @@ def test_markers_are_counted_and_lines_map_back(tmp_path):
             return {"user": user}
 
         def other():
-            return 1  # not in an enforcement point: # subpoena:enforcement in prose
+            # not an enforcement point, in prose: # subpoena:enforcement
+            return 1
     """, "test_a.py": """
         from auth import gate
         def test_denied():
@@ -579,7 +580,7 @@ def test_markers_are_counted_and_lines_map_back(tmp_path):
     assert [r.outcome for r in rep.results] == [KILLED]
     m = rep.results[0].mutant
     assert (m.line, m.upstream) == (4, 3)
-    assert rep.markers == 2 and rep.unplaced == ["auth.py:8"]
+    assert rep.markers == 1 and rep.unplaced == []
 
 
 # --- T10: a helper module of test code; review 4, finding 6: pytest-mock ---
@@ -637,3 +638,56 @@ def test_a_mock_assert_under_pytest_mock_is_a_kill(tmp_path):
             spy.assert_not_called()
     """})
     assert r.outcome == KILLED
+
+
+# --- review 5: a repeat is a clean kill on a fresh copy ---
+
+def test_a_flake_that_leaves_a_file_does_not_confirm_itself(tmp_path):
+    count = tmp_path / "count"
+    r = outcome(tmp_path / "p", {"auth.py": GATE, "test_a.py": f"""
+        import os
+        import auth
+        def test_flaky():
+            p = {str(count)!r}
+            n = (len(open(p).read()) if os.path.exists(p) else 0) + 1
+            open(p, "w").write("x" * n)
+            assert not os.path.exists("left"), "left behind"
+            if n == 2:
+                open("left", "w").close()
+                assert False, "upstream was slow"
+    """})
+    assert r.outcome == UNCONFIRMED
+
+
+def test_a_crash_on_the_repeat_is_no_kill(tmp_path):
+    count = tmp_path / "count"
+    r = outcome(tmp_path / "p", {"auth.py": GATE, "test_a.py": f"""
+        import os
+        import auth
+        def test_flaky():
+            p = {str(count)!r}
+            n = (len(open(p).read()) if os.path.exists(p) else 0) + 1
+            open(p, "w").write("x" * n)
+            assert n != 2, "upstream was slow"
+            if n == 3:
+                raise KeyError("died")
+    """})
+    assert r.outcome == UNCONFIRMED and "second time" in r.output
+
+
+# --- review 5: prose is no marker; a bad trailing marker is loud ---
+
+def test_a_comment_line_that_names_a_marker_is_prose(tmp_path):
+    r = outcome(tmp_path / "p", {"auth.py": "# this is how: return x  # subpoena:enforcement\n" + textwrap.dedent(GATE),
+                                 "test_a.py": """
+        from auth import gate
+        def test_denied():
+            assert gate("mallory") == {"denied": True}
+    """})
+    assert r.outcome == KILLED
+
+
+def test_a_trailing_marker_with_a_bad_argument_is_an_error(tmp_path):
+    bad = textwrap.dedent(GATE).replace("# subpoena:enforcement\n", "# why  # subpoena:enforcement grp=a\n")
+    with pytest.raises(cross.CrossError):
+        outcome(tmp_path / "p", {"auth.py": bad, "test_a.py": "import auth\ndef test_a():\n    pass\n"})

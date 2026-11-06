@@ -99,23 +99,23 @@ if that test passes without it. A green suite means the tests
 cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
 mutant that does not compile is "invalid", never "killed". Every run starts from
-a fresh copy, so no test sees what another case left there. After a kill, the
-packages that failed run again, all their tests: once with the mutant in place,
-then three times without it, each on a fresh copy. All their tests, because a
-failure can need the tests beside it. Python runs the mutant run's whole test
-selection. The baseline, the mutant run and the reruns
-all start their test binaries the same way, so a test red only under the way it
-was started is red on the baseline too. If the run with the mutant passes, or one
-without it fails or does not finish, the verdict is
-`enforcement-mutant-unconfirmed` and the run fails: something other than the
-mutant turned it red, such as a flake or state outside the copy that persists. A
-real kill that needs a clean copy can come back unconfirmed too, since the repeat
-reuses the mutant's copy; that costs a kill, and a false one costs more. State
-that clears itself before the reruns passes them. A flake must fail twice in a row
-with the mutant, then pass three times without it: a test that fails one run in
-twenty-five does that on about one mutant in seven hundred, and a test that fails
-half the time on about one in thirty-two. Cross narrows this and does not close it: fix
-the flake, and confirm a surprising kill by rerunning cross. In Go a kill also
+a fresh copy, so no test sees what another case left there. After a kill, it must
+hold. The tests run again with the mutant, on a fresh copy: the failed packages in
+Go, the mutant run's selection in Python. That must be a clean kill, with a test
+of the first run among the failed. Then three runs without the mutant, each on a
+fresh copy: the first is the mutant run's whole command, because a failure can
+need a test in another package, and in Go the others are the failed packages. The
+baseline, the mutant run and the reruns all start their test binaries the same
+way, so a test red only under the way it was started is red on the baseline too.
+A kill that does not hold is `enforcement-mutant-unconfirmed`, the run fails, and
+cross says why: something other than the mutant turned it red, such as a flake or
+state outside the copy that persists. State that clears itself before the reruns
+passes them. A flake must fail twice with the mutant in the same test, then pass
+without it. If its runs are independent, a test that fails one run in twenty-five
+does that on about one mutant in seven hundred, and a test that fails half the
+time on about one in thirty-two; state the test keeps between runs can make that
+worse. Cross narrows this and does not close it: fix the flake, and confirm a
+surprising kill by rerunning cross. In Go a kill also
 needs a failed test whose binary links the mutated package (`go list -deps
 -test`). A suite that runs the code as a separate program links none of it, so
 its kills come back unconfirmed. A removed `return`
@@ -183,7 +183,7 @@ under `inconclusive:` and reads as `other`. `--require-witness` opts into a stri
 gate: a clean failure whose first evidence is `testimony` or `other` is
 `enforcement-mutant-killed-by-self-report` and fails the run. A witness failure
 later in that test or its cleanup cannot redeem it. Selection retries such a
-result on the full suite (an `unconfirmed` it keeps: a test seen failing without
+result on the full suite (an `unconfirmed` it keeps: a kill that did not hold, say a test seen failing without
 the mutant is not retried into a kill), and group and pair runs use the same rule, so a
 self-report kill cannot mask another layer. The default remains unchanged.
 The gateway and adopter CI paths select this gate. The Level 0 Python

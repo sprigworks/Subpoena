@@ -198,10 +198,10 @@ run. Never add a group or acceptance entry to hide a testable survivor. Keep
 release checks at `-j 1`, or confirm parallel kills there: contention can alter
 timing-sensitive tests. `--timeout` remains the per-run timeout in seconds.
 
-A kill's tests run again as a whole, once with the mutant and three times without
-it, each of those on a fresh copy. A pass with the mutant or a failure without it
-is `enforcement-mutant-unconfirmed`, which fails the run, and `-select` does not
-retry it on the whole suite.
+A kill must hold: its tests run again once with the mutant and three times
+without it, each on a fresh copy. Anything but a clean kill in the same test with
+the mutant, or a failure without it, is `enforcement-mutant-unconfirmed`, which
+fails the run, and `-select` does not retry it on the whole suite.
 
 `--test-helper FILE`, repeatable, names a file of test code that holds no tests,
 such as a module of shared assertions, so an assertion there counts as a test's.

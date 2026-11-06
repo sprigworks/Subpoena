@@ -66,7 +66,7 @@ const (
 )
 
 // killRepeats is how many times a kill's failed packages run again with the
-// mutant still in place. A red run the mutant caused is red again; a rare flake
+// mutant, on a fresh copy. A red run the mutant caused is red again; a rare flake
 // is not, and this is what stops one: runs without the mutant pass a flake that
 // fails one time in twenty-five nearly every time.
 var killRepeats = 1
@@ -159,6 +159,8 @@ type Result struct {
 	Group   string   // set on a whole-group run
 	Outcome Outcome
 	Failing []string // names of failing tests, for Killed
+	// Why says why a kill is Unconfirmed.
+	Why string
 	// Evidence is the kind of the first failure in a Killed run, and
 	// FirstFailure that failure's message.
 	Evidence     Evidence
@@ -675,7 +677,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 					if o.RequireWitness && ev != EvidenceWitness {
 						res.Outcome = KilledBySelfReport //subpoena:enforcement
 					}
-					if err := confirmKill(ctx, o, sb, testArgs, raw, ms, &res); err != nil {
+					if err := confirmKill(ctx, o, sb, testArgs, raw, ms, mutated, &res); err != nil {
 						return res, err
 					}
 				}
@@ -691,38 +693,49 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 	return res, nil
 }
 
-// confirmKill runs the mutant run's own test command again on the packages that
-// failed, all their tests, since a failure can need the tests beside it. A test
-// binary shares memory only with its own package, and state outside the copy
-// reaches a package however it is run. First with the mutant in place,
-// killRepeats times: a run that passes means the red was not the mutant's, as a
-// flake's is not. Then without it, killReruns times, each on a fresh copy: a run
-// that fails or does not finish was red for a reason other than the mutant, or
-// may have been. That is state outside the copy, or a flake, and a kill needs
-// neither. Before any of that, a failed test whose binary does not link the
-// mutated code has nothing to do with the mutant, as far as a binary can show.
+// confirmKill asks a kill to hold, and says why in res.Why if it does not. A
+// failed test's binary must link the mutated code. Then the failed packages run
+// again, all their tests, with the mutant on a fresh copy, killRepeats times:
+// the run must be a clean kill again with a test of the first run among the
+// failed, or the red was not the mutant's. The copy is fresh because a flake that
+// left a file behind would otherwise confirm itself. Then killReruns runs without
+// the mutant, each on a fresh copy: the first the mutant run's whole command,
+// since a failure can need a test in another package, and the rest the failed
+// packages. One that fails or does not finish was red for a reason other than
+// the mutant, or may have been.
 //
 //subpoena:enforcement_point
-func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw string, ms []Mutant, res *Result) error {
+func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw string, ms []Mutant, mutated map[string][]byte, res *Result) error {
 	failed := failedPackages(raw)
-	if why, err := linksMutant(ctx, o, sb, failed, ms); err != nil {
+	why, err := linksMutant(ctx, o, sb, failed, ms)
+	if err != nil {
 		return err
-	} else if why != "" {
-		res.Output = why
+	}
+	if why != "" {
+		res.Why = why
 		res.Outcome = Unconfirmed //subpoena:enforcement
 		return nil
 	}
+	narrow := args
 	if len(failed) > 0 {
-		args = append(slices.Clone(args[:len(args)-1]), failed...)
+		narrow = append(slices.Clone(args[:len(args)-1]), failed...)
 	}
 	for n := range killRepeats {
+		if err := sb.fresh(); err != nil {
+			return err
+		}
+		for file, b := range mutated {
+			if err := os.WriteFile(filepath.Join(sb.dir, filepath.FromSlash(file)), b, 0o644); err != nil {
+				return err
+			}
+		}
 		fmt.Fprintf(o.Log, "  repeat %d of %d with the mutant\n", n+1, killRepeats)
-		out, err := o.run.test(ctx, o, sb, args...)
+		out, err := o.run.test(ctx, o, sb, narrow...)
 		if ctx.Err() != nil {
 			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
 		}
-		if err == nil {
-			res.Output = "the suite passed when run again with the mutant\n" + tail(testText(out), 20)
+		if why := notAKill(out, err, o.key, res.Failing); why != "" {
+			res.Why, res.Output = why, tail(testText(out), 20)
 			res.Outcome = Unconfirmed //subpoena:enforcement
 			return nil
 		}
@@ -732,17 +745,45 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 			return err
 		}
 		fmt.Fprintf(o.Log, "  rerun %d of %d without the mutant\n", n+1, killReruns)
-		out, err := o.run.test(ctx, o, sb, args...)
+		a := narrow
+		if n == 0 {
+			a = args
+		}
+		out, err := o.run.test(ctx, o, sb, a...)
 		if ctx.Err() != nil {
 			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
 		}
 		if err != nil {
-			res.Output = tail(testText(out), 20)
+			res.Why, res.Output = "the suite failed without the mutant", tail(testText(out), 20)
 			res.Outcome = Unconfirmed //subpoena:enforcement
 			return nil
 		}
 	}
 	return nil
+}
+
+// notAKill says why a repeat with the mutant is not the kill the first run was,
+// or "" if it is: red on a clean failure, in a test that failed the first time.
+func notAKill(raw string, err error, key string, first []string) string {
+	if err == nil {
+		return "the suite passed when run again with the mutant"
+	}
+	out := testText(raw)
+	if timedOut(out, err) {
+		return "the run with the mutant did not finish the second time"
+	}
+	if buildFailed(out) {
+		return "the run with the mutant did not build the second time"
+	}
+	if _, _, crashed := firstFailure(raw, key); crashed {
+		return "the run with the mutant crashed the second time"
+	}
+	for _, name := range failingTests(out) {
+		if slices.Contains(first, name) {
+			return ""
+		}
+	}
+	return "a different test failed when run again with the mutant"
 }
 
 // failedPackages lists the packages in raw with a failed test.
@@ -766,7 +807,7 @@ func linksMutant(ctx context.Context, o Options, sb sandbox, failed []string, ms
 	if len(failed) == 0 {
 		return "", nil
 	}
-	mutated := map[string]bool{}
+	pkgs := map[string]bool{}
 	for _, m := range ms {
 		out, err := goIn(ctx, o.Timeout, sb, "list", "-f", "{{.ImportPath}}", "./"+path.Dir(m.File))
 		if ctx.Err() != nil {
@@ -775,7 +816,7 @@ func linksMutant(ctx context.Context, o Options, sb sandbox, failed []string, ms
 		if err != nil {
 			return "", nil
 		}
-		mutated[strings.TrimSpace(out)] = true
+		pkgs[strings.TrimSpace(out)] = true
 	}
 	out, err := goIn(ctx, o.Timeout, sb, append([]string{"list", "-deps", "-test", "-f", "{{.ImportPath}}"}, failed...)...)
 	if ctx.Err() != nil {
@@ -786,7 +827,7 @@ func linksMutant(ctx context.Context, o Options, sb sandbox, failed []string, ms
 	}
 	for _, line := range strings.Split(out, "\n") {
 		name, _, _ := strings.Cut(strings.TrimSpace(line), " ") // "p [p.test]" is p
-		if mutated[name] {
+		if pkgs[name] {
 			return "", nil
 		}
 	}
@@ -1363,7 +1404,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 				if c.Pos() <= fd.Body.Lbrace || c.End() >= fd.Body.Rbrace {
 					continue
 				}
-				mk, ok, err := parseMarker(markerText(c.Text))
+				mk, ok, err := parseMarker(markerText(src, fset.Position(c.Pos()).Offset, c.Text))
 				if err != nil {
 					return nil, fmt.Errorf("cross: %s:%d: %w", rel, fset.Position(c.Pos()).Line, err) //subpoena:enforcement
 				}
@@ -1442,7 +1483,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 	var stray error
 	for _, g := range f.Comments {
 		for _, c := range g.List {
-			if anyMarkerRE.MatchString(markerText(c.Text)) && !placed[c] && stray == nil {
+			if anyMarkerRE.MatchString(markerText(src, fset.Position(c.Pos()).Offset, c.Text)) && !placed[c] && stray == nil {
 				stray = fmt.Errorf("cross: %s:%d: %q is not a marker cross applies: statement and guard markers belong inside a //%s function, and the point marker on a function's doc comment", rel, fset.Position(c.Pos()).Line, c.Text, MarkerEnforcementPoint)
 			}
 		}
@@ -1609,29 +1650,41 @@ var (
 	groupRE       = regexp.MustCompile(`^group=([A-Za-z0-9_.-]+)$`)
 	pointRE       = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcementPoint) + `(\s|$)`)
 	anyMarkerRE   = regexp.MustCompile(`^//\s*subpoena:enforcement`)
-	// trailingRE is a marker after an upstream comment on the same line:
+	// trailingRE finds a marker after an upstream comment on a line of code:
 	// return nil // why //subpoena:enforcement
-	trailingRE = regexp.MustCompile(`\s//\s*subpoena:enforcement(_guard)?(\s+(true|false|group=\S+))*\s*$`)
-	// sourceMarkerRE and onlyMarkerRE read source lines, so a marker the parser
-	// did not take is still counted.
-	sourceMarkerRE = regexp.MustCompile(`//\s*subpoena:enforcement(_guard)?(\s|$)`)
+	trailingRE = regexp.MustCompile(`\s//\s*subpoena:enforcement`)
+	// inlineMarkerRE and onlyMarkerRE read source lines, so a marker the parser
+	// did not take is still counted, and a comment that names one in prose is not.
+	inlineMarkerRE = regexp.MustCompile(`\s//\s*subpoena:enforcement(_guard)?(\s|$)`)
 	onlyMarkerRE   = regexp.MustCompile(`^\s*//\s*subpoena:enforcement`)
 )
 
-// markerText is a comment's marker: all of it, or the end of it when the marker
-// follows an upstream comment, so marking a line needs no upstream text removed.
-func markerText(text string) string {
+// markerText is a comment's marker, or its text if it has none. On a line of
+// code that is the end of the comment when a marker follows upstream's text, so
+// marking a line removes none of it. Arguments stay, so a bad one is an error. A
+// comment on a line of its own that mentions a marker is prose.
+func markerText(src []byte, offset int, text string) string {
+	start := bytes.LastIndexByte(src[:offset], '\n') + 1
+	if len(bytes.TrimSpace(src[start:offset])) == 0 {
+		return text
+	}
 	if loc := trailingRE.FindStringIndex(text); loc != nil {
 		return strings.TrimSpace(text[loc[0]:])
 	}
 	return text
 }
 
-// upstreamLine is line with the marker-only lines above it taken out.
+// upstreamLine is line with the lines marking added above it taken out: a
+// marker-only line, and the empty // gofmt puts before one in a doc comment.
 func upstreamLine(src []byte, line int) int {
 	up := line
-	for i, l := range bytes.SplitN(src, []byte("\n"), line) {
-		if i < line-1 && onlyMarkerRE.Match(l) {
+	lines := bytes.Split(src, []byte("\n"))
+	for i := 0; i < line-1 && i < len(lines); i++ {
+		if !onlyMarkerRE.Match(lines[i]) {
+			continue
+		}
+		up--
+		if i > 0 && string(bytes.TrimSpace(lines[i-1])) == "//" {
 			up--
 		}
 	}
@@ -1654,7 +1707,9 @@ func markerCount(ms []Mutant) (int, []string) {
 	var unplaced []string
 	for _, file := range slices.Sorted(maps.Keys(src)) {
 		for i, l := range bytes.Split(src[file], []byte("\n")) {
-			if sourceMarkerRE.Match(l) {
+			text := bytes.TrimSpace(l)
+			own := bytes.HasPrefix(text, []byte("//")) && (enforcementRE.Match(text) || guardRE.Match(text))
+			if own || (!bytes.HasPrefix(text, []byte("//")) && inlineMarkerRE.Match(l)) {
 				n++
 				if !lines[file][i+1] {
 					unplaced = append(unplaced, fmt.Sprintf("%s:%d", file, i+1))
@@ -1876,7 +1931,15 @@ type sandbox struct {
 // earlier run left. The path stays: the go build cache keys on it.
 func (sb sandbox) fresh() error {
 	if err := removeTree(sb.dir); err != nil {
-		return fmt.Errorf("cross: reset copy: %w", err)
+		// A detached child can still be writing there. Move the tree aside: it
+		// goes with the run's temp directory, and the child writes on unseen.
+		aside, terr := os.MkdirTemp(filepath.Dir(sb.dir), "stale-")
+		if terr != nil {
+			return fmt.Errorf("cross: reset copy: %w", err)
+		}
+		if rerr := os.Rename(sb.dir, filepath.Join(aside, "copy")); rerr != nil {
+			return fmt.Errorf("cross: reset copy: %w", err)
+		}
 	}
 	if err := copyTree(sb.template, sb.dir); err != nil {
 		return fmt.Errorf("cross: copy tree: %w", err)

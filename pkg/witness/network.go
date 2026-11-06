@@ -29,11 +29,17 @@ type NetworkEvent struct {
 	Dest        netip.AddrPort // IPv4-mapped IPv6 addresses are unmapped
 	Cgroup      string         // cgroup path, if readable
 	CgroupID    uint64         // kernel cgroup ID, if the witness reports one (0 otherwise)
-	TraceID     string         // set when Attribution is ByCgroup or ByMark
+	TraceID     string         // set when Attribution is ByCgroup
 	Attribution Attribution
 	SeenAt      time.Time
-	Request     string      // HTTP request line, from an answering Sinkhole
-	Headers     http.Header // HTTP headers, from an answering Sinkhole
+	HTTP        *HTTPRequest // what an answering Sinkhole read, nil otherwise
+}
+
+// HTTPRequest is a request an answering Sinkhole read. A pointer, so an event
+// stays comparable, and so a printed event holds no header values.
+type HTTPRequest struct {
+	Line    string // request line
+	Headers http.Header
 }
 
 // NetworkWitness reports outbound connection attempts attributable to a trace.

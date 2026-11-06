@@ -90,9 +90,14 @@ func main() {
 				fmt.Println("  if the line above is a t.Log, not an assertion, move it after the witness check: go test prints both alike")
 			}
 		case cross.Unconfirmed:
-			fmt.Printf("  suite went red, but it did not hold (green again with the mutant, or red without it): %s\n", strings.Join(r.Failing, ", "))
-			fmt.Println("  leftover state outside the copy, or a flake: the red run proves nothing. Fix the test:")
-			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
+			fmt.Printf("  suite went red, but the kill did not hold: %s\n", r.Why)
+			fmt.Printf("  failing: %s\n", strings.Join(r.Failing, ", "))
+			if r.Output != "" {
+				fmt.Println("  the red run proves nothing: look for a flake, or state outside the copy:")
+				fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
+			} else {
+				fmt.Println("  a suite that runs the code as a separate program links none of it, so cross cannot count its kills")
+			}
 		case cross.Survived:
 			fmt.Println("  suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced")
 			if len(r.ZeroReturns) > 0 {

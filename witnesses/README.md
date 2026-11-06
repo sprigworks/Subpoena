@@ -240,11 +240,10 @@ up at once still counts; a drain or accept failure fails `Health`.
 A proxy turns a closed connection into a 502, which can hide what it did next.
 `NewAnsweringSinkhole` (`Sinkhole(answer=True)` in Python) stands in for an
 upstream that must answer: it replies 200 with an empty body and records the
-request line and headers. A request carrying `X-Subpoena-Mark: <trace id>` is
-attributed to that trace (`ByMark`), so `Dialed` leaves it out of other traces.
-The header travels through the code under test, so a mark only narrows: an
-arrival with no mark, because a proxy dropped it or the bytes were not HTTP,
-stays `ByDestination` and is returned for every trace.
+request line and headers. `Marked(mark)` finds the arrivals whose first
+`X-Subpoena-Mark` header is `mark`, so a test can tell one request from another.
+The header travels through the code under test, so it decides nothing about
+absence: `Dialed`, and so `NoDial`, returns every arrival whatever it says.
 
 `NewSinkhole` listens on 127.0.0.1; `NewSinkholeAt` takes the address, for an
 IPv6 path or a second loopback address.

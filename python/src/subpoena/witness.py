@@ -10,6 +10,7 @@ import re
 import selectors
 import socket
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import IO, Dict, List, Optional, Tuple, Union
@@ -235,12 +236,10 @@ def read_log(f: IO[str]) -> Log:
 OP_CONNECT = "connect"  # connect() on an inet socket
 OP_SENDMSG = "sendmsg"  # a send with an explicit destination
 BY_DESTINATION = "destination"
-# An answering Sinkhole read the trace from the request's MARK_HEADER. The header
-# comes through the code under test, so a mark can only narrow an arrival to a
-# trace: one with no mark stays BY_DESTINATION and is returned for every trace.
-BY_MARK = "mark"
+# A request header the test sends through the code under test, so marked() can
+# tell arrivals apart. It decides nothing: dialed() returns every arrival.
 MARK_HEADER = "X-Subpoena-Mark"
-_ANSWER_READ = 2.0  # seconds on one connection; the arrival is already recorded
+_ANSWER_READ = 2.0  # seconds in all on one connection; the arrival is already recorded
 _ANSWER_HEAD = 1 << 16
 _ANSWER_200 = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 
@@ -306,8 +305,9 @@ class NetworkEvent:
     trace_id: str = ""
     attribution: str = ""
     seen_at: Optional[datetime] = None
-    request: str = ""  # HTTP request line, from an answering Sinkhole
-    headers: Dict[str, str] = field(default_factory=dict)  # names in lower case
+    # From an answering Sinkhole. Left out of repr: failure text prints events.
+    request: str = field(default="", repr=False)  # HTTP request line
+    headers: Dict[str, str] = field(default_factory=dict, repr=False)  # names in lower case; first of a repeat
 
 
 class Sinkhole:
@@ -410,29 +410,35 @@ class Sinkhole:
         """Read one request, fill in the event, answer and close. A request it
         cannot read leaves the arrival as it is, which holds for every trace."""
         try:
-            c.settimeout(_ANSWER_READ)
+            deadline = time.monotonic() + _ANSWER_READ
+
+            def read() -> bytes:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError("sinkhole: read deadline")
+                c.settimeout(left)
+                return c.recv(4096)
+
             data = b""
-            while b"\r\n\r\n" not in data and len(data) < _ANSWER_HEAD:
-                chunk = c.recv(4096)
+            while not re.search(rb"\r?\n\r?\n", data) and len(data) < _ANSWER_HEAD:
+                chunk = read()
                 if not chunk:
                     return
                 data += chunk
-            lines = data.split(b"\r\n\r\n", 1)[0].decode("latin-1").split("\r\n")
+            head = re.split(rb"\r?\n\r?\n", data, maxsplit=1)[0]
+            lines = re.split(r"\r?\n", head.decode("latin-1"))
             if len(lines[0].split(" ")) != 3 or not lines[0].split(" ")[2].startswith("HTTP/"):
                 return
             headers = {}
             for line in lines[1:]:
                 name, sep, value = line.partition(":")
                 if sep:
-                    headers[name.strip().lower()] = value.strip()
-            mark = headers.get(MARK_HEADER.lower(), "")
+                    headers.setdefault(name.strip().lower(), value.strip())
             with self._mu:
                 event.request, event.headers = lines[0], headers
-                if mark:
-                    event.trace_id, event.attribution = mark, BY_MARK
             c.sendall(_ANSWER_200)
             c.shutdown(socket.SHUT_WR)
-            while c.recv(4096):  # closing on unread bytes can reset the answer away
+            while read():  # closing on unread bytes can reset the answer away
                 pass
         except OSError:
             pass
@@ -487,11 +493,17 @@ class Sinkhole:
             return self._err
 
     def dialed(self, trace_id: str) -> List[NetworkEvent]:
-        """Every connection that reached the sinkhole, leaving out only an
-        arrival marked with a different trace. One with no mark cannot be told
-        apart by trace, so it is returned for every trace."""
+        """Every connection that reached the sinkhole, whatever the trace:
+        arrivals cannot be told apart by trace, and a mark does not change that,
+        because the code under test could send any mark it liked."""
         with self._mu:
-            return [e for e in self._events if e.attribution != BY_MARK or e.trace_id == trace_id]
+            return list(self._events)
+
+    def marked(self, mark: str) -> List[NetworkEvent]:
+        """The arrivals whose first MARK_HEADER is mark, for telling one request
+        from another. It is no absence check: ask dialed() for that."""
+        with self._mu:
+            return [e for e in self._events if e.headers.get(MARK_HEADER.lower()) == mark]
 
     def health(self) -> Optional[str]:
         """None if the capture is complete: stopped, drained, and no accept

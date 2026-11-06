@@ -97,8 +97,8 @@ _RERUNS = 3
 
 _ANY_MARKER = re.compile(r"#\s*subpoena\s*:\s*enforc")  # cross's markers, misspelt ones too
 # A marker after an upstream comment on the same line: return x  # why  # subpoena:enforcement
-_TRAILING = re.compile(r"\s#\s*(subpoena:enforcement(_guard)?(\s+(true|True|false|False|group=\S+))*)\s*$")
-_SOURCE_MARKER = re.compile(r"#\s*subpoena:enforcement(_guard)?(\s|$)")
+_TRAILING = re.compile(r"\s#\s*(subpoena:enforcement.*)$")
+_INLINE_MARKER = re.compile(r"\s#\s*subpoena:enforcement(_guard)?(\s|$)")
 _ONLY_MARKER = re.compile(r"^\s*#\s*subpoena\s*:\s*enforc")
 _POINT = "subpoena:enforcement_point"
 _STATEMENT = "subpoena:enforcement"
@@ -178,7 +178,9 @@ def _comments(text: str) -> Dict[int, Tuple[str, bool]]:
     out = {}
     for tok in tokenize.generate_tokens(io.StringIO(text, newline=None).readline):
         if tok.type == tokenize.COMMENT:
-            out[tok.start[0]] = (_marker_text(tok.string[1:].strip()), not tok.line[:tok.start[1]].strip())
+            own = not tok.line[:tok.start[1]].strip()
+            text = tok.string[1:].strip()
+            out[tok.start[0]] = (text if own else _marker_text(text), own)
     return out
 
 
@@ -259,8 +261,9 @@ def _groups(mutants):
 
 
 def _marker_text(comment: str) -> str:
-    """A comment's marker: all of it, or the end of it when the marker follows
-    an upstream comment, so marking a line needs no upstream text removed."""
+    """On a line of code, a comment's marker: all of it, or the end of it when
+    the marker follows upstream's text, so marking a line removes none of it.
+    Arguments stay, so a bad one is an error."""
     m = _TRAILING.search(comment)
     return m.group(1) if m else comment
 
@@ -278,11 +281,26 @@ def marker_count(root: str, mutants: List[Mutant]) -> Tuple[int, List[str]]:
         lines = {m.line for m in mutants if m.file == file}
         text = _read_source(os.path.join(root, file), file).decode("utf-8")
         for i, l in enumerate(text.split("\n"), 1):
-            if _SOURCE_MARKER.search(l):
+            own = l.lstrip().startswith("#")
+            if (own and _ONLY_MARKER.match(l) and "enforcement_point" not in l) or (not own and _INLINE_MARKER.search(l)):
                 n += 1
                 if i not in lines:
                     unplaced.append(f"{file}:{i}")
     return n, unplaced
+
+
+def _not_a_kill(code, records, out, first: List[str]) -> str:
+    """Why a repeat with the mutant is not the kill the first run was, or "" if
+    it is: red on a clean failure, in a test that failed the first time. A
+    test's parameters are left out, since an id can hold the copy's path."""
+    if _clean(code, records):
+        return "the suite passed when run again with the mutant"
+    outcome, failing, _, _ = classify(code, records, out)
+    if outcome != KILLED:
+        return f"the run with the mutant came back {outcome} the second time"
+    if not {t.split("[")[0] for t in failing} & {t.split("[")[0] for t in first}:
+        return "a different test failed when run again with the mutant"
+    return ""
 
 
 def _where(m: Mutant) -> str:
@@ -787,10 +805,7 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
         def case(members, selected=None):
             if any(m.no_stand_in for m in members):
                 return Result(members[0], INVALID, output=_NO_STAND_IN, with_mutants=list(members[1:]))
-            directory, copy = fresh()
-            try:
-                if _before_mutate is not None:
-                    _before_mutate(copy)
+            def mutate(copy):
                 by_file = {}
                 for m in members:
                     by_file.setdefault(m.file, []).append(m)
@@ -807,6 +822,12 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                         data = apply(data, m)
                     with open(path, "wb") as f:
                         f.write(data)
+
+            directory, copy = fresh()
+            try:
+                if _before_mutate is not None:
+                    _before_mutate(copy)
+                mutate(copy)
                 with lock:
                     log("mutant: " + ", ".join(m.name() for m in members))
                 code, out, records, evidence_file = suite(copy, selected=selected, members=members, label="mutant")
@@ -814,21 +835,28 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                 if require_witness and outcome == KILLED and evidence != "witness":
                     outcome = KILLED_BY_SELF_REPORT
                 if outcome in {KILLED, KILLED_BY_SELF_REPORT}:
-                    # The mutant run's own tests, whole, since a failure can
-                    # need the tests beside it. Green with the mutant: the red
-                    # was not the mutant's. Red without it: red for another
-                    # reason, or it may have been.
+                    # It must hold. With the mutant on a fresh copy, since a
+                    # flake that left a file would otherwise confirm itself:
+                    # a clean kill, in a test of the first run. Without it: a
+                    # run that is red was red for another reason, or may be.
                     for _ in range(_REPEATS):
-                        code, out, records, _ = suite(copy, selected=selected, members=members, label="repeat")
-                        if _clean(code, records):
+                        again, again_copy = fresh()
+                        try:
+                            mutate(again_copy)
+                            code, out, records, _ = suite(again_copy, selected=selected, members=members, label="repeat")
+                        finally:
+                            _remove_tree(again)
+                        why = _not_a_kill(code, records, out, failing)
+                        if why:
                             outcome = UNCONFIRMED
-                            out = "the suite passed when run again with the mutant\n" + out
+                            out = why + "\n" + out
                             break
                     else:
                         for _ in range(_RERUNS):
                             code, out, records, _ = baseline(selected, label="confirm")
                             if not _clean(code, records):
                                 outcome = UNCONFIRMED
+                                out = "the suite failed without the mutant\n" + out
                                 break
                 return Result(members[0], outcome, failing, evidence, first,
                               "" if outcome == KILLED else _tail(out, 20),
@@ -925,7 +953,7 @@ _EXPLAIN = {
     KILLED_BY_SELF_REPORT: "require-witness: first failure was not independent witness evidence",
     MASKED: "layer is masked by other surviving layers; requires a reviewed cross-masked.txt entry",
     SURVIVED: "suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced",
-    UNCONFIRMED: "suite went red, but it did not hold (green again with the mutant, or red without it): leftover state outside "
+    UNCONFIRMED: "suite went red, but the kill did not hold: leftover state outside "
                  "the copy, or a flake. The red run proves nothing; fix the test:",
     CRASHED: "suite went red only by a crash (an exception other than an assertion, or the process died); "
              "a crash is not a kill:",

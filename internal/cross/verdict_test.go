@@ -471,7 +471,7 @@ func TestFlaky(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := rep.Results[0]; r.Outcome != Unconfirmed || !strings.Contains(r.Output, "again with the mutant") {
+	if r := rep.Results[0]; r.Outcome != Unconfirmed || !strings.Contains(r.Why, "again with the mutant") {
 		t.Fatalf("want unconfirmed, got %s %q\n%s", r.Outcome, r.FirstFailure, r.Output)
 	}
 }
@@ -629,8 +629,8 @@ func TestDenied(t *testing.T) {
 `
 
 // A marker can follow an upstream comment, so marking a line removes no
-// upstream text (B04, T27); a marker that still makes no mutant is named, and
-// the lines marker-only comments added are taken back out (B25).
+// upstream text (B04, T27), prose is not counted as one, and the lines
+// marker-only comments added are taken back out (B25).
 func TestMarkersAreCountedAndLinesMapBack(t *testing.T) {
 	const src = `package mini
 
@@ -666,10 +666,10 @@ func TestRefused(t *testing.T) {
 	if len(rep.Results) != 1 || rep.Results[0].Outcome != Killed {
 		t.Fatalf("results %+v", rep.Results)
 	}
-	if m := rep.Results[0].Mutant; m.Line != 10 || m.Upstream != 9 {
+	if m := rep.Results[0].Mutant; m.Line != 10 || m.Upstream != 9 { // no doc text, so no gofmt line
 		t.Fatalf("line %d upstream %d, want 10 and 9", m.Line, m.Upstream)
 	}
-	if rep.Markers != 2 || len(rep.Unplaced) != 1 || rep.Unplaced[0] != "gate.go:15" {
+	if rep.Markers != 1 || len(rep.Unplaced) != 0 {
 		t.Fatalf("markers %d unplaced %v", rep.Markers, rep.Unplaced)
 	}
 }
@@ -699,7 +699,7 @@ func TestFlaky(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := rep.Results[0]; r.Outcome != Unconfirmed || !strings.Contains(r.Output, "do not link") {
+	if r := rep.Results[0]; r.Outcome != Unconfirmed || !strings.Contains(r.Why, "do not link") {
 		t.Fatalf("want unconfirmed, got %s %q\n%s", r.Outcome, r.FirstFailure, r.Output)
 	}
 }
@@ -716,5 +716,153 @@ func TestTheWrapperIsBuiltInGOTMPDIR(t *testing.T) {
 	defer r.remove()
 	if filepath.Dir(r.dir) != dir {
 		t.Fatalf("runner dir %s, want under %s", r.dir, dir)
+	}
+}
+
+// flakyByRun is a test that counts its runs outside the copy, with body after.
+func flakyByRun(count, imports, body string) string {
+	return `package mini
+
+import (
+	"os"
+	"testing"` + imports + `
+)
+
+func TestFlaky(t *testing.T) {
+	const count = "` + count + `"
+	b, _ := os.ReadFile(count)
+	b = append(b, 'x')
+	os.WriteFile(count, b, 0o644)
+	n := len(b)
+	_ = n
+` + body + `
+}
+`
+}
+
+// A flake that leaves a file in the copy would confirm itself on a reused copy,
+// so the repeat gets a fresh one (Review 5, finding 2).
+func TestAFlakeThatLeavesAFileDoesNotConfirmItself(t *testing.T) {
+	test := flakyByRun(filepath.Join(t.TempDir(), "count"), "", `	if _, err := os.Stat("left"); err == nil {
+		t.Fatal("left behind")
+	}
+	if n == 2 {
+		os.WriteFile("left", nil, 0o644)
+		t.Fatal("upstream was slow")
+	}`)
+	rep, err := run(t, module(t, map[string]string{"gate.go": gateGo, "gate_test.go": test}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Outcome != Unconfirmed {
+		t.Fatalf("want unconfirmed, got %s %q", r.Outcome, r.FirstFailure)
+	}
+}
+
+// Only a clean failure is red again: a panic on the repeat is no kill, nor is a
+// different test failing (Review 5, finding 3).
+func TestARepeatMustBeACleanKill(t *testing.T) {
+	test := flakyByRun(filepath.Join(t.TempDir(), "count"), "", `	if n == 2 {
+		t.Fatal("upstream was slow")
+	}
+	if n == 3 {
+		panic("died")
+	}`)
+	rep, err := run(t, module(t, map[string]string{"gate.go": gateGo, "gate_test.go": test}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Outcome != Unconfirmed || !strings.Contains(r.Why, "crashed") {
+		t.Fatalf("want unconfirmed on a crash, got %s %q", r.Outcome, r.Why)
+	}
+	count := filepath.Join(t.TempDir(), "count")
+	other := flakyByRun(count, "", `	if n == 2 {
+		t.Fatal("upstream was slow")
+	}`) + `
+func TestOther(t *testing.T) {
+	b, _ := os.ReadFile("` + count + `")
+	if len(b) == 3 {
+		t.Fatal("something else")
+	}
+}
+`
+	rep, err = run(t, module(t, map[string]string{"gate.go": gateGo, "gate_test.go": other}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Outcome != Unconfirmed || !strings.Contains(r.Why, "different test") {
+		t.Fatalf("want unconfirmed on a different test, got %s %q", r.Outcome, r.Why)
+	}
+}
+
+// A failure can need a test in another package: here package a, seeing what the
+// baseline left outside the copy, writes a file package mini fails on. Neither
+// looks at a refusal (Review 5, finding 4).
+func TestAFailureThatNeedsAnotherPackageIsNoKill(t *testing.T) {
+	mark := filepath.Join(t.TempDir(), "mark")
+	first := `package a
+
+import (
+	"os"
+	"testing"
+)
+
+func TestWrites(t *testing.T) {
+	const mark = "` + mark + `"
+	if _, err := os.Stat(mark); err == nil {
+		os.WriteFile("../trigger", nil, 0o644)
+	}
+	os.WriteFile(mark, nil, 0o644)
+}
+`
+	second := `package mini
+
+import (
+	"os"
+	"testing"
+	"time"
+)
+
+func TestReads(t *testing.T) {
+	time.Sleep(time.Second)
+	if _, err := os.Stat("trigger"); err == nil {
+		t.Fatal("state from the other package")
+	}
+}
+`
+	rep, err := run(t, module(t, map[string]string{"gate.go": gateGo, "gate_test.go": second, "a/a_test.go": first}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Outcome != Unconfirmed {
+		t.Fatalf("want unconfirmed, got %s %q", r.Outcome, r.FirstFailure)
+	}
+}
+
+// A comment on a line of its own that names a marker is prose, on any line
+// (Review 5, finding 1); on a line of code a bad argument is an error, not a
+// marker dropped (finding 6).
+func TestProseIsNoMarkerAndABadTrailingOneIsLoud(t *testing.T) {
+	prose := strings.Replace(gateGo, "package mini\n", "package mini\n\n// shape: return nil // why //subpoena:enforcement\n", 1)
+	test := `package mini
+
+import "testing"
+
+func TestRefused(t *testing.T) {
+	if Check("mallory") == nil {
+		t.Fatal("not refused")
+	}
+}
+`
+	rep, err := run(t, module(t, map[string]string{"gate.go": prose, "gate_test.go": test}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Markers != 1 || len(rep.Unplaced) != 0 {
+		t.Fatalf("markers %d unplaced %v", rep.Markers, rep.Unplaced)
+	}
+	bad := strings.Replace(gateGo, "return ErrDenied //subpoena:enforcement", "return ErrDenied // why //subpoena:enforcement grp=a", 1)
+	if _, err := run(t, module(t, map[string]string{"gate.go": bad, "gate_test.go": test})); err == nil {
+		t.Fatal("a bad trailing marker passed")
 	}
 }
