@@ -240,15 +240,15 @@ stops the first two under that flag and runs the others anyway. So a green run w
 without the flag, on a fresh copy, as does one with a `fail` event in it, and the mutant reads survived
 only if that run is green too. That look is at the whole run, so one such package anywhere under the target sends every survivor of
 the target through the extra run, whichever package the survivor is in. Only a target with no such package has its green runs read as survivors at once.
-A package with no test files has a `skip`, not a `pass`, except under `-cover`, where it passes with a `coverage:` line. A package with test files and no tests (helpers,
+A package with no test files has a `skip`, not a `pass`, except under `-cover`, where one with statements passes with a `coverage:` line, and one whose functions have no statements (`func main() {}`, a marker method) passes with no such line, so it reads as a quiet package and pays as one. A package of only consts, types and vars still skips. A package with test files and no tests (helpers,
 benchmarks, a bare `TestMain`) gives the same events as a quiet one, so the baseline tells them apart: there
 `m.Run` runs everything, and a package that passed with no `Test` or `Fuzz` run and showed `m.Run`'s output, through an `Example`, a `Benchmark`,
 package testing's `no tests to run` line or a `coverage:` line, has none. A selected run does not look at all, since a package with no selected test reads the
-same, and the whole-suite run after it does. What is left pays: any package under the target that shows no test on a green baseline costs every survivor of the target
+same, and the whole-suite run after it does. What is left pays: any package under the target that still reads as quiet, one that passed and showed nothing of `m.Run`, costs every survivor of the target
 one more suite run and one more first try for a flake, which still has to fail again in the same test and pass three times
 without the mutant. Where it does, a true survivor reads as a kill, exit 0, in any package of the target. That package need not be rare. It can be a `TestMain` that hides `m.Run`'s output
 and calls it again only on failure, a `TestMain` gate that exits without calling `m.Run`, as an integration suite's does when its service is not there, or a bare `TestMain` that prints
-text with no newline, which runs into the `no tests to run` line. None shows anything to tell it from a quiet package, so all of them pay. That run can hang where the first did not, which reads as a timeout and fails the run. A `TestMain` that shows one `m.Run`, hides a later red one, and takes its exit code from a third shows tests on a green run, so it is not seen: that reads survived, and the run fails. A `=== RUN` line printed by a `TestMain` can hide the signature, as printed text can
+text with no newline, which runs into the `no tests to run` line. None shows anything to tell it from a quiet package, so all of them pay. That run can hang where the first did not, which reads as a timeout and fails the run. A `TestMain` that shows one `m.Run`, hides a later red one, and takes its exit code from a third shows tests on a green run, so it is not seen: that reads survived, and the run fails. A `=== RUN` or `coverage:` line printed by a `TestMain` can hide the signature, as printed text can
 anything here, and that reads survived, which fails the run. It need not be framed: test2json reads plain lines too until it has seen a frame, which a quiet first `m.Run` keeps from it. A red one can also say `PASS` after
 a real failure, so when that leaves no failed test, the failed tests come from a run without the
 flag. A suite whose second `m.Run` truly passes says `PASS` there too, and that kill reads
@@ -303,7 +303,7 @@ sequential). On cross-self on 2026-10-27 it cut 490 s to 135 s at `-j 8` with
 the same verdicts. Those times are out of date and cross-self has not been timed
 since: a kill then took one suite run and now takes five, a survivor one, or two under `-select`,
 where its selected run comes before the whole suite. A survivor takes one more if any package under the target
-shows no test on a green run (see above). A kill takes one more if
+reads as quiet on a green run (see above). A kill takes one more if
 its first run was green or said `PASS` after a failure, and one more for the first run's command
 plus up to two per package with a failed test if its repeat crashes or hangs, with the repeat a
 whole suite, and `pkg/witness` has gone from

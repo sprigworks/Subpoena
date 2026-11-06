@@ -4,8 +4,8 @@
 
 - **A run that cost a kill says which test failed in it.** An unconfirmed kill showed the last 20
   lines of the red run and the mutant run's failing tests. In a long suite those lines are the slowest
-  tests' passes, so the test that failed without the mutant could not be seen. The output now starts
-  with the tests that failed in that run and its first failure. What counts as unconfirmed is unchanged.
+  tests' passes, so the test that failed without the mutant could not be seen. Where that run has a
+  failure to name, the output now starts with its failed tests and first failure. What counts as unconfirmed is unchanged.
 - **A panic testify's `suite` recovered is a crash.** It reports one through `t.Errorf`, with no
   line at column 0, so it read as a plain kill. `test panicked:` after a file and line, in a test
   that did not pass, now counts as a crash, as Ginkgo's `[PANICKED]` does. New cost: a failed test
@@ -24,7 +24,7 @@
   `m.Run`'s output left no fail event, and under `-test.failfast` the second `m.Run` ran nothing, so
   a mutant the suite catches read as a survivor. A green first run with a package that has tests and
   ran none now goes again without that flag, as one with a fail event already did. A target with no such
-  package takes no extra run. New cost: any package under the target that shows no test on a green run, including a `TestMain` that hides
+  package takes no extra run. New cost: any package under the target that passes and shows nothing of `m.Run` on a green run, including a `TestMain` that hides
   `m.Run`'s output and calls it again only on failure and a `TestMain` gate that exits without `m.Run`, costs every
   survivor of the target one more suite run and one more first try for a flake, so a flake can still turn a true survivor there into a kill, exit 0.
 - **The reruns without the mutant are no longer blind to a second `m.Run`.** They kept
