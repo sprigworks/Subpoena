@@ -14,22 +14,39 @@ import (
 )
 
 type netEvent struct {
-	_        structs.HostLayout
-	CgroupId uint64
-	KnId     uint64
-	Op       uint32
-	Pid      uint32
-	HostPid  uint32
-	Family   uint32
-	SockType uint32
-	Protocol uint32
-	Depth    uint32
-	Port     uint16
-	Pad      uint16
-	Addr     [16]uint8
-	Comm     [16]int8
-	Cgroup   [8][64]int8
+	_         structs.HostLayout
+	CgroupId  uint64
+	KnId      uint64
+	Bytes     uint64
+	Op        uint32
+	Pid       uint32
+	HostPid   uint32
+	Family    uint32
+	SockType  uint32
+	Protocol  uint32
+	Depth     uint32
+	Port      uint16
+	LocalPort uint16
+	Addr      [16]uint8
+	LocalAddr [16]uint8
+	Comm      [16]int8
+	Cgroup    [8][64]int8
 }
+
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	netMapEvents         = "events"
+	netMapLost           = "lost"
+	netMapOtherSends     = "other_sends"
+	netProgHandleConnect = "handle_connect"
+	netProgHandleDeliver = "handle_deliver"
+	netProgHandleSendmsg = "handle_sendmsg"
+	netVarPidnsInum      = "pidns_inum"
+	netVarSessionBase    = "session_base"
+	netVarUnusedEvent    = "unused_event"
+)
 
 // loadNet returns the embedded CollectionSpec for net.
 func loadNet() (*ebpf.CollectionSpec, error) {
@@ -51,7 +68,7 @@ func loadNet() (*ebpf.CollectionSpec, error) {
 //	*netMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadNetObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadNetObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadNet()
 	if err != nil {
 		return err
@@ -74,6 +91,7 @@ type netSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type netProgramSpecs struct {
 	HandleConnect *ebpf.ProgramSpec `ebpf:"handle_connect"`
+	HandleDeliver *ebpf.ProgramSpec `ebpf:"handle_deliver"`
 	HandleSendmsg *ebpf.ProgramSpec `ebpf:"handle_sendmsg"`
 }
 
@@ -81,8 +99,9 @@ type netProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type netMapSpecs struct {
-	Events *ebpf.MapSpec `ebpf:"events"`
-	Lost   *ebpf.MapSpec `ebpf:"lost"`
+	Events     *ebpf.MapSpec `ebpf:"events"`
+	Lost       *ebpf.MapSpec `ebpf:"lost"`
+	OtherSends *ebpf.MapSpec `ebpf:"other_sends"`
 }
 
 // netVariableSpecs contains global variables before they are loaded into the kernel.
@@ -90,6 +109,7 @@ type netMapSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type netVariableSpecs struct {
 	PidnsInum   *ebpf.VariableSpec `ebpf:"pidns_inum"`
+	SessionBase *ebpf.VariableSpec `ebpf:"session_base"`
 	UnusedEvent *ebpf.VariableSpec `ebpf:"unused_event"`
 }
 
@@ -113,14 +133,16 @@ func (o *netObjects) Close() error {
 //
 // It can be passed to loadNetObjects or ebpf.CollectionSpec.LoadAndAssign.
 type netMaps struct {
-	Events *ebpf.Map `ebpf:"events"`
-	Lost   *ebpf.Map `ebpf:"lost"`
+	Events     *ebpf.Map `ebpf:"events"`
+	Lost       *ebpf.Map `ebpf:"lost"`
+	OtherSends *ebpf.Map `ebpf:"other_sends"`
 }
 
 func (m *netMaps) Close() error {
 	return _NetClose(
 		m.Events,
 		m.Lost,
+		m.OtherSends,
 	)
 }
 
@@ -129,6 +151,7 @@ func (m *netMaps) Close() error {
 // It can be passed to loadNetObjects or ebpf.CollectionSpec.LoadAndAssign.
 type netVariables struct {
 	PidnsInum   *ebpf.Variable `ebpf:"pidns_inum"`
+	SessionBase *ebpf.Variable `ebpf:"session_base"`
 	UnusedEvent *ebpf.Variable `ebpf:"unused_event"`
 }
 
@@ -137,12 +160,14 @@ type netVariables struct {
 // It can be passed to loadNetObjects or ebpf.CollectionSpec.LoadAndAssign.
 type netPrograms struct {
 	HandleConnect *ebpf.Program `ebpf:"handle_connect"`
+	HandleDeliver *ebpf.Program `ebpf:"handle_deliver"`
 	HandleSendmsg *ebpf.Program `ebpf:"handle_sendmsg"`
 }
 
 func (p *netPrograms) Close() error {
 	return _NetClose(
 		p.HandleConnect,
+		p.HandleDeliver,
 		p.HandleSendmsg,
 	)
 }

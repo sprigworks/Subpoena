@@ -8,6 +8,7 @@ package conformance
 
 import (
 	"bytes"
+	"net/netip"
 	"os"
 	"reflect"
 	"strings"
@@ -22,15 +23,18 @@ import (
 type witnessCases struct {
 	Traces map[string]string `yaml:"traces"`
 	Cases  []struct {
-		Name         string              `yaml:"name"`
-		Lines        []string            `yaml:"lines"`
-		ReadError    string              `yaml:"read_error"`
-		Health       string              `yaml:"health"`
-		Spawned      map[string][]int    `yaml:"spawned"`
-		NoSpawn      map[string]string   `yaml:"no_spawn"`
-		Wrote        map[string][]string `yaml:"wrote"`
-		NoWrite      map[string]string   `yaml:"no_write"`
-		NoWritePaths []string            `yaml:"no_write_paths"`
+		Name            string              `yaml:"name"`
+		Lines           []string            `yaml:"lines"`
+		ReadError       string              `yaml:"read_error"`
+		Health          string              `yaml:"health"`
+		Spawned         map[string][]int    `yaml:"spawned"`
+		NoSpawn         map[string]string   `yaml:"no_spawn"`
+		Wrote           map[string][]string `yaml:"wrote"`
+		NoWrite         map[string]string   `yaml:"no_write"`
+		NoWritePaths    []string            `yaml:"no_write_paths"`
+		Delivered       map[string][]string `yaml:"delivered"`
+		NoDelivery      map[string]string   `yaml:"no_delivery"`
+		NoDeliveryPeers []string            `yaml:"no_delivery_peers"`
 	} `yaml:"cases"`
 }
 
@@ -108,6 +112,28 @@ func TestWitnessCases(t *testing.T) {
 			for name, want := range c.NoSpawn {
 				if v, _ := harness.NoSpawn(log, trace(t, name)); v.String() != want {
 					t.Errorf("no_spawn %s: got %s, want %s", name, v, want)
+				}
+			}
+			for name, want := range c.Delivered {
+				got := []string{}
+				for _, e := range log.Delivered(trace(t, name)) {
+					peer := ""
+					if e.Peer.IsValid() {
+						peer = e.Peer.String()
+					}
+					got = append(got, peer)
+				}
+				if len(got) != len(want) || (len(got) != 0 && !reflect.DeepEqual(got, want)) {
+					t.Errorf("delivered %s: got %v, want %v", name, got, want)
+				}
+			}
+			var peers []netip.AddrPort
+			for _, p := range c.NoDeliveryPeers {
+				peers = append(peers, netip.MustParseAddrPort(p))
+			}
+			for name, want := range c.NoDelivery {
+				if v, _ := harness.NoDelivery(log, trace(t, name), harness.DeliveryTo(peers...)); v.String() != want {
+					t.Errorf("no_delivery %s: got %s, want %s", name, v, want)
 				}
 			}
 		})

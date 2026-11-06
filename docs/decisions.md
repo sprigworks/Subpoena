@@ -25,10 +25,10 @@ Subpoena is open source under Apache-2.0: the registry format, harness, TraceQL 
 | `ProcWitness` | Processes, by polling `/proc` | Nothing special; can miss very short processes on a busy host |
 | `execbpf` (run by `cmd/subpoena-witness`) | Every exec, in the kernel, with its cgroup | Root, cgroup v2, kernel BTF |
 | `Sinkhole` | Connections to an address it owns | Nothing special |
-| `netbpf` | Every connect and sendmsg, in the kernel | Root, kernel BTF |
+| `netbpf` | Every connect and named send, and sends on connected sockets from session cgroups, in the kernel | Root, cgroup v2, kernel BTF |
 | `FileWatch` | Creates, writes, renames and unlinks under a watched root, by inotify, with no PID; a SQLite reader on top tells commits from no commit | Nothing special, Linux; can miss a file made and removed in a new directory before its watch landed |
 
-`cmd/subpoena-witness` ships exec events, or with `-file-root` file events; it does not run `netbpf` yet.
+`cmd/subpoena-witness` ships exec events, with `-deliveries` the sends `netbpf` sees, or with `-file-root` file events. It does not ship dials.
 
 **Why:** lineage only says "a descendant of the gateway ran X", not which session it ran for, and a compromised child can fork past any environment-variable marker. Every process in the session lands in its cgroup regardless. Tetragon was the first witness, but outside Kubernetes it does not report the session cgroup: v1.7.1 reports a container ID only when the cgroup name looks like one. Tetragon is kept for enforcement, not for witnessing ([witnesses/README.md](../witnesses/README.md)).
 

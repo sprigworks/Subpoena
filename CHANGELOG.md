@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **A broker's delivery has a witness.** gmqtt had none: a broker writes to a
+  subscriber on a socket it accepted, and `Sinkhole` and `netbpf` see outbound
+  dials only. `netbpf` has a second hook on `security_socket_sendmsg` that reports
+  sends on connected inet sockets from session cgroups, with the peer read from
+  the socket. `witness.DeliveryWitness` (`Delivered`), `harness.NoDelivery`,
+  `RequireNoDelivery`, `CheckNoDelivery`, `DeliveryTo` and `WatchDeliveries` with a
+  `DeliveryRule` let a test say nothing went to one peer while the broker's acks
+  to another go on; the lint counts them. It is tier 2 only: there is no honest
+  tier 1. It sees that bytes went, not what they were, and the sender must be in
+  the session cgroup, so a broker inside the test binary is not seen.
+  `witnesses/README.md` has what else it misses. `subpoena-witness -deliveries`
+  writes delivery lines, and Python reads them (`Log.delivered`, `no_delivery`).
+- **A failed `netbpf` start says why.** `Health` already failed, as "capture has
+  not stopped"; it now keeps the load or attach error. `Start` also refuses a
+  cgroup root name the kernel can never match, which read as silence.
 - **A Go kill needs a failed test that links the mutant.** go-kratos/gateway got a
   kill from a test whose binary did not contain the mutated package. Cross checks
   with `go list -deps -test`, and such a kill is `unconfirmed`. A suite that runs

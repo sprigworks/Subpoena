@@ -2,7 +2,7 @@
 // (pkg/witness/execbpf) and writes one JSON line per exec, for shipping to a
 // log store (tier 2 sends them to Loki). Needs root, cgroup v2 and BTF.
 //
-//	subpoena-witness [-cgroup-root dir] [-all] [-out file] [-ready file]
+//	subpoena-witness [-cgroup-root dir] [-all] [-deliveries] [-out file] [-ready file]
 //	subpoena-witness -check-ready file   # exit 0 once the witness is attached
 //	subpoena-witness -file-root dir [-file-root dir ...] [-out file] [-ready file]
 //
@@ -17,6 +17,10 @@
 // record (witness.Record) opens the file's capture window once the program is
 // attached, and a "stop" record closes it with the capture's health: whether
 // kernel events were lost, or a read or write failed.
+//
+// -deliveries also runs pkg/witness/netbpf and writes one witness.DeliveryLine
+// per send from a session cgroup, -all or not: a broker's write to a subscriber
+// on a socket it accepted, or a send that names its destination.
 package main
 
 import (
@@ -34,11 +38,13 @@ import (
 
 	"github.com/sprigworks/subpoena/pkg/witness"
 	"github.com/sprigworks/subpoena/pkg/witness/execbpf"
+	"github.com/sprigworks/subpoena/pkg/witness/netbpf"
 )
 
 func main() {
 	root := flag.String("cgroup-root", "", "parent of the session cgroups (default $SUBPOENA_CGROUP_ROOT or /sys/fs/cgroup/subpoena)")
 	all := flag.Bool("all", false, "write every exec, not only those in a session cgroup")
+	deliveries := flag.Bool("deliveries", false, "also write every send from a session cgroup (needs the network witness's programs)")
 	out := flag.String("out", "-", "file to append JSON lines to (- for stdout)")
 	ready := flag.String("ready", "", "file to create once the program is attached")
 	var fileRoots []string
@@ -56,6 +62,10 @@ func main() {
 		return
 	}
 	if len(fileRoots) != 0 {
+		if *deliveries {
+			fmt.Fprintln(os.Stderr, "subpoena-witness: -deliveries needs the eBPF witness and cannot be combined with -file-root")
+			os.Exit(2)
+		}
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		if err := runFiles(fileRoots, *out, *ready, sig); err != nil {
@@ -64,7 +74,7 @@ func main() {
 		}
 		return
 	}
-	if err := run(*root, *all, *out, *ready); err != nil {
+	if err := run(*root, *all, *deliveries, *out, *ready); err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-witness:", err)
 		os.Exit(1)
 	}
@@ -100,7 +110,7 @@ func runFiles(roots []string, out, ready string, stop <-chan os.Signal) error {
 	return errors.Join(stopErr, w.WriteLog(dst))
 }
 
-func run(root string, all bool, out, ready string) error {
+func run(root string, all, deliveries bool, out, ready string) error {
 	var dst io.Writer = os.Stdout
 	if out != "-" {
 		f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -135,6 +145,32 @@ func run(root string, all bool, out, ready string) error {
 			}
 		},
 	})
+	var net *netbpf.Witness
+	if deliveries {
+		net = netbpf.New(netbpf.Config{
+			CgroupRoot: root,
+			NoRetain:   true,
+			OnEvent: func(e netbpf.Event) {
+				if e.Attribution != witness.ByCgroup || (e.Op != witness.OpDeliver && e.Op != witness.OpSendmsg) {
+					return
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if err := enc.Encode(e.DeliveryLine()); err != nil && writeErr == nil {
+					writeErr = err
+				}
+			},
+		})
+	}
+	// stopAll ends every capture. NoRetain leaves Health failing by design, so
+	// each Stop's own error is the verdict.
+	stopAll := func() error {
+		err := w.Stop()
+		if net != nil {
+			err = errors.Join(err, net.Stop())
+		}
+		return err
+	}
 	// The start and stop records bound the capture. A reader trusts an
 	// absence only inside a window closed by a healthy stop, so a witness
 	// killed before it could write one leaves a file that proves nothing.
@@ -146,15 +182,22 @@ func run(root string, all bool, out, ready string) error {
 		mu.Unlock()
 		return err
 	}
+	if net != nil {
+		if err := net.Start(); err != nil {
+			mu.Unlock()
+			w.Stop()
+			return err
+		}
+	}
 	err := enc.Encode(witness.Record{Time: time.Now().UTC(), Record: witness.RecordStart})
 	mu.Unlock()
 	if err != nil {
-		w.Stop()
+		stopAll()
 		return err
 	}
 	if ready != "" {
 		if err := os.WriteFile(ready, []byte("attached\n"), 0o644); err != nil {
-			w.Stop()
+			stopAll()
 			return err
 		}
 		defer os.Remove(ready)
@@ -164,13 +207,16 @@ func run(root string, all bool, out, ready string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	err = w.Stop()
+	err = stopAll()
 	mu.Lock()
 	defer mu.Unlock()
 	err = errors.Join(err, writeErr)
 	stop := witness.Record{Time: time.Now().UTC(), Record: witness.RecordStop, Healthy: err == nil}
 	if err != nil {
 		stop.Error = err.Error()
+	}
+	if net != nil {
+		stop.Coverage = net.DeliveryCoverage().String()
 	}
 	return errors.Join(err, enc.Encode(stop))
 }

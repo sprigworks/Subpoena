@@ -134,7 +134,11 @@ func TestLineMatchesTheSchema(t *testing.T) {
 		Else                 struct {
 			If   branch `json:"if"`
 			Then branch `json:"then"`
-			Else branch `json:"else"`
+			Else struct {
+				If   branch `json:"if"`
+				Then branch `json:"then"`
+				Else branch `json:"else"`
+			} `json:"else"`
 		} `json:"else"`
 	}
 	if err := json.Unmarshal(b, &schema); err != nil {
@@ -161,11 +165,15 @@ func TestLineMatchesTheSchema(t *testing.T) {
 	lineFields, lineReq := fieldsOf(Line{})
 	recFields, recReq := fieldsOf(Record{})
 	fileFields, fileReq := fieldsOf(FileLine{})
+	delFields, delReq := fieldsOf(DeliveryLine{})
 	if !reflect.DeepEqual(schema.Else.If.Required, []string{"file_op"}) {
-		t.Errorf("a line is a file change exactly when it has a file_op field; if = %v", schema.Else.If.Required)
+		t.Errorf("a line is a file change exactly when it has a file_op field; else.if = %v", schema.Else.If.Required)
+	}
+	if !reflect.DeepEqual(schema.Else.Else.If.Required, []string{"delivery_op"}) {
+		t.Errorf("a line is a delivery exactly when it has a delivery_op field; else.else.if = %v", schema.Else.Else.If.Required)
 	}
 	all := map[string]bool{}
-	for _, f := range slices.Concat(lineFields, recFields, fileFields) {
+	for _, f := range slices.Concat(lineFields, recFields, fileFields, delFields) {
 		all[f] = true
 	}
 	var fields, props []string
@@ -179,15 +187,19 @@ func TestLineMatchesTheSchema(t *testing.T) {
 	sort.Strings(props)
 	sort.Strings(schema.Then.Required)
 	sort.Strings(schema.Else.Then.Required)
-	sort.Strings(schema.Else.Else.Required)
+	sort.Strings(schema.Else.Else.Then.Required)
+	sort.Strings(schema.Else.Else.Else.Required)
 	if !reflect.DeepEqual(fields, props) {
 		t.Errorf("fields:\n Line+Record %v\n schema      %v", fields, props)
 	}
-	if !reflect.DeepEqual(lineReq, schema.Else.Else.Required) {
-		t.Errorf("exec line required:\n Line   %v\n schema %v", lineReq, schema.Else.Else.Required)
+	if !reflect.DeepEqual(lineReq, schema.Else.Else.Else.Required) {
+		t.Errorf("exec line required:\n Line   %v\n schema %v", lineReq, schema.Else.Else.Else.Required)
 	}
 	if !reflect.DeepEqual(fileReq, schema.Else.Then.Required) {
 		t.Errorf("file line required:\n FileLine %v\n schema   %v", fileReq, schema.Else.Then.Required)
+	}
+	if !reflect.DeepEqual(delReq, schema.Else.Else.Then.Required) {
+		t.Errorf("delivery line required:\n DeliveryLine %v\n schema       %v", delReq, schema.Else.Else.Then.Required)
 	}
 	if !reflect.DeepEqual(recReq, schema.Then.Required) {
 		t.Errorf("record required:\n Record %v\n schema %v", recReq, schema.Then.Required)

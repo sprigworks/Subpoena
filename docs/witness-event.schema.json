@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/sprigworks/subpoena/docs/witness-event.schema.json",
   "title": "subpoena witness line",
-  "description": "One line of witness output: one exec as the kernel saw it, one file change under a watched root, or a record that opens or closes a capture window. A line with a record field is a record, one with a file_op field a file change, and any other line an exec. See docs/ports.md (W, W7). Readers ignore fields they do not know; existing fields keep their name and meaning.",
+  "description": "One line of witness output: one exec as the kernel saw it, one send from a session cgroup, one file change under a watched root, or a record that opens or closes a capture window. A line with a record field is a record, one with a delivery_op field a send, one with a file_op field a file change, and any other line an exec. See docs/ports.md (W, W7, W8). Readers ignore fields they do not know; existing fields keep their name and meaning.",
   "type": "object",
   "additionalProperties": true,
   "properties": {
     "time": {
       "type": "string",
       "format": "date-time",
-      "description": "When the exec or file change was seen (for a file change, when the witness read it), or the record written (RFC 3339, UTC)."
+      "description": "When the exec, send or file change was seen (for a send or file change, when the witness read it), or the record written (RFC 3339, UTC)."
     },
     "pid": {
       "type": "integer",
@@ -54,7 +54,7 @@
     "trace_id": {
       "type": "string",
       "pattern": "^[0-9a-f]{32}$",
-      "description": "The session's trace ID, read from its cgroup name. Present only for execs inside a session cgroup, and absent on a file change from a tier-1 witness, which belongs to every trace."
+      "description": "The session's trace ID, read from its cgroup name. Present only for execs and sends inside a session cgroup, and absent on a file change from a tier-1 witness, which belongs to every trace."
     },
     "attribution": {
       "type": "string",
@@ -133,7 +133,32 @@
     },
     "coverage": {
       "type": "string",
-      "description": "On a file witness's stop record: what the capture might have missed even when healthy, in one line."
+      "description": "On a stop record: what the capture might have missed even when healthy, in one line."
+    },
+    "delivery_op": {
+      "type": "string",
+      "enum": [
+        "deliver",
+        "sendmsg"
+      ],
+      "description": "deliver: a send on a connected socket, to the peer the socket holds. sendmsg: a send that named its destination."
+    },
+    "protocol": {
+      "type": "string",
+      "description": "tcp, udp, or another IP protocol name or number."
+    },
+    "peer": {
+      "type": "string",
+      "description": "The far end of the send as address:port ([address]:port for IPv6). Empty when the witness could not read it: such a send may have gone to any peer."
+    },
+    "local": {
+      "type": "string",
+      "description": "This end of the socket, in the same form; empty when unknown."
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Bytes the caller asked to send, not bytes the peer received."
     }
   },
   "if": {
@@ -166,18 +191,40 @@
       ]
     },
     "else": {
-      "required": [
-        "time",
-        "pid",
-        "ppid",
-        "host_pid",
-        "comm",
-        "exe",
-        "command",
-        "args",
-        "cgroup_id",
-        "cgroup"
-      ]
+      "if": {
+        "required": [
+          "delivery_op"
+        ]
+      },
+      "then": {
+        "required": [
+          "time",
+          "delivery_op",
+          "pid",
+          "host_pid",
+          "comm",
+          "protocol",
+          "peer",
+          "local",
+          "bytes",
+          "cgroup_id",
+          "cgroup"
+        ]
+      },
+      "else": {
+        "required": [
+          "time",
+          "pid",
+          "ppid",
+          "host_pid",
+          "comm",
+          "exe",
+          "command",
+          "args",
+          "cgroup_id",
+          "cgroup"
+        ]
+      }
     }
   }
 }

@@ -280,12 +280,20 @@ database, where a denied request may still write an audit row to the same
 file, `harness.RequireNoCommit(t, w, db, traceID, table...)` asks about commits
 and tables instead. `witnesses/README.md` has what each can and cannot see.
 
+A broker or fan-out delivers on sockets it accepted, with no dial to see.
+`witness.DeliveryWitness` (`Delivered(traceID)`) covers that. `netbpf` implements
+it and nothing at tier 1 can: it needs root, and the sender in the session cgroup.
+Assert with `harness.RequireNoDelivery(t, w, traceID, harness.DeliveryTo(peer))`,
+where `peer` is the subscriber's end of its connection, or register
+`harness.WatchDeliveries` with a `DeliveryRule`.
+
 Other side effects (a change in a database behind a socket) need another
 observer, for example an audit log. There is no interface for them; that is
 future work. The `unwitnessed-enforcement` lint rule only checks that some test
-asks a witness (`Spawned`, `Dialed`, `Wrote`, or a harness check such as
-`RequireNoSpawn`, `RequireNoDial` or `RequireNoWrite`; `lint/README.md` has the
-list), so for other enforcement points review has to carry it.
+asks a witness (`Spawned`, `Dialed`, `Wrote`, `Delivered`, or a harness check
+such as `RequireNoSpawn`, `RequireNoDial`, `RequireNoWrite` or
+`RequireNoDelivery`; `lint/README.md` has the list), so for other enforcement
+points review has to carry it.
 
 ## 5. Add provenance markers
 

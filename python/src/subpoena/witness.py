@@ -1,6 +1,6 @@
 """The witness, read from the file subpoena-witness writes (docs/ports.md, W;
 schema: docs/witness-event.schema.json). A port of witness.ReadLog, exec and
-file lines, and of the Sinkhole network witness. Running a witness of files
+file and delivery lines, and of the Sinkhole network witness. Running a witness of files or deliveries
 stays Go-only."""
 
 from __future__ import annotations
@@ -89,6 +89,11 @@ class WitnessError(ValueError):
     pass
 
 
+OP_DELIVER = "deliver"  # a send on a connected socket, to the peer it holds
+_DELIVERY_OPS = ("deliver", "sendmsg")
+_DELIVERY_STR_FIELDS = ("delivery_op", "comm", "protocol", "peer", "local", "cgroup", "trace_id", "attribution")
+
+
 # The integer fields and the range Go's reader decodes each into (int64 for
 # the PIDs, uint64 for cgroup_id). A value outside it is an error there, so it
 # is one here. null is the same as an absent field, as in Go.
@@ -104,7 +109,8 @@ _ZERO = datetime(1, 1, 1, tzinfo=timezone.utc)
 # only by case is refused: Go's decoder would read it as that field.
 _KNOWN = ("time", "pid", "ppid", "host_pid", "comm", "exe", "command", "args", "cgroup_id", "cgroup",
           "trace_id", "attribution", "record", "healthy", "error", "roots", "coverage",
-          "file_op", "path", "root", "is_dir", "source", "rename", "cookie")
+          "file_op", "path", "root", "is_dir", "source", "rename", "cookie",
+          "delivery_op", "protocol", "peer", "local", "bytes")
 _FILE_STR_FIELDS = ("file_op", "path", "root", "source", "rename", "trace_id", "attribution")
 
 
@@ -144,9 +150,11 @@ class Log:
     """What subpoena-witness wrote, as a witness."""
 
     def __init__(self, lines: List[dict], health: Optional[str] = None, files: Optional[List[dict]] = None,
-                 roots: Optional[List[str]] = None, coverage: str = ""):
+                 roots: Optional[List[str]] = None, coverage: str = "",
+                 deliveries: Optional[List["DeliveryEvent"]] = None):
         self._lines, self._health = lines, health
         self._files, self._roots, self._coverage = files or [], roots or [], coverage
+        self._deliveries = deliveries or []
 
     def health(self) -> Optional[str]:
         """The first capture fault in the file, or None: no start or stop
@@ -189,9 +197,19 @@ class Log:
         on it."""
         return posixpath.isabs(path) and any(_path_within(path, r) for r in self._roots)
 
+
+    def delivered(self, trace_id: str) -> "List[DeliveryEvent]":
+        """Every send whose trace ID, read by the kernel side from its cgroup,
+        is trace_id. Nothing the application controls is consulted. The empty
+        trace ID matches nothing."""
+        if not trace_id:
+            return []
+        return [e for e in self._deliveries if e.trace_id == trace_id]
+
+
     def coverage(self) -> str:
-        """The stop record's account of what the capture might have missed,
-        or "" if it gives none."""
+        """The stop record's account of what the capture might have missed
+        even when healthy, or "" if it gives none."""
         return self._coverage
 
     @staticmethod
@@ -219,6 +237,7 @@ def read_log(f: IO[str]) -> Log:
     Capture faults (see Log.health) do not stop the read: the execs are still
     evidence that something ran."""
     lines, files, roots = [], [], []
+    deliveries: "List[DeliveryEvent]" = []
     coverage = ""
     health: Optional[str] = None
     open_at, records, windows = 0, 0, 0  # open_at: line of the open window's start record
@@ -293,6 +312,11 @@ def read_log(f: IO[str]) -> Log:
                     fault(f"witness: line {n}: a file event outside any capture window")
                 files.append(l)
                 continue
+            if l.get("delivery_op") is not None:
+                deliveries.append(_delivery(l))
+                if not open_at:
+                    fault(f"witness: line {n}: a delivery outside any capture window")
+                continue
             for k, (lo, hi) in _INT_FIELDS.items():
                 v = l.get(k)
                 if v is None:
@@ -326,7 +350,7 @@ def read_log(f: IO[str]) -> Log:
         # neither, so nothing vouches for its absence.
         fault(f"witness: the file holds {windows} capture windows, and nothing watched between them; "
               "use one witness run per file")
-    return Log(lines, health, files, roots, coverage)
+    return Log(lines, health, files, roots, coverage, deliveries)
 
 
 # The network witness (pkg/witness's NetworkEvent and Sinkhole). Go's eBPF
@@ -408,6 +432,62 @@ class NetworkEvent:
     # From an answering Sinkhole. Left out of repr: failure text prints events.
     request: str = field(default="", repr=False)  # HTTP request line
     headers: Dict[str, str] = field(default_factory=dict, repr=False)  # names in lower case; first of a repeat
+
+
+@dataclass
+class DeliveryEvent:
+    """One send seen leaving a process in a session cgroup: to the peer a
+    connected socket holds (OP_DELIVER), or to the destination it named
+    (OP_SENDMSG). A broker's write to a subscriber on an accepted socket is
+    one. It records the attempt, and says nothing of content: an ack on a
+    peer's socket looks like a message on it."""
+
+    op: str
+    peer: Optional[AddrPort]  # None when the witness could not read it
+    local: Optional[AddrPort]
+    protocol: str = "tcp"
+    bytes: int = 0  # what the caller asked to send, not what the peer got
+    pid: int = 0
+    comm: str = ""
+    cgroup: str = ""
+    cgroup_id: int = 0
+    trace_id: str = ""
+    attribution: str = ""
+    seen_at: Optional[datetime] = None
+
+    @property
+    def peer_unknown(self) -> bool:
+        """The send was seen, but not where it went: it may have gone to any
+        peer."""
+        return self.peer is None or self.peer.addr.is_unspecified
+
+
+def _delivery(l: dict) -> DeliveryEvent:
+    """A delivery line. A peer that does not parse is an error, never an
+    unknown peer: an empty one is how the witness says it could not tell."""
+    for k in _DELIVERY_STR_FIELDS:
+        if l.get(k) is not None and not isinstance(l[k], str):
+            raise ValueError(f"{k} is not a string")
+    for k, (lo, hi) in {**_INT_FIELDS, "bytes": (0, 2**64 - 1)}.items():
+        v = l.get(k)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError(f"{k} is not an integer")
+        if not lo <= v <= hi:
+            raise ValueError(f"{k} {v} is out of range")
+    if not l.get("time"):
+        raise ValueError("no time")
+    seen_at = _parse_time(l["time"])
+    if l["delivery_op"] not in _DELIVERY_OPS:
+        raise ValueError(f"unknown delivery_op {l['delivery_op']!r}")
+    g = lambda k, zero: l.get(k) if l.get(k) is not None else zero  # noqa: E731
+    return DeliveryEvent(
+        op=l["delivery_op"], peer=AddrPort.of(l["peer"]) if l.get("peer") else None,
+        local=AddrPort.of(l["local"]) if l.get("local") else None, protocol=g("protocol", ""),
+        bytes=g("bytes", 0), pid=g("pid", 0), comm=g("comm", ""), cgroup=g("cgroup", ""),
+        cgroup_id=g("cgroup_id", 0), trace_id=g("trace_id", ""), attribution=g("attribution", ""), seen_at=seen_at,
+    )
 
 
 class Sinkhole:

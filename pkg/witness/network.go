@@ -16,6 +16,10 @@ const (
 	// OpSendmsg is a send with an explicit destination (sendto, sendmsg,
 	// sendmmsg): unconnected UDP, or TCP Fast Open.
 	OpSendmsg Op = "sendmsg"
+	// OpDeliver is a send on a connected socket, which names no destination:
+	// write, send, sendmsg and the like. It is a DeliveryEvent's Op, never a
+	// NetworkEvent's: such a send is not a connection attempt.
+	OpDeliver Op = "deliver"
 )
 
 // NetworkEvent is one observed outbound connection attempt. It records the

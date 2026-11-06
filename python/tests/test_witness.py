@@ -78,8 +78,11 @@ def test_the_schema_names_the_fields_the_reader_checks():
     exec_fields = set(witness._INT_FIELDS) | set(witness._STR_FIELDS) | {"time", "args"}
     record_fields = {"time", "record", "healthy", "error", "roots", "coverage"}
     file_fields = set(witness._FILE_STR_FIELDS) | {"time", "is_dir", "cookie"}
-    assert exec_fields | record_fields | file_fields == set(schema["properties"])
+    delivery_fields = set(witness._DELIVERY_STR_FIELDS) | set(witness._INT_FIELDS) | {"time", "bytes"}
+    assert exec_fields | record_fields | file_fields | delivery_fields == set(schema["properties"])
     assert set(witness._KNOWN) == set(schema["properties"])
+    assert schema["else"]["if"] == {"required": ["file_op"]}
+    assert schema["else"]["else"]["if"] == {"required": ["delivery_op"]}
     assert schema["if"] == {"required": ["record"]}
     assert schema["else"]["if"] == {"required": ["file_op"]}
     assert schema["additionalProperties"] is True
