@@ -337,7 +337,7 @@ func TestOnlyTheLinkCheckGivesItsHint(t *testing.T) {
 import ("os"; "testing"; "time")
 
 func TestMain(m *testing.M) {
-	if nth == 3 || nth == 4 { time.Sleep(time.Hour) }
+	if nth >= 3 && nth <= 5 { time.Sleep(time.Hour) }
 	os.Exit(m.Run())
 }
 func TestRefused(t *testing.T) { if Check("mallory") == nil { t.Fatal("mallory let in") } }
