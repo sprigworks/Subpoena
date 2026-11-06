@@ -223,7 +223,7 @@ def test_command_line_exit_codes(tmp_path, capsys):
     """})
     assert cross.main([root]) == 0
     out = capsys.readouterr().out
-    assert "1 enforcement point(s), 1 mutant(s)" in out and "enforcement-mutant-killed allow" in out
+    assert "1 enforcement point(s), 1 marker(s), 1 mutant(s)" in out and "enforcement-mutant-killed allow" in out
     os.remove(os.path.join(root, "test_auth.py"))
     with open(os.path.join(root, "test_auth.py"), "w") as f:
         f.write("from auth import allow\ndef test_admin():\n    assert allow(True) is None\n")

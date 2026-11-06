@@ -627,3 +627,49 @@ func TestDenied(t *testing.T) {
 	}
 }
 `
+
+// A marker can follow an upstream comment, so marking a line removes no
+// upstream text (B04, T27); a marker that still makes no mutant is named, and
+// the lines marker-only comments added are taken back out (B25).
+func TestMarkersAreCountedAndLinesMapBack(t *testing.T) {
+	const src = `package mini
+
+import "errors"
+
+var ErrDenied = errors.New("denied")
+
+//subpoena:enforcement_point
+func Check(u string) error {
+	if u == "mallory" {
+		return ErrDenied // upstream's reason //subpoena:enforcement
+	}
+	return nil
+}
+
+// Not an enforcement point, in prose: the //subpoena:enforcement marker.
+func Other() {}
+`
+	test := `package mini
+
+import "testing"
+
+func TestRefused(t *testing.T) {
+	if Check("mallory") == nil {
+		t.Fatal("not refused")
+	}
+}
+`
+	rep, err := run(t, module(t, map[string]string{"gate.go": src, "gate_test.go": test}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Outcome != Killed {
+		t.Fatalf("results %+v", rep.Results)
+	}
+	if m := rep.Results[0].Mutant; m.Line != 10 || m.Upstream != 9 {
+		t.Fatalf("line %d upstream %d, want 10 and 9", m.Line, m.Upstream)
+	}
+	if rep.Markers != 2 || len(rep.Unplaced) != 1 || rep.Unplaced[0] != "gate.go:15" {
+		t.Fatalf("markers %d unplaced %v", rep.Markers, rep.Unplaced)
+	}
+}

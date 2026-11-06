@@ -42,6 +42,7 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,16 +112,19 @@ const (
 
 // Mutant is one planned removal, or for a guard, one forced condition.
 type Mutant struct {
-	Func    string // enclosing function name
-	File    string // path relative to the module root
-	Line    int
-	Removed string // the source text removed; for a guard, the condition
-	Bypass  string // "true" or "false" for a guard; empty for a removal
-	Group   string // layer group from group=<name>; empty if none
-	start   int    // byte offsets of the statement (guard: condition) in File
-	end     int
-	point   int    // byte offset of the enclosing function declaration in File
-	src     []byte // file bytes the offsets were computed from; not a later reread
+	Func string // enclosing function name
+	File string // path relative to the module root
+	Line int
+	// Upstream is Line with the marker-only lines above it taken out: the line
+	// in the source before anyone marked it, if markers are all that was added.
+	Upstream int
+	Removed  string // the source text removed; for a guard, the condition
+	Bypass   string // "true" or "false" for a guard; empty for a removal
+	Group    string // layer group from group=<name>; empty if none
+	start    int    // byte offsets of the statement (guard: condition) in File
+	end      int
+	point    int    // byte offset of the enclosing function declaration in File
+	src      []byte // file bytes the offsets were computed from; not a later reread
 	// zero is the return of zero values that can stand in for a removed return,
 	// "" if there is none (see zeroReturn); fnEnd is the offset of its function's closing brace,
 	// which is where the compiler reports a missing return. useZero applies it.
@@ -203,6 +207,9 @@ type Report struct {
 	ModuleRoot        string
 	Target            string // target directory relative to the module root
 	EnforcementPoints int    // functions marked //subpoena:enforcement_point
+	Markers           int    // statement and guard markers in the source of the mutated files
+	// Unplaced lists, as file:line, markers in those files that made no mutant.
+	Unplaced []string
 	// Snapshot hashes mutant-bearing files only, from the bytes discovery
 	// parsed. It is not a hash of the full source tree, test files, or
 	// external module replacements.
@@ -334,6 +341,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		points[fmt.Sprintf("%s:%d", m.File, m.point)] = true
 	}
 	rep.EnforcementPoints = len(points)
+	rep.Markers, rep.Unplaced = markerCount(mutants)
 	rep.Snapshot = snapshotOf(mutants)
 	groups, err := groupsOf(mutants)
 	if err != nil {
@@ -1292,7 +1300,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 				if c.Pos() <= fd.Body.Lbrace || c.End() >= fd.Body.Rbrace {
 					continue
 				}
-				mk, ok, err := parseMarker(c.Text)
+				mk, ok, err := parseMarker(markerText(c.Text))
 				if err != nil {
 					return nil, fmt.Errorf("cross: %s:%d: %w", rel, fset.Position(c.Pos()).Line, err) //subpoena:enforcement
 				}
@@ -1342,7 +1350,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 			found++
 			s, e := fset.Position(node.Pos()).Offset, fset.Position(node.End()).Offset
 			m := Mutant{
-				Func: fd.Name.Name, File: filepath.ToSlash(rel), Line: line,
+				Func: fd.Name.Name, File: filepath.ToSlash(rel), Line: line, Upstream: upstreamLine(src, line),
 				Removed: string(src[s:e]), Bypass: mk.bypass, Group: mk.group,
 				start: s, end: e, point: fset.Position(fd.Pos()).Offset, src: src,
 			}
@@ -1371,7 +1379,7 @@ func mutantsInFile(root, path string) ([]Mutant, error) {
 	var stray error
 	for _, g := range f.Comments {
 		for _, c := range g.List {
-			if anyMarkerRE.MatchString(c.Text) && !placed[c] && stray == nil {
+			if anyMarkerRE.MatchString(markerText(c.Text)) && !placed[c] && stray == nil {
 				stray = fmt.Errorf("cross: %s:%d: %q is not a marker cross applies: statement and guard markers belong inside a //%s function, and the point marker on a function's doc comment", rel, fset.Position(c.Pos()).Line, c.Text, MarkerEnforcementPoint)
 			}
 		}
@@ -1538,7 +1546,61 @@ var (
 	groupRE       = regexp.MustCompile(`^group=([A-Za-z0-9_.-]+)$`)
 	pointRE       = regexp.MustCompile(`^//\s*` + regexp.QuoteMeta(MarkerEnforcementPoint) + `(\s|$)`)
 	anyMarkerRE   = regexp.MustCompile(`^//\s*subpoena:enforcement`)
+	// trailingRE is a marker after an upstream comment on the same line:
+	// return nil // why //subpoena:enforcement
+	trailingRE = regexp.MustCompile(`\s//\s*subpoena:enforcement(_guard)?(\s+(true|false|group=\S+))*\s*$`)
+	// sourceMarkerRE and onlyMarkerRE read source lines, so a marker the parser
+	// did not take is still counted.
+	sourceMarkerRE = regexp.MustCompile(`//\s*subpoena:enforcement(_guard)?(\s|$)`)
+	onlyMarkerRE   = regexp.MustCompile(`^\s*//\s*subpoena:enforcement`)
 )
+
+// markerText is a comment's marker: all of it, or the end of it when the marker
+// follows an upstream comment, so marking a line needs no upstream text removed.
+func markerText(text string) string {
+	if loc := trailingRE.FindStringIndex(text); loc != nil {
+		return strings.TrimSpace(text[loc[0]:])
+	}
+	return text
+}
+
+// upstreamLine is line with the marker-only lines above it taken out.
+func upstreamLine(src []byte, line int) int {
+	up := line
+	for i, l := range bytes.SplitN(src, []byte("\n"), line) {
+		if i < line-1 && onlyMarkerRE.Match(l) {
+			up--
+		}
+	}
+	return up
+}
+
+// markerCount counts the statement and guard markers in the source of the
+// mutated files, and names those that made no mutant. A marker that took no
+// effect is an error where cross can tell; this is for what it cannot.
+func markerCount(ms []Mutant) (int, []string) {
+	lines := map[string]map[int]bool{}
+	src := map[string][]byte{}
+	for _, m := range ms {
+		if lines[m.File] == nil {
+			lines[m.File], src[m.File] = map[int]bool{}, m.src
+		}
+		lines[m.File][m.Line] = true
+	}
+	n := 0
+	var unplaced []string
+	for _, file := range slices.Sorted(maps.Keys(src)) {
+		for i, l := range bytes.Split(src[file], []byte("\n")) {
+			if sourceMarkerRE.Match(l) {
+				n++
+				if !lines[file][i+1] {
+					unplaced = append(unplaced, fmt.Sprintf("%s:%d", file, i+1))
+				}
+			}
+		}
+	}
+	return n, unplaced
+}
 
 func isEnforcementComment(text string) bool { return enforcementRE.MatchString(text) }
 

@@ -96,6 +96,10 @@ _REPEATS = 1
 _RERUNS = 3
 
 _ANY_MARKER = re.compile(r"#\s*subpoena\s*:\s*enforc")  # cross's markers, misspelt ones too
+# A marker after an upstream comment on the same line: return x  # why  # subpoena:enforcement
+_TRAILING = re.compile(r"\s#\s*(subpoena:enforcement(_guard)?(\s+(true|True|false|False|group=\S+))*)\s*$")
+_SOURCE_MARKER = re.compile(r"#\s*subpoena:enforcement(_guard)?(\s|$)")
+_ONLY_MARKER = re.compile(r"^\s*#\s*subpoena\s*:\s*enforc")
 _POINT = "subpoena:enforcement_point"
 _STATEMENT = "subpoena:enforcement"
 _SIMPLE = (ast.Return, ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Raise, ast.Pass,
@@ -127,6 +131,7 @@ class Mutant:
     digest: str = ""                # sha256 of the file at discovery
     group: str = ""
     no_stand_in: bool = False       # see _no_stand_in
+    upstream: int = 0               # line with the marker-only lines above it taken out
 
     def name(self) -> str:
         return f"{self.func} ({self.file}:{self.line})"
@@ -151,6 +156,8 @@ class Result:
 @dataclass
 class Report:
     enforcement_points: int = 0
+    markers: int = 0  # statement and guard markers in the source of the mutated files
+    unplaced: List[str] = field(default_factory=list)  # those that made no mutant, as file:line
     results: List[Result] = field(default_factory=list)
 
     stale_accepted: List[str] = field(default_factory=list)
@@ -171,7 +178,7 @@ def _comments(text: str) -> Dict[int, Tuple[str, bool]]:
     out = {}
     for tok in tokenize.generate_tokens(io.StringIO(text, newline=None).readline):
         if tok.type == tokenize.COMMENT:
-            out[tok.start[0]] = (tok.string[1:].strip(), not tok.line[:tok.start[1]].strip())
+            out[tok.start[0]] = (_marker_text(tok.string[1:].strip()), not tok.line[:tok.start[1]].strip())
     return out
 
 
@@ -251,6 +258,40 @@ def _groups(mutants):
     return groups
 
 
+def _marker_text(comment: str) -> str:
+    """A comment's marker: all of it, or the end of it when the marker follows
+    an upstream comment, so marking a line needs no upstream text removed."""
+    m = _TRAILING.search(comment)
+    return m.group(1) if m else comment
+
+
+def _upstream_line(text: str, line: int) -> int:
+    """line with the marker-only lines above it taken out."""
+    return line - sum(1 for l in text.split("\n")[:line - 1] if _ONLY_MARKER.match(l))
+
+
+def marker_count(root: str, mutants: List[Mutant]) -> Tuple[int, List[str]]:
+    """The statement and guard markers in the source of the mutated files, and,
+    as file:line, those that made no mutant."""
+    n, unplaced = 0, []
+    for file in sorted({m.file for m in mutants}):
+        lines = {m.line for m in mutants if m.file == file}
+        text = _read_source(os.path.join(root, file), file).decode("utf-8")
+        for i, l in enumerate(text.split("\n"), 1):
+            if _SOURCE_MARKER.search(l):
+                n += 1
+                if i not in lines:
+                    unplaced.append(f"{file}:{i}")
+    return n, unplaced
+
+
+def _where(m: Mutant) -> str:
+    """A mutant's file and line, with the unmarked line when markers moved it."""
+    if m.upstream and m.upstream != m.line:
+        return f"{m.file}:{m.line} (upstream line {m.upstream})"
+    return f"{m.file}:{m.line}"
+
+
 def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
     """Every marked mutant under root, and the number of enforcement points.
     Raises CrossError for any marker that would take no effect."""
@@ -273,7 +314,7 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
             a = starts[node.lineno - 1] + node.col_offset
             b = starts[node.end_lineno - 1] + node.end_col_offset
             return Mutant(rel, func, line, data[a:b].decode("utf-8"), bypass, (a, b),
-                          node.end_lineno - node.lineno, digest)
+                          node.end_lineno - node.lineno, digest, upstream=_upstream_line(text, line))
 
         placed = set()
         missing = []  # points with nothing to mutate; reported after stray markers, which explain them
@@ -644,7 +685,8 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
         if not mutants:
             raise CrossError(f"cross: no {_POINT} with a {_STATEMENT} statement under {target}")
         groups = _groups(mutants)
-        rep = Report(enforcement_points=points,
+        markers, unplaced = marker_count(template, mutants)
+        rep = Report(enforcement_points=points, markers=markers, unplaced=unplaced,
                      snapshot={m.file: m.digest for m in mutants})
         for file, digest in sorted(rep.snapshot.items()):
             log(f"snapshot {digest} {file}")
@@ -902,7 +944,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         # Exit 1 means a mutant was not killed; a setup fault must never read as that.
         print(f"subpoena-cross: {e}", file=sys.stderr)
         return 2
-    print(f"{rep.enforcement_points} enforcement point(s), {len(rep.results)} mutant(s)")
+    print(f"{rep.enforcement_points} enforcement point(s), {rep.markers} marker(s), {len(rep.results)} mutant(s)")
+    for at in rep.unplaced:
+        print(f"marker made no mutant: {at}")
     for r in rep.results:
         m = r.mutant
         print(f"{r.outcome} {m.func}" + (f" group={r.group}" if r.group else ""))
@@ -915,9 +959,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if r.accepted:
             print("  accepted: " + r.accepted)
         if m.bypass:
-            print(f"  at {m.file}:{m.line}, forced to {m.bypass}: {' '.join(m.removed.split())}")
+            print(f"  at {_where(m)}, forced to {m.bypass}: {' '.join(m.removed.split())}")
         else:
-            print(f"  at {m.file}:{m.line}, removed: {' '.join(m.removed.split())}")
+            print(f"  at {_where(m)}, removed: {' '.join(m.removed.split())}")
         if r.outcome in {KILLED, KILLED_BY_SELF_REPORT}:
             print(f"  suite went red; failing: {', '.join(r.failing)}")
             print(f"  first evidence ({r.evidence}): {r.first_failure}")

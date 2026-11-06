@@ -52,7 +52,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "subpoena-cross:", err)
 		os.Exit(2)
 	}
-	fmt.Printf("%d enforcement point(s), %d mutant(s)\n", rep.EnforcementPoints, len(rep.Results))
+	fmt.Printf("%d enforcement point(s), %d marker(s), %d mutant(s)\n", rep.EnforcementPoints, rep.Markers, len(rep.Results))
+	for _, at := range rep.Unplaced {
+		fmt.Printf("marker made no mutant: %s\n", at)
+	}
 	for _, file := range rep.Snapshot {
 		fmt.Printf("snapshot %s %s\n", file.SHA256, file.Path)
 	}
@@ -64,9 +67,9 @@ func main() {
 		}
 		for _, m := range append([]cross.Mutant{r.Mutant}, r.With...) {
 			if m.Bypass != "" {
-				fmt.Printf("  at %s:%d, forced to %s: %s\n", m.File, m.Line, m.Bypass, strings.Join(strings.Fields(m.Removed), " "))
+				fmt.Printf("  at %s, forced to %s: %s\n", where(m), m.Bypass, strings.Join(strings.Fields(m.Removed), " "))
 			} else {
-				fmt.Printf("  at %s:%d, removed: %s\n", m.File, m.Line, strings.Join(strings.Fields(m.Removed), " "))
+				fmt.Printf("  at %s, removed: %s\n", where(m), strings.Join(strings.Fields(m.Removed), " "))
 			}
 		}
 		for _, z := range r.ZeroReturns {
@@ -130,4 +133,12 @@ func main() {
 	if rep.Failed() {
 		os.Exit(1)
 	}
+}
+
+// where is a mutant's file and line, with the unmarked line when markers moved it.
+func where(m cross.Mutant) string {
+	if m.Upstream != m.Line {
+		return fmt.Sprintf("%s:%d (upstream line %d)", m.File, m.Line, m.Upstream)
+	}
+	return fmt.Sprintf("%s:%d", m.File, m.Line)
 }

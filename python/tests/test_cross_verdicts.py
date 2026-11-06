@@ -556,3 +556,27 @@ def test_a_doctest_makes_no_production_file_a_test_file(tmp_path):
             check("mallory")
     """}, "--doctest-modules")
     assert r.outcome == "enforcement-mutant-crashed"
+
+
+# --- B04, T27, B25: a marker after a comment, the count, the upstream line ---
+
+def test_markers_are_counted_and_lines_map_back(tmp_path):
+    root = project(tmp_path / "p", {"auth.py": """
+        # subpoena:enforcement_point
+        def gate(user):
+            if user == "mallory":
+                return {"denied": True}  # upstream's reason  # subpoena:enforcement
+            return {"user": user}
+
+        def other():
+            return 1  # not in an enforcement point: # subpoena:enforcement in prose
+    """, "test_a.py": """
+        from auth import gate
+        def test_denied():
+            assert gate("mallory") == {"denied": True}
+    """})
+    rep = cross.run(root, [])
+    assert [r.outcome for r in rep.results] == [KILLED]
+    m = rep.results[0].mutant
+    assert (m.line, m.upstream) == (4, 3)
+    assert rep.markers == 2 and rep.unplaced == ["auth.py:8"]
