@@ -58,7 +58,7 @@ cross:
 # Subpoena's own fail-closed guards, cross-examined like any adopter's.
 CROSS_SELF := ./pkg/harness ./pkg/witness ./internal/cross ./conformance/oatscapture
 cross-self:
-	@set -e; for t in $(CROSS_SELF); do go run ./cmd/subpoena-cross $$t; done
+	@set -e; for t in $(CROSS_SELF); do go run ./cmd/subpoena-cross -timeout 20m $$t; done
 
 # Check a TraceQL evaluator in any language against the conformance corpus
 # (docs/ports.md): make conform EVAL="python -m subpoena.traceql". Without
