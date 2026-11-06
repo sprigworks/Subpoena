@@ -359,7 +359,7 @@ func TestRed(t *testing.T) { t.Fatal("red, with no link to the mutant") }
 	res := Result{Outcome: Killed}
 	o := Options{Log: os.Stderr, Timeout: time.Minute}
 	raw := `{"Action":"fail","Package":"mini/other","Test":"TestRed"}` + "\n" + exitEvent("mini/other", "1") + "\n"
-	if err := confirmKill(context.Background(), o, sandbox{dir: dir}, nil, raw, mutants, nil, &res); err != nil {
+	if err := confirmKill(context.Background(), o, sandbox{dir: dir}, nil, testRun{raw: raw}, mutants, nil, &res); err != nil {
 		t.Fatal(err)
 	}
 	if res.Outcome != Unconfirmed || res.Hint != separateProgramHint {

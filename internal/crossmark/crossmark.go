@@ -2,8 +2,10 @@
 // the harness. The output of go test carries a test's failure messages and
 // whatever the code under test prints in one stream, in the same shape, so a tag
 // alone proves nothing. Under cross, the harness signs its witness failures
-// with a key cross makes for the run. The key reaches the harness in the
-// environment, and the harness takes it out of there as it loads.
+// with a key cross makes for one go test command, so a mark is good for that run
+// and no other: a line kept from another mutant's run does not verify. The key
+// reaches the harness in the environment, and the harness takes it out of there as
+// it loads.
 //
 // This raises the bar only. The key is reachable: /proc/<pid>/environ keeps it
 // after the harness unsets it, so the code under test, and any process it starts

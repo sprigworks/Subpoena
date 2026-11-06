@@ -2,6 +2,7 @@ package cross
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -204,13 +205,24 @@ func quoteField(s string) (string, error) {
 	return "", fmt.Errorf("cross: %s holds both kinds of quote, which go test -exec cannot carry; set TMPDIR to another directory", s)
 }
 
+// testRun is one go test command: its output, and the key its test binaries signed
+// with. The two go together, since a mark means something only under its own run's key.
+type testRun struct{ raw, key string }
+
 // test runs go test in sb under the wrapper, and adds to its output an exit
-// event for each package that failed, and under RequireWitness crashEvents.
-func (r *runner) test(ctx context.Context, o Options, sb sandbox, args ...string) (string, error) {
+// event for each package that failed, and under RequireWitness crashEvents. Each
+// command signs with a key of its own, made here, so a mark says which run it came
+// from: a line kept from another mutant's run, or from this mutant's first run, does
+// not verify. Nothing outlives the command, so what a test wrote to disk or a process
+// it left running knows no later key. Inside one command the packages share the key.
+//
+//subpoena:enforcement_point
+func (r *runner) test(ctx context.Context, o Options, sb sandbox, args ...string) (testRun, error) {
+	sb.key = rand.Text() //subpoena:enforcement
 	record := filepath.Join(r.dir, "codes-"+strconv.FormatInt(r.n.Add(1), 10))
 	field, err := quoteField(record)
 	if err != nil {
-		return "", err
+		return testRun{}, err
 	}
 	value := r.exec + " " + field
 	if r.user != "" {
@@ -221,7 +233,7 @@ func (r *runner) test(ctx context.Context, o Options, sb sandbox, args ...string
 	if o.RequireWitness {
 		events += crashEvents(raw)
 	}
-	return raw + events, err
+	return testRun{raw + events, sb.key}, err
 }
 
 // exitEvents gives an exit event for each package that failed in raw, a run in

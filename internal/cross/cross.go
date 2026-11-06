@@ -294,7 +294,7 @@ type Options struct {
 	Select   bool
 	selected map[string][]string // Mutant.Name() -> tests, when Select
 	runs     *atomic.Int64       // numbers the evidence files
-	key      string              // signs this run's witness failures (internal/crossmark)
+	key      string              // a sandbox's key until runner.test gives it its own
 	run      *runner             // starts every test binary of the run
 	modPath  string              // the module's path, as go reads it
 	// afterDiscover, if set, runs after the snapshot is taken and before
@@ -424,8 +424,8 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		return nil, err
 	}
 	var baselineErr error
-	if raw, err := o.run.test(ctx, o, primary, "-json", "-count=1", pkgs); err != nil {
-		baselineErr = fmt.Errorf("cross: baseline suite is not green, cannot judge mutants: %s", baselineReason(raw, err))
+	if run, err := o.run.test(ctx, o, primary, "-json", "-count=1", pkgs); err != nil {
+		baselineErr = fmt.Errorf("cross: baseline suite is not green, cannot judge mutants: %s", baselineReason(run.raw, err))
 	}
 	if baselineErr != nil {
 		return nil, baselineErr //subpoena:enforcement
@@ -641,7 +641,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			out, err = goIn(ctx, o.Timeout, sb, "build", "-buildvcs=false", pkgs)
 		}
 	}
-	var testOut string
+	var tested testRun
 	var testErr error
 	var testArgs []string
 	if err == nil {
@@ -654,7 +654,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			fmt.Fprintf(o.Log, "  selected tests: %s\n", f)
 		}
 		testArgs = append(testArgs, pkgs, "-args", "-test.failfast")
-		testOut, testErr = o.run.test(ctx, o, sb, testArgs...)
+		tested, testErr = o.run.test(ctx, o, sb, testArgs...)
 	}
 	if ctx.Err() != nil {
 		return res, fmt.Errorf("cross: run stopped: %w", ctx.Err()) //subpoena:enforcement
@@ -669,7 +669,8 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			}
 		}
 	} else {
-		raw, err := testOut, testErr
+		run, err := tested, testErr
+		raw := run.raw
 		var ferr error
 		if res.EvidenceFile, ferr = keepEvidence(o, ms, "", raw); ferr != nil {
 			return res, ferr
@@ -680,10 +681,11 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 			// it goes again as it would have run. Red there still has to hold as a
 			// kill, so printed text that made the fail event buys only this run.
 			fmt.Fprintf(o.Log, "  green with a failed test in it; running without -test.failfast\n")
-			raw, err = o.run.test(ctx, o, sb, testArgs[:len(testArgs)-2]...)
+			run, err = o.run.test(ctx, o, sb, testArgs[:len(testArgs)-2]...)
 			if ctx.Err() != nil {
 				return res, fmt.Errorf("cross: run stopped: %w", ctx.Err())
 			}
+			raw = run.raw
 			file, ferr := keepEvidence(o, ms, "-repeat", raw)
 			if ferr != nil {
 				return res, ferr
@@ -706,19 +708,19 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 				if timedOut(out, err) {
 					fmt.Fprintf(o.Log, "  did not finish, but a package failed and finished; the repeat decides: still running: %s\n", strings.Join(unfinished(raw), ", "))
 				}
-				ev, msg, crashed := firstFailure(raw, o.key)
+				ev, msg, crashed := firstFailure(raw, run.key)
 				if crashed {
 					res.Outcome, res.Output = Crashed, crashOutput(raw, 20) //subpoena:enforcement
 				} else {
 					res.Outcome, res.Failing = Killed, failingTests(raw)
 					res.Evidence, res.FirstFailure = ev, msg
 					if ev != EvidenceWitness {
-						res.LaterWitness = witnessFailure(raw, o.key)
+						res.LaterWitness = witnessFailure(raw, run.key)
 					}
 					if o.RequireWitness && ev != EvidenceWitness {
 						res.Outcome = KilledBySelfReport //subpoena:enforcement
 					}
-					if err := confirmKill(ctx, o, sb, testArgs, raw, ms, mutated, &res); err != nil {
+					if err := confirmKill(ctx, o, sb, testArgs, run, ms, mutated, &res); err != nil {
 						return res, err
 					}
 				}
@@ -751,8 +753,8 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 // not finish was red for a reason other than the mutant, or may have been.
 //
 //subpoena:enforcement_point
-func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw string, ms []Mutant, mutated map[string][]byte, res *Result) error {
-	failed := failedPackages(raw)
+func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, run testRun, ms []Mutant, mutated map[string][]byte, res *Result) error {
+	failed := failedPackages(run.raw)
 	why, err := linksMutant(ctx, o, sb, failed, ms)
 	if err != nil {
 		return err
@@ -767,30 +769,30 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 		narrow = slices.Concat(args[:len(args)-3], failed, args[len(args)-2:])
 	}
 	whole := args[:max(0, len(args)-2)] // without -test.failfast
-	withMutant := func(a []string) (string, error, error) {
+	withMutant := func(a []string) (testRun, error, error) {
 		if err := sb.fresh(); err != nil {
-			return "", nil, err
+			return testRun{}, nil, err
 		}
 		for file, b := range mutated {
 			if err := os.WriteFile(filepath.Join(sb.dir, filepath.FromSlash(file)), b, 0o644); err != nil {
-				return "", nil, err
+				return testRun{}, nil, err
 			}
 		}
 		out, runErr := o.run.test(ctx, o, sb, a...)
 		if ctx.Err() != nil {
-			return "", nil, fmt.Errorf("cross: run stopped: %w", ctx.Err())
+			return testRun{}, nil, fmt.Errorf("cross: run stopped: %w", ctx.Err())
 		}
-		file, err := keepEvidence(o, ms, "-repeat", out)
+		file, err := keepEvidence(o, ms, "-repeat", out.raw)
 		if err != nil {
-			return "", nil, err
+			return testRun{}, nil, err
 		}
 		if file != "" {
 			res.RepeatEvidence = append(res.RepeatEvidence, file)
 		}
 		return out, runErr, nil
 	}
-	first := failedTests(raw, o.key)
-	if len(first) == 0 && passAfterFail(raw) {
+	first := failedTests(run.raw, run.key)
+	if len(first) == 0 && passAfterFail(run.raw) {
 		// -test.failfast can make the PASS: a TestMain that calls m.Run again gets a
 		// run of nothing, which says it after a real failure. So the failed tests come
 		// from the run as it would have gone, by the same rules, and the repeat below
@@ -800,7 +802,7 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 		if err != nil {
 			return err
 		}
-		first = failedTests(out, o.key)
+		first = failedTests(out.raw, out.key)
 	}
 	for n := range killRepeats {
 		fmt.Fprintf(o.Log, "  repeat %d of %d with the mutant\n", n+1, killRepeats)
@@ -808,16 +810,16 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 		if err != nil {
 			return err
 		}
-		why := notAKill(out, runErr, o.key, first)
+		why := notAKill(out.raw, runErr, out.key, first)
 		hung := false // every last try hung
 		asked := o.RequireWitness && res.Outcome == Killed
 		reason := why
 		if why == "" && asked {
-			if ev, _ := repeatEvidence(out, o.key, first); ev != EvidenceWitness {
+			if ev, _ := repeatEvidence(out.raw, out.key, first); ev != EvidenceWitness {
 				reason = "no test of the first run gave witness evidence on the repeat"
 			}
 		}
-		if reason != "" && stoppedShort(out, runErr, o.key) {
+		if reason != "" && stoppedShort(out.raw, runErr, out.key) {
 			// With no -failfast the repeat reaches tests the first run never did,
 			// and the mutant can crash or hang one of them, or -shuffle can put one
 			// first. That says nothing of the test that failed, so that test
@@ -826,12 +828,12 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 			// left out, for when the command too reaches that crash.
 			fmt.Fprintf(o.Log, "  %s; running the first run's command again, then its failed tests\n", reason)
 			hung = true
-			for _, a := range lastTries(args, raw, first) {
+			for _, a := range lastTries(args, run.raw, first) {
 				again, againErr, err := withMutant(a)
 				if err != nil {
 					return err
 				}
-				if r := notAKill(again, againErr, o.key, first); r != "" {
+				if r := notAKill(again.raw, againErr, again.key, first); r != "" {
 					// A try that finished says more than one that hung.
 					if r != noFinish {
 						hung = false
@@ -842,21 +844,21 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 					continue
 				}
 				out, why = again, ""
-				if ev, _ := repeatEvidence(again, o.key, first); !asked || ev == EvidenceWitness {
+				if ev, _ := repeatEvidence(again.raw, again.key, first); !asked || ev == EvidenceWitness {
 					break
 				}
 			}
 		}
 		if why != "" {
-			res.Why, res.Output = why, tail(testText(out), 20)
+			res.Why, res.Output = why, tail(testText(out.raw), 20)
 			res.Outcome = Unconfirmed //subpoena:enforcement
 			res.Hung = hung || why == noFinish
 			return nil
 		}
 		if asked {
-			if ev, msg := repeatEvidence(out, o.key, first); ev != EvidenceWitness {
+			if ev, msg := repeatEvidence(out.raw, out.key, first); ev != EvidenceWitness {
 				res.Evidence, res.FirstFailure = ev, msg
-				res.Why, res.Output = "the first run's first evidence was witness, and no test of that run gave any on the repeat", tail(testText(out), 20)
+				res.Why, res.Output = "the first run's first evidence was witness, and no test of that run gave any on the repeat", tail(testText(out.raw), 20)
 				res.Outcome = KilledBySelfReport //subpoena:enforcement
 			}
 		}
@@ -875,7 +877,7 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, raw 
 			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
 		}
 		if err != nil {
-			res.Why, res.Output = "the suite failed without the mutant", tail(testText(out), 20)
+			res.Why, res.Output = "the suite failed without the mutant", tail(testText(out.raw), 20)
 			res.Outcome = Unconfirmed //subpoena:enforcement
 			return nil
 		}
@@ -1388,7 +1390,7 @@ func judge(f failure, key string) (Evidence, string) {
 }
 
 // harnessWitness reports whether head is a witness failure the harness wrote: a
-// tag and the mark of this run's key. A line the code under test printed has the
+// tag and the mark of the key of the run head came from. A line the code under test printed has the
 // shape of a t.Log and can hold the tag, so the tag alone is no evidence.
 //
 //subpoena:enforcement_point

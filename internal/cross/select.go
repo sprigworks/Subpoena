@@ -231,7 +231,7 @@ func checkSubsets(ctx context.Context, o Options, sb sandbox, pkgs string, mutan
 		}
 		var redErr error
 		if err != nil {
-			redErr = fmt.Errorf("cross: select: the tests %s fail together without any mutant, so they depend on tests left out; fix the tests or drop -select:\n%s", f, tail(testText(out), 20))
+			redErr = fmt.Errorf("cross: select: the tests %s fail together without any mutant, so they depend on tests left out; fix the tests or drop -select:\n%s", f, tail(testText(out.raw), 20))
 		}
 		if redErr != nil {
 			return redErr //subpoena:enforcement

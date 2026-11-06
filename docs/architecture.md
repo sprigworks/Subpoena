@@ -223,7 +223,9 @@ message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
 is not `witness` rested on the system's own account or its side effects. In Go
 a tag alone is not `witness`: the code under test can print a line in the shape
 of a `t.Log`, so under cross the harness signs its witness failures with a key
-made for the run, and an unsigned `witness:` is `other`. A test that asks a
+made for that one `go test` command, and an unsigned `witness:` is `other`. A mark so belongs to
+one run of one mutant: a line kept from another mutant's run, or from this mutant's first run, is
+`other` too. Packages of one command share its key. A test that asks a
 witness itself reports through `harness.WitnessErrorf`, which signs. The output
 outside cross does not change. Only a `*testing.T`, `B` or `F` gets the mark, so
 a `testing.TB` of production code's own gets none, and a wrapper such as
@@ -285,7 +287,11 @@ test-runner output. The rules above stop what a suite prints by accident or in t
 and where they cannot tell, they cost a kill and not make one. They are no defence against a suite
 built to fool them. Only a verified witness mark under `--require-witness` holds against forged
 output, and there a crash line counts as a crash in any test of a failed package, passed or not. A
-passing test that prints such a line beside a witness failure so reads crashed.
+passing test that prints such a line beside a witness failure so reads crashed. Each `go test`
+command signs with a new key, so a signed line kept on disk and printed in a later run does not
+verify, and the kill reads `self-report`. That costs nothing: one random key per command. A line
+copied inside one command still verifies, in another package too, but a witness really failed in
+that run for it to exist.
 
 Two forgeries read as plain kills and stay open. A suite that hides `m.Run`'s `PASS` is above. In
 the other, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test

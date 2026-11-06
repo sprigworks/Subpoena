@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A witness mark is good for one run of one mutant.** The key lasted all of cross's run, so a
+  signed line kept from one mutant's run and printed in another's read as a witness kill, under
+  `--require-witness`, on a mutant no witness saw. Each `go test` command now signs with its own
+  key, and such a line reads as self-report. So does one kept from a mutant's first run and printed
+  on its repeat. No extra runs.
 - **`make test-db` clears up after a killed run.** A killed test binary left its `--rm` database
   containers running, and they held the host's AIO slots until MySQL could not start. Each
   container now names its owner in labels, and a run removes those whose owner is gone on this
