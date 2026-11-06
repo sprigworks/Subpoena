@@ -154,6 +154,7 @@ func TestReview7LoginSettings(t *testing.T) {
 		{"options", "-c client-encoding=SJIS", true},
 		{"options", "-c statement_timeout=5 -c standard-conforming-strings=off", true},
 		{"options", "-ec search_path=s,pg_catalog", true}, // a switch it does not read
+		{"options", "-B=1", true},
 		{"options", "-c", true},
 		{"options", "-c search_path", true},
 		{"options", "-c search_path=app,public", false},

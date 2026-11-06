@@ -654,11 +654,13 @@ func (s *pgSession) afterOpaque(st *statement) {
 	if st.class != classOpaque {
 		return
 	}
-	for name := range s.prepared {
-		s.prepared[name] = rebound(st.verb) //subpoena:enforcement
-	}
-	for name := range s.portals {
-		s.portals[name] = rebound(st.verb) //subpoena:enforcement
+	reboundAll(s.prepared, st.verb) //subpoena:enforcement
+	reboundAll(s.portals, st.verb)  //subpoena:enforcement
+}
+
+func reboundAll(names map[string]*statement, verb string) {
+	for name := range names {
+		names[name] = rebound(verb)
 	}
 }
 
