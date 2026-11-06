@@ -5,7 +5,9 @@ require_no_dial, check_no_dial and dial_to."""
 import socket
 
 import pytest
+import yaml
 
+from conftest import CONFORMANCE
 from subpoena import witness
 from subpoena.harness import (Verdict, check_no_dial, check_no_spawn, dial_to, no_dial, require_no_dial)
 from subpoena.witness import BY_DESTINATION, MARK_HEADER, OP_CONNECT, AddrPort, NetworkEvent, Sinkhole
@@ -288,21 +290,23 @@ def test_an_arrival_that_is_not_http_still_counts():
     assert e.request == "" and e.attribution == BY_DESTINATION
 
 
-# Review 6, finding 14: the same bytes read the same in both languages
-# (pkg/witness/sinkhole_test.go has this table too). Only marked() differs by
-# request: dialed() sees every arrival.
-@pytest.mark.parametrize("head,mark,want,answered", [
-    ("Host: x\r\n", "", 0, True),
-    ("Host: x\r\nX-Subpoena-Mark:\r\n", "", 1, True),
-    ("Host: x\r\nX-Subpoena-Mark : a\r\n", "a", 0, True),
-    ("Host: x\r\nX-Subpoena-Mark: a\r\n b\r\n", "a b", 1, True),
-    ("Host: x\r\nX-Subpoena-Mark: a\r\n b\r\n", "a", 0, True),
-    ("Host: x\r\nX-Subpoena-Mark: a\r\nnocolon\r\n", "a", 0, False),
-])
-def test_marked_reads_a_request_as_go_does(head, mark, want, answered):
+# Review 6, finding 14, and Review 7, finding 9: the same bytes read the same in
+# both languages, from one table (pkg/witness/sinkhole_test.go reads it too). Only
+# marked() and the answer differ by request: dialed() sees every arrival.
+SINKHOLE = yaml.safe_load((CONFORMANCE / "sinkhole.yaml").read_text())
+
+
+def test_the_sinkhole_cases_are_there():
+    assert len(SINKHOLE["cases"]) >= 60
+
+
+@pytest.mark.parametrize("case", SINKHOLE["cases"], ids=[c["name"] for c in SINKHOLE["cases"]])
+def test_marked_reads_a_request_as_go_does(case):
+    raw = case["request"].replace("@FILL@", "y" * case.get("fill", 0)).encode("latin-1")
     s = Sinkhole(answer=True)
     c = socket.create_connection((str(s.addr.addr), s.addr.port), timeout=5)
-    c.sendall(f"GET / HTTP/1.1\r\n{head}\r\n".encode())
+    c.sendall(raw)
+    c.shutdown(socket.SHUT_WR)
     reply = b""
     while True:
         chunk = c.recv(4096)
@@ -311,6 +315,7 @@ def test_marked_reads_a_request_as_go_does(head, mark, want, answered):
         reply += chunk
     c.close()
     s.stop()
-    assert bool(reply) == answered, reply
-    assert len(s.marked(mark)) == want
+    assert bool(reply) == case["answered"], reply
+    for mark in SINKHOLE["probes"]:
+        assert len(s.marked(mark)) == (1 if mark in case["marks"] else 0), mark
     assert len(s.dialed("any")) == 1

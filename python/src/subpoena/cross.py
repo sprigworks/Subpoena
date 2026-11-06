@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import io
 import math
@@ -97,9 +98,15 @@ _REPEATS = 1
 _RERUNS = 3
 
 _ANY_MARKER = re.compile(r"#\s*subpoena\s*:\s*enforc")  # cross's markers, misspelt ones too
+# _ANY_MARKER for a comment on a line of its own, where a space by the colon says
+# prose: subpoena: enforcement points are listed in docs.
+_OWN_MARKER = re.compile(r"#\s*subpoena:enforc")
+# A comment in a marker's shape: two words about a colon, and arguments that
+# _near_marker checks. A comment that goes on is prose.
+_NEAR_MARKER = re.compile(r"#\s*([A-Za-z]+)\s*:\s*([A-Za-z_]+)((?:\s+\S+)*)\s*$")
 # A marker after an upstream comment on the same line, as loosely as _ANY_MARKER,
 # so a misspelt one there is an error too: return x  # why  # subpoena:enforcement
-_TRAILING = re.compile(r"#\s*(subpoena\s*:\s*enforc.*)$")
+_TRAILING = re.compile(r"#\s*(?=subpoena\s*:\s*enforc)")
 _POINT_NAME = re.compile(r"subpoena:enforcement_point(\s|$)")
 _COUNTED = re.compile(r"subpoena:enforcement(_guard)?(\s|$)")
 _ONLY_MARKER = re.compile(r"^\s*#\s*subpoena\s*:\s*enforc")
@@ -107,7 +114,7 @@ _POINT = "subpoena:enforcement_point"
 _STATEMENT = "subpoena:enforcement"
 _SIMPLE = (ast.Return, ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Raise, ast.Pass,
            ast.Break, ast.Continue, ast.Delete, ast.Assert)
-_PROSE_HINT = "on a line of code, a comment that names a marker reads as one, so if this is prose, reword it"
+_PROSE_HINT = "a comment that starts with a marker, or names one on a line of code, reads as one, so if this is prose, reword it"
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", ".tox", ".nox", ".pytest_cache", "node_modules", ".mypy_cache", ".ruff_cache"}
 
 
@@ -270,8 +277,47 @@ def _marker_text(comment: str) -> str:
     the marker follows upstream's text, so marking a line removes none of it.
     Arguments stay, so a bad one is an error. A comment that names the point
     marker is prose: no line of code can carry it."""
-    m = _TRAILING.search(comment)
-    return m.group(1) if m and not _POINT_NAME.match(m.group(1)) else comment
+    for m in _TRAILING.finditer(comment):
+        if not _POINT_NAME.match(comment[m.end():]):
+            return comment[m.end():]
+    for i, c in enumerate(comment):
+        if c == "#" and _near_marker(comment[i:]) and not _POINT_NAME.match(comment[i + 1:].strip()):
+            return comment[i + 1:].strip()
+    return comment
+
+
+def _swapped(s: str, ok: Callable[[str], bool]) -> bool:
+    """Whether s, or s with two neighbouring letters swapped, is ok."""
+    return ok(s) or any(ok(s[:i] + s[i + 1] + s[i] + s[i + 2:]) for i in range(len(s) - 1))
+
+
+def _near_marker(comment: str) -> bool:
+    """Whether a comment, its # included, is a marker with its words in the wrong
+    case or with two letters swapped, in a marker's shape and with nothing but a
+    marker's arguments after them, so a sentence that opens with those words is no
+    match."""
+    m = _NEAR_MARKER.match(comment)
+    if not m or any(a not in ("true", "false") and not a.startswith("group=") for a in m.group(3).split()):
+        return False
+    return (_swapped(m.group(1).lower(), lambda s: s == "subpoena") and
+            _swapped(m.group(2).lower(), lambda s: s.startswith("enforc")))
+
+
+def _stray_marker(comment: str, own: bool) -> bool:
+    """Whether a comment without its # reads as a marker. One that took no effect
+    is an error, so this must not catch prose where it can tell: on a line of its
+    own a comment is one only if it is written as a marker is, or _near_marker says
+    it is. On a line of code the words alone are enough, since a mark goes after
+    upstream's text there."""
+    text = "#" + comment
+    return _near_marker(text) or bool((_OWN_MARKER if own else _ANY_MARKER).match(text))
+
+
+def _may_hold_marker(data: bytes) -> bool:
+    """Whether a file can hold a marker, right or misspelt. A file that cannot is
+    not read, so it need not be UTF-8 or parse."""
+    return b"subpoena" in data or any(_near_marker(m.group().decode("latin-1"))
+                                      for m in re.finditer(rb"#[^#\r\n]*", data))
 
 
 def _upstream_line(text: str, line: int) -> int:
@@ -303,11 +349,20 @@ def _test_id(test: str) -> str:
 
 
 def _repeat_evidence(code, records, out, first: List[str]) -> Tuple[str, str]:
-    """The kind and message of a repeat's first failure in a test of first: another
-    test was never what the first run's evidence came from."""
+    """The kind and message of a repeat's evidence from the tests of first: witness
+    if any of them gave it, read as each test's own first failure, and otherwise the
+    first of them. Another test was never what the first run's evidence came from."""
     wanted = {_test_id(t) for t in first}
-    kept = [r for r in records if r.get("kind") != "failure" or _test_id(r["test"]) in wanted]
-    _, _, evidence, message = classify(code, kept, out)
+    fails = [r for r in records if r.get("kind") == "failure" and _test_id(r["test"]) in wanted]
+    rest = [r for r in records if r.get("kind") != "failure"]
+    seen = set()
+    for r in fails:
+        if _test_id(r["test"]) not in seen:
+            seen.add(_test_id(r["test"]))
+            _, _, evidence, message = classify(code, rest + [r], out)
+            if evidence == "witness":
+                return evidence, message
+    _, _, evidence, message = classify(code, rest + fails, out)
     return evidence, message
 
 
@@ -338,7 +393,7 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
     for path in sorted(_python_files(root)):
         rel = os.path.relpath(path, root).replace(os.sep, "/")
         data = _read_source(path, rel)
-        if b"subpoena" not in data:
+        if not _may_hold_marker(data):
             continue
         text = _decode(data, rel)
         try:
@@ -391,8 +446,8 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
             if found == 0:
                 missing.append(f"cross: {rel}: {node.name} is marked {_POINT} but has no "
                                f"{_STATEMENT} statement, so it cannot be cross-examined")
-        for line, (c, _) in sorted(comments.items()):
-            if _ANY_MARKER.match("#" + c) and line not in placed:
+        for line, (c, own) in sorted(comments.items()):
+            if _stray_marker(c, own) and line not in placed:
                 raise CrossError(
                     f"cross: {rel}:{line}: {'#' + c!r} is not a marker cross applies: statement and guard "
                     f"markers go on a simple statement or an if inside a function marked {_POINT}, the "
@@ -709,7 +764,7 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
             raise CrossError("cross: evidence directory must differ from the target tree root")
         os.makedirs(evidence_dir, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="subpoena-cross-") as tmp:
+    with _run_directory(log) as tmp:
         template = os.path.join(tmp, "snapshot")
         def ignore(directory, names):
             ignored = {name for name in names if _skipped(directory, name)}
@@ -879,7 +934,7 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                             if again_evidence != "witness":
                                 outcome = KILLED_BY_SELF_REPORT
                                 evidence, first = again_evidence, again_first
-                                why = "the first run's first evidence was witness, and the repeat's was not"
+                                why = "the first run's first evidence was witness, and no test of that run gave any on the repeat"
                     else:
                         for _ in range(_RERUNS):
                             code, out, records, _ = baseline(selected, label="confirm")
@@ -967,6 +1022,34 @@ def _remove_tree(path: str) -> None:
                 except OSError:
                     pass
     shutil.rmtree(path, ignore_errors=True)
+
+
+# Bound _remove_leftovers, as Go's removeLeftovers is bounded.
+_REMOVE_TRIES = 50
+_REMOVE_WAIT = 0.1
+
+
+def _remove_leftovers(log, path: str) -> None:
+    """Remove a tree of the run as it ends. A detached child can be writing there,
+    and each try can lose to it, but a tree that goes once is gone: the child's
+    directory went with it. The tree holds mutated source, so one that will not go
+    is named. No verdict hangs on this, so it raises nothing."""
+    for _ in range(_REMOVE_TRIES):
+        _remove_tree(path)
+        if not os.path.lexists(path):
+            return
+        time.sleep(_REMOVE_WAIT)
+    log(f"cross: could not remove {path}, which holds mutated source: a process a test started may still be writing there")
+
+
+@contextlib.contextmanager
+def _run_directory(log):
+    """The run's own directory, gone or named as the run ends."""
+    tmp = tempfile.mkdtemp(prefix="subpoena-cross-")
+    try:
+        yield tmp
+    finally:
+        _remove_leftovers(log, tmp)
 
 
 def _tail(s: str, n: int) -> str:

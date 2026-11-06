@@ -4,8 +4,8 @@
 package witness
 
 import (
+	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,9 +13,13 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestSinkholeRecordsArrivalsForEveryTrace(t *testing.T) {
@@ -248,38 +252,62 @@ func TestAnArrivalThatIsNotHTTPStillCounts(t *testing.T) {
 	}
 }
 
-// Review 6, finding 14: the same bytes read the same in both languages
-// (python/tests/test_network.py has this table too). Only Marked differs by
-// request: Dialed sees every arrival.
+// Review 6, finding 14, and Review 7, finding 9: the same bytes read the same in
+// both languages, from one table (python/tests/test_network.py reads it too). Only
+// Marked and the answer differ by request: Dialed sees every arrival.
 func TestMarkedReadsARequestAsPythonDoes(t *testing.T) {
-	for _, tc := range []struct {
-		name, head, mark string
-		want             int
-		answered         bool
-	}{
-		{"no header matches no mark", "Host: x\r\n", "", 0, true},
-		{"an empty header matches the empty mark", "Host: x\r\nX-Subpoena-Mark:\r\n", "", 1, true},
-		{"a space before the colon stays in the name", "Host: x\r\nX-Subpoena-Mark : a\r\n", "a", 0, true},
-		{"a folded value joins", "Host: x\r\nX-Subpoena-Mark: a\r\n b\r\n", "a b", 1, true},
-		{"a folded value is not its first line", "Host: x\r\nX-Subpoena-Mark: a\r\n b\r\n", "a", 0, true},
-		{"a line with no colon is no request", "Host: x\r\nX-Subpoena-Mark: a\r\nnocolon\r\n", "a", 0, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	b, err := os.ReadFile("../../conformance/sinkhole.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Probes []string `yaml:"probes"`
+		Cases  []struct {
+			Name     string   `yaml:"name"`
+			Request  string   `yaml:"request"`
+			Fill     int      `yaml:"fill"`
+			Answered bool     `yaml:"answered"`
+			Marks    []string `yaml:"marks"`
+		} `yaml:"cases"`
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Cases) < 60 {
+		t.Fatalf("only %d cases", len(doc.Cases))
+	}
+	for _, tc := range doc.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			t.Parallel()
+			text := strings.ReplaceAll(tc.Request, "@FILL@", strings.Repeat("y", tc.Fill))
+			raw := make([]byte, 0, len(text))
+			for _, r := range text {
+				raw = append(raw, byte(r)) // a character stands for a byte
+			}
 			s := answering(t)
 			c, err := net.Dial("tcp", s.Addr().String())
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer c.Close()
-			fmt.Fprintf(c, "GET / HTTP/1.1\r\n%s\r\n", tc.head)
+			c.Write(raw) // a refusal can come before all of it is read
+			c.(*net.TCPConn).CloseWrite()
 			c.SetReadDeadline(time.Now().Add(5 * time.Second))
 			reply, _ := io.ReadAll(c)
 			s.Stop()
-			if got := len(reply) > 0; got != tc.answered {
+			if got := len(reply) > 0; got != tc.Answered {
 				t.Errorf("answered = %v, reply %q", got, reply)
 			}
-			if got := len(s.Marked(tc.mark)); got != tc.want {
-				t.Errorf("Marked(%q) = %d, want %d", tc.mark, got, tc.want)
+			for _, mark := range doc.Probes {
+				want := 0
+				if slices.Contains(tc.Marks, mark) {
+					want = 1
+				}
+				if got := len(s.Marked(mark)); got != want {
+					t.Errorf("Marked(%q) = %d, want %d", mark, got, want)
+				}
 			}
 			if got := len(s.Dialed("any")); got != 1 {
 				t.Errorf("Dialed = %d", got)

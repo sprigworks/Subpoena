@@ -493,7 +493,6 @@ BY_DESTINATION = "destination"
 # tell arrivals apart. It decides nothing: dialed() returns every arrival.
 MARK_HEADER = "X-Subpoena-Mark"
 _ANSWER_READ = 2.0  # seconds in all on one connection; the arrival is already recorded
-_ANSWER_HEAD = 1 << 16
 _ANSWER_200 = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 
 
@@ -619,6 +618,170 @@ def _delivery(l: dict) -> DeliveryEvent:
     )
 
 
+_HEAD_END = re.compile(rb"\r?\n\r?\n")
+_DIGITS_LETTERS = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_TOKEN = frozenset(_DIGITS_LETTERS + b"!#$%&'*+-.^_`|~")
+_HOST = frozenset(_DIGITS_LETTERS + b"-_.~!$&'()*+,;=:[]<>\"")
+_USERINFO = frozenset(_DIGITS_LETTERS + b"-._:~!$&'()*+,;=%@")
+_HEX = frozenset(b"0123456789abcdefABCDEF")
+
+
+def _escapes_ok(s: bytes, mode: str = "") -> bool:
+    """net/url's unescape, as a check: mode is "", "host" or "zone"."""
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == 0x25:  # %
+            if i + 2 >= len(s) or s[i + 1] not in _HEX or s[i + 2] not in _HEX:
+                return False
+            code = s[i:i + 3]
+            if mode == "host" and int(code[1:2], 16) < 8 and code != b"%25":
+                return False
+            value = int(code[1:], 16)
+            if mode == "zone" and code != b"%25" and value != 0x20 and value not in _HOST:
+                return False
+            i += 3
+            continue
+        if mode and c != 0x2B and c < 0x80 and c not in _HOST:
+            return False
+        i += 1
+    return True
+
+
+def _port_ok(port: bytes) -> bool:
+    return not port or (port[:1] == b":" and all(0x30 <= c <= 0x39 for c in port[1:]))
+
+
+def _host_ok(host: bytes) -> bool:
+    """net/url's parseHost, as a check."""
+    if host.startswith(b"["):
+        i = host.rfind(b"]")
+        if i < 0 or not _port_ok(host[i + 1:]):
+            return False
+        zone = host[:i].find(b"%25")
+        if zone >= 0:
+            return (_escapes_ok(host[:zone], "host") and _escapes_ok(host[zone:i], "zone") and
+                    _escapes_ok(host[i:], "host"))
+    else:
+        i = host.rfind(b":")
+        if i != -1 and not _port_ok(host[i:]):
+            return False
+    return _escapes_ok(host, "host")
+
+
+def _authority_ok(authority: bytes) -> bool:
+    """net/url's parseAuthority, as a check."""
+    i = authority.rfind(b"@")
+    if not _host_ok(authority[i + 1:]):
+        return False
+    if i < 0:
+        return True
+    userinfo = authority[:i]
+    return all(c in _USERINFO for c in userinfo) and all(_escapes_ok(p) for p in userinfo.split(b":", 1))
+
+
+def _request_uri_ok(uri: bytes) -> bool:
+    """net/url's ParseRequestURI, as a check."""
+    if not uri or any(c < 0x20 or c == 0x7F for c in uri):
+        return False
+    if uri == b"*":
+        return True
+    scheme, rest = b"", uri
+    for i, c in enumerate(uri):
+        if c == 0x3A:  # :
+            if i == 0:
+                return False
+            scheme, rest = uri[:i], uri[i + 1:]
+            break
+        letter = 0x41 <= c <= 0x5A or 0x61 <= c <= 0x7A
+        if not letter and not (i > 0 and (0x30 <= c <= 0x39 or c in b"+-.")):
+            break
+    if rest.endswith(b"?") and rest.count(b"?") == 1:
+        rest = rest[:-1]
+    else:
+        rest = rest.partition(b"?")[0]
+    if not rest.startswith(b"/"):
+        return bool(scheme)
+    if scheme and rest.startswith(b"//"):
+        authority, slash, path = rest[2:].partition(b"/")
+        if not _authority_ok(authority):
+            return False
+        rest = slash + path
+    return _escapes_ok(rest)
+
+
+def _trim(s: bytes) -> bytes:
+    return s.strip(b" \t")
+
+
+def _read_request(head: bytes) -> "Optional[tuple[str, Dict[str, str]]]":
+    """The request line and headers of a head, its blank line left out, or None if
+    Go's http.ReadRequest would refuse it: Sinkholes in both languages must read the
+    same bytes alike, and conformance/sinkhole.yaml holds them to it. Text is UTF-8
+    with its other bytes kept as surrogates, so a mark compares as Go's bytes do."""
+    lines = re.split(rb"\r?\n", head)
+    method, sp1, rest = lines[0].partition(b" ")
+    uri, sp2, proto = rest.partition(b" ")
+    if not sp1 or not sp2 or not method or any(c not in _TOKEN for c in method):
+        return None
+    version = re.fullmatch(rb"HTTP/([0-9])\.([0-9])", proto)
+    if version is None:
+        return None
+    if method == b"CONNECT" and not uri.startswith(b"/"):
+        if not _request_uri_ok(b"http://" + uri):
+            return None
+    elif not _request_uri_ok(uri):
+        return None
+    # A folded line joins the one above, a space before the colon stays in the name,
+    # and a first line with no colon is no request.
+    fields: List[bytes] = []
+    for line in lines[1:]:
+        if line[:1] in (b" ", b"\t"):
+            if not fields:
+                return None
+            fields[-1] += b" " + _trim(line)
+        elif b":" not in line:
+            return None
+        else:
+            fields.append(_trim(line))
+    values: Dict[bytes, List[bytes]] = {}
+    for field in fields:
+        name, _, value = field.partition(b":")
+        if not name or any(c not in _TOKEN and c != 0x20 for c in name):
+            return None
+        if any(c < 0x80 and c != 0x09 and not 0x20 <= c <= 0x7E for c in value):
+            return None
+        values.setdefault(name.lower(), []).append(value.lstrip(b" \t"))
+    if not _body_framing_ok(values, (int(version[1]), int(version[2])) >= (1, 1)):
+        return None
+    text = lambda b: b.decode("utf-8", "surrogateescape")  # noqa: E731
+    return text(lines[0]), {text(k): text(v[0]) for k, v in values.items()}
+
+
+def _body_framing_ok(values: Dict[bytes, List[bytes]], http11: bool) -> bool:
+    """What http.ReadRequest asks of Host, Transfer-Encoding, Content-Length and
+    Trailer."""
+    if len(values.get(b"host", [])) > 1:
+        return False
+    chunked = False
+    encodings = values.get(b"transfer-encoding")
+    if encodings is not None and http11:
+        if len(encodings) != 1 or encodings[0].lower() != b"chunked":
+            return False
+        chunked = True
+    lengths = [_trim(v) for v in values.get(b"content-length", [])]
+    if lengths:
+        if any(v != lengths[0] for v in lengths) or not re.fullmatch(rb"[0-9]+", lengths[0]):
+            return False
+        if int(lengths[0]) >= 1 << 63:
+            return False
+    if chunked:
+        for value in values.get(b"trailer", []):
+            if {_trim(k).lower() for k in value.split(b",")} & {b"transfer-encoding", b"trailer", b"content-length"}:
+                return False
+    return True
+
+
 class Sinkhole:
     """A tier-1 network witness: a TCP listener the test stands up as a
     destination the code under test must never reach, then points that code
@@ -729,34 +892,16 @@ class Sinkhole:
                 return c.recv(4096)
 
             data = b""
-            while not re.search(rb"\r?\n\r?\n", data) and len(data) < _ANSWER_HEAD:
+            while not (end := _HEAD_END.search(data, max(0, len(data) - 4096 - 3))):
                 chunk = read()
                 if not chunk:
                     return
                 data += chunk
-            head = re.split(rb"\r?\n\r?\n", data, maxsplit=1)[0]
-            lines = re.split(r"\r?\n", head.decode("latin-1"))
-            if len(lines[0].split(" ")) != 3 or not lines[0].split(" ")[2].startswith("HTTP/"):
+            parsed = _read_request(data[:end.start()])
+            if parsed is None:
                 return
-            # As Go's http.ReadRequest: a folded line joins the one above, a space
-            # before the colon stays in the name, and a line with no colon is no
-            # request. Sinkholes in both languages must read the same bytes alike.
-            fields: List[List[str]] = []
-            for line in lines[1:]:
-                if line[:1] in (" ", "\t"):
-                    if not fields:
-                        return
-                    fields[-1][1] = f"{fields[-1][1]} {line.strip()}".strip()
-                    continue
-                name, sep, value = line.partition(":")
-                if not sep:
-                    return
-                fields.append([name.lower(), value.strip()])
-            headers = {}
-            for name, value in fields:
-                headers.setdefault(name, value)
             with self._mu:
-                event.request, event.headers = lines[0], headers
+                event.request, event.headers = parsed
             c.sendall(_ANSWER_200)
             c.shutdown(socket.SHUT_WR)
             while read():  # closing on unread bytes can reset the answer away

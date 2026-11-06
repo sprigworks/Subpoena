@@ -107,12 +107,21 @@ a fresh copy, so no test sees what another case left there. After a kill, it mus
 hold. The mutant run's whole command runs again with the mutant, on a fresh copy,
 in Go without `-failfast`, so a test that catches the mutant is sure to run whatever
 test stopped the first run. That costs a longer repeat, a whole suite where the
-first run could stop early. It must be a clean kill, with a test of the first run
+first run could stop early, and `-failfast` in `GOFLAGS` does not change it. It must be a clean kill, with a test of the first run
 among the failed, read in Go from go test's `fail` events, since a test's output can
-print the line go test prints for a failure. In Go a repeat that crashes or hangs can
-do so in a test the first run never reached, so the first run's own command then
-decides, by the same rule: a clean kill, in a test of the first run. With
-`--require-witness`, that test's first evidence must be witness on the repeat too.
+print the line go test prints for a failure. A test can print the byte go test frames
+its own lines with too, and go test then makes a `fail` event of that text, so a `fail`
+event counts only for a test with a `run` event and no `pass` or `skip`. A test that
+prints the framed run line and fail line of a test that never ran still gets through:
+go test cannot tell those from the real thing, and neither can cross. In Go a repeat where
+a package crashes, or that hangs, can do so in a test the first run never reached, and
+under `-shuffle` such a test can come first. So the tests of the first run then run again
+alone and decide, by the same rule: a clean kill, in a test of the first run. A test
+that needs another to run first can come back unconfirmed here. With
+`--require-witness`, a test of the first run must give witness evidence on the repeat
+too, as its own first failure, wherever it ran: go test gives packages in the order they
+finished, so in Go another package's plain failure takes nothing from it. In Go a package
+that died on the repeat gets the same second look. `-evidence-dir` keeps each of these runs.
 If not, the kill is `enforcement-mutant-killed-by-self-report`: only one of the two
 runs had independent evidence. Then three runs without the mutant, each on a
 fresh copy: the first is the mutant run's whole command, because a failure can
@@ -167,9 +176,14 @@ binary exiting 1, stays a crash. In a test that passed it is a log line, and
 order does not matter: the binary lived. Ginkgo reports a recovered panic as `[PANICKED]`,
 which counts as a crash wherever it falls in the suite, since Ginkgo runs a suite
 as one test in random order. Failures outside any test never count: a line
-printed while `TestMain` or `init` ran is package output, whatever its shape. A mutant's first run uses `go test -json -failfast`, so a
-package stops at its first red test. Each kill reports its first evidence, the
-first failure message of a failed test: `witness` or `testimony` when the
+printed while `TestMain` or `init` ran is package output, whatever its shape. A line a
+test printed with no newline runs into the failure after it, and go test gives the two
+as one line: in a test with a `fail` event the failure is read after that text, at go
+test's own indent. A mutant's first run passes `-test.failfast` to each test binary, so a
+package stops at its first red test and every package runs: go test's own `-failfast`
+skips packages not yet started as soon as one fails. Each kill reports its first evidence, the
+first failure message of a failed test, and in Go the first of each package, witness
+if any is, since packages finish in any order: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
 (an error return, exit code, audit row or output). A kill whose first evidence
 is not `witness` rested on the system's own account or its side effects. In Go
@@ -272,7 +286,13 @@ a group of one are errors. So is a marker that would take no effect: a
 statement or guard marker outside an enforcement point, a point marker that is
 not on a function's doc comment, and a misspelt `//subpoena:enforcement...`
 comment, whether that is the whole comment or follows upstream's comment on a line
-of code. On a line of code, prose that names a statement or guard marker reads as
+of code. Misspelt means from `subpoena:enforc` on, or those words in the wrong case
+or with two neighbouring letters swapped, with nothing after them but a marker's
+arguments. Another punctuation (`subpoena.enforcement`, `subpoena enforcement`) or a
+block comment is not read, since prose can be written that way, and neither is a wrong
+word beyond one swap. On a line of its own, a space by the colon with words after it is
+prose: `// subpoena: enforcement points are listed in docs.` On a line of code, prose
+that names a statement or guard marker reads as
 one, so it is an error too, and the message says to reword it. A run whose context is canceled is an error, never a verdict.
 
 Discovery and mutation use the same saved file bytes. Before each

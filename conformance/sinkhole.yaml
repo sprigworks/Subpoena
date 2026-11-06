@@ -1,0 +1,289 @@
+# Requests both Sinkholes read alike, through an answering Sinkhole
+# (pkg/witness/sinkhole_test.go, python/tests/test_network.py). Each
+# character of request stands for one byte, as latin-1; @FILL@ is fill bytes of y.
+# answered says whether the client got the 200. marks lists the probes a mark
+# matched, as UTF-8: Marked in Go, marked in Python. dialed is 1 in every case.
+probes: ["\xe9", "", "a", "b", "a b"]
+cases:
+  - name: "plain"
+    request: "GET / HTTP/1.1\r\nHost: x\r\n\r\n"
+    answered: true
+    marks: []
+  - name: "empty mark"
+    request: "GET / HTTP/1.1\r\nHost: x\r\nX-Subpoena-Mark:\r\n\r\n"
+    answered: true
+    marks: [""]
+  - name: "marked a"
+    request: "GET / HTTP/1.1\r\nHost: x\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "space in name"
+    request: "GET / HTTP/1.1\r\nHost: x\r\nX-Subpoena-Mark : a\r\n\r\n"
+    answered: true
+    marks: []
+  - name: "folded"
+    request: "GET / HTTP/1.1\r\nHost: x\r\nX-Subpoena-Mark: a\r\n b\r\n\r\n"
+    answered: true
+    marks: ["a b"]
+  - name: "nocolon"
+    request: "GET / HTTP/1.1\r\nnocolon\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "fold first"
+    request: "GET / HTTP/1.1\r\n x: y\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad name char"
+    request: "GET / HTTP/1.1\r\nX(Y: 1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "empty name"
+    request: "GET / HTTP/1.1\r\n: 1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "ctl in other value"
+    request: "GET / HTTP/1.1\r\nX-O: a\x01b\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "cr in value"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark: a\r\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad proto"
+    request: "GET / HTTP/x\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad method"
+    request: "G(T / HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad url"
+    request: "GET %zz HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "two content-length"
+    request: "POST / HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad content-length"
+    request: "POST / HTTP/1.1\r\nContent-Length: x\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad transfer enc"
+    request: "POST / HTTP/1.1\r\nTransfer-Encoding: zz\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bare LF"
+    request: "GET / HTTP/1.1\nX-Subpoena-Mark: a\n\n"
+    answered: true
+    marks: ["a"]
+  - name: "vt tail"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark: a\x0b\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "nbsp tail"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark: a\xa0\r\n\r\n"
+    answered: true
+    marks: []
+  - name: "lower name"
+    request: "GET / HTTP/1.1\r\nx-subpoena-mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "two marks"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark: a\r\nX-Subpoena-Mark: b\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "empty then a"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark:\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: [""]
+  - name: "http10 no host"
+    request: "GET / HTTP/1.0\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "fold tab"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\t  b  \r\n\r\n"
+    answered: true
+    marks: ["a b"]
+  - name: "fold blank"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark: a\r\n \r\nHost: x\r\n\r\n"
+    answered: true
+    marks: []
+  - name: "utf8 mark"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark: \xc3\xa9\r\n\r\n"
+    answered: true
+    marks: ["\xe9"]
+  - name: "big head"
+    request: "GET / HTTP/1.1\r\nX-Filler: @FILL@\r\nX-Subpoena-Mark: a\r\n\r\n"
+    fill: 70000
+    answered: true
+    marks: ["a"]
+  - name: "mark past 64k"
+    request: "GET / HTTP/1.1\r\nX-F0: @FILL@\r\nX-F1: @FILL@\r\nX-F2: @FILL@\r\nX-F3: @FILL@\r\nX-F4: @FILL@\r\nX-F5: @FILL@\r\nX-F6: @FILL@\r\nX-F7: @FILL@\r\nX-F8: @FILL@\r\nX-F9: @FILL@\r\nX-F10: @FILL@\r\nX-F11: @FILL@\r\nX-F12: @FILL@\r\nX-F13: @FILL@\r\nX-F14: @FILL@\r\nX-F15: @FILL@\r\nX-F16: @FILL@\r\nX-F17: @FILL@\r\nX-F18: @FILL@\r\nX-F19: @FILL@\r\nX-F20: @FILL@\r\nX-F21: @FILL@\r\nX-F22: @FILL@\r\nX-F23: @FILL@\r\nX-F24: @FILL@\r\nX-F25: @FILL@\r\nX-F26: @FILL@\r\nX-F27: @FILL@\r\nX-F28: @FILL@\r\nX-F29: @FILL@\r\nX-F30: @FILL@\r\nX-F31: @FILL@\r\nX-F32: @FILL@\r\nX-F33: @FILL@\r\nX-F34: @FILL@\r\nX-F35: @FILL@\r\nX-F36: @FILL@\r\nX-F37: @FILL@\r\nX-F38: @FILL@\r\nX-F39: @FILL@\r\nX-F40: @FILL@\r\nX-F41: @FILL@\r\nX-F42: @FILL@\r\nX-F43: @FILL@\r\nX-F44: @FILL@\r\nX-F45: @FILL@\r\nX-F46: @FILL@\r\nX-F47: @FILL@\r\nX-F48: @FILL@\r\nX-F49: @FILL@\r\nX-F50: @FILL@\r\nX-F51: @FILL@\r\nX-F52: @FILL@\r\nX-F53: @FILL@\r\nX-F54: @FILL@\r\nX-F55: @FILL@\r\nX-F56: @FILL@\r\nX-F57: @FILL@\r\nX-F58: @FILL@\r\nX-F59: @FILL@\r\nX-F60: @FILL@\r\nX-F61: @FILL@\r\nX-F62: @FILL@\r\nX-F63: @FILL@\r\nX-F64: @FILL@\r\nX-F65: @FILL@\r\nX-F66: @FILL@\r\nX-F67: @FILL@\r\nX-F68: @FILL@\r\nX-F69: @FILL@\r\nX-Subpoena-Mark: a\r\n\r\n"
+    fill: 1000
+    answered: true
+    marks: ["a"]
+  - name: "a line with no colon after a mark"
+    request: "GET / HTTP/1.1\r\nHost: x\r\nX-Subpoena-Mark: a\r\nnocolon\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "a blank first line"
+    request: "\r\nGET / HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "two spaces in the request line"
+    request: "GET  / HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "no version"
+    request: "GET /\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "http 1.1 in lower case"
+    request: "GET / http/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "version of three digits"
+    request: "GET / HTTP/1.10\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "version 2.0"
+    request: "GET / HTTP/2.0\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "cr after the version"
+    request: "GET / HTTP/1.1\r\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "options star"
+    request: "OPTIONS * HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "relative target"
+    request: "GET x HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "empty target"
+    request: "GET  HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "absolute target"
+    request: "GET http://a.b:80/x?y=1 HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "opaque target"
+    request: "GET mailto:a@b HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "bad port"
+    request: "GET http://a.b:x/ HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad host byte"
+    request: "GET http://a{b/ HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "host escape of ascii"
+    request: "GET http://a%41b/ HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "ipv6 zone"
+    request: "GET http://[fe80::1%25en0]:80/ HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "ipv6 no bracket"
+    request: "GET http://[fe80::1/ HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad userinfo"
+    request: "GET http://a/b@c{d/ HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "userinfo with a bad byte"
+    request: "GET http://a{b@c/ HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad escape in a query is kept"
+    request: "GET /x?%zz HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "control byte in the target"
+    request: "GET /\x01 HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "connect authority"
+    request: "CONNECT a.b:443 HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "connect path"
+    request: "CONNECT /rpc HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "connect bad port"
+    request: "CONNECT a.b:x HTTP/1.1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "two hosts"
+    request: "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "equal content-lengths"
+    request: "POST / HTTP/1.1\r\nContent-Length: 0\r\nContent-Length:  0\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "empty content-length"
+    request: "POST / HTTP/1.1\r\nContent-Length:\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "content-length past 63 bits"
+    request: "POST / HTTP/1.1\r\nContent-Length: 9223372036854775808\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "content-length with a sign"
+    request: "POST / HTTP/1.1\r\nContent-Length: +1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "chunked in capitals"
+    request: "POST / HTTP/1.1\r\nTransfer-Encoding: CHUNKED\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "two transfer encodings"
+    request: "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "unknown transfer encoding on 1.0"
+    request: "POST / HTTP/1.0\r\nTransfer-Encoding: zz\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "bad trailer when chunked"
+    request: "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTrailer: x, content-length\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad trailer with no chunking"
+    request: "POST / HTTP/1.1\r\nTrailer: content-length\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: true
+    marks: ["a"]
+  - name: "colon only in the fold"
+    request: "GET / HTTP/1.1\r\nnocolon\r\n x: y\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "value with a tab"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark: a\tb\r\n\r\n"
+    answered: true
+    marks: []
+  - name: "del in a value"
+    request: "GET / HTTP/1.1\r\nX-O: a\x7f\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "name of non-ascii"
+    request: "GET / HTTP/1.1\r\nX\xc3\xa9: 1\r\nX-Subpoena-Mark: a\r\n\r\n"
+    answered: false
+    marks: []
+  - name: "bad utf-8 mark"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark: \xff\r\n\r\n"
+    answered: true
+    marks: []
+  - name: "next line byte in a value"
+    request: "GET / HTTP/1.1\r\nX-Subpoena-Mark: a\x85\r\n\r\n"
+    answered: true
+    marks: []
