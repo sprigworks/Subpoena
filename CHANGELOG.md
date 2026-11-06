@@ -14,8 +14,10 @@
   failure reads crashed, and the run fails.
 - **A quiet first `m.Run` no longer reads survived.** A `TestMain` that threw away a first
   `m.Run`'s output left no fail event, and under `-test.failfast` the second `m.Run` ran nothing, so
-  a mutant the suite catches read as a survivor. Every green first run now goes again without that
-  flag, where before only one with a fail event did. New cost: one more suite run per survivor.
+  a mutant the suite catches read as a survivor. A green first run with a package that has tests and
+  ran none now goes again without that flag, as one with a fail event already did. Ordinary survivors
+  take no extra run. New cost: one more suite run for each survivor of a package that never shows a
+  test on a green run, a `TestMain` that hides `m.Run`'s output and calls it again only on failure.
 - **The reruns without the mutant are no longer blind to a second `m.Run`.** They kept
   `-test.failfast`, under which a `TestMain` that calls `m.Run` again exits 0 after a real failure,
   so a test that fails with no mutant at all read as a kill, witness kills included. They now run

@@ -276,9 +276,9 @@ type Options struct {
 	RequireWitness bool
 	Target         string // directory to cross-examine, inside a Go module
 	// Timeout bounds each go command; 5 minutes if zero. A kill is a build and
-	// 1+killRepeats+killReruns test commands, one more for a green first run and
-	// for each repeat that crashed or hung, so a mutant can take that many times as
-	// long.
+	// 1+killRepeats+killReruns test commands, one more for a green first run that
+	// goes again and for each repeat that crashed or hung, so a mutant can take that
+	// many times as long.
 	Timeout time.Duration
 	Log     io.Writer // progress; io.Discard if nil
 	// EvidenceDir, if set, keeps the full go test -json output of every
@@ -295,6 +295,7 @@ type Options struct {
 	// in a per-test coverage pass after the baseline (see select.go).
 	Select   bool
 	selected map[string][]string // Mutant.Name() -> tests, when Select
+	noTests  map[string]bool     // packages the baseline showed to have no test to run
 	runs     *atomic.Int64       // numbers the evidence files
 	key      string              // a sandbox's key until runner.test gives it its own
 	run      *runner             // starts every test binary of the run
@@ -426,12 +427,14 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		return nil, err
 	}
 	var baselineErr error
-	if run, err := o.run.test(ctx, o, primary, "-json", "-count=1", pkgs); err != nil {
-		baselineErr = fmt.Errorf("cross: baseline suite is not green, cannot judge mutants: %s", baselineReason(run.raw, err))
+	baseline, err := o.run.test(ctx, o, primary, "-json", "-count=1", pkgs)
+	if err != nil {
+		baselineErr = fmt.Errorf("cross: baseline suite is not green, cannot judge mutants: %s", baselineReason(baseline.raw, err))
 	}
 	if baselineErr != nil {
 		return nil, baselineErr //subpoena:enforcement
 	}
+	o.noTests = noTestPackages(baseline.raw)
 	// go test passes a package it has no tests for, but each mutant is built
 	// first, so a fault there would come back as every mutant invalid.
 	var buildErr error
@@ -646,14 +649,15 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 	var tested testRun
 	var testErr error
 	var testArgs []string
+	var filter string
 	if err == nil {
 		// -failfast to go test would also skip each package not yet started, as
 		// soon as one failed, and which ones that is depends on the build. So go
 		// test's own is off, GOFLAGS or not, and each test binary stops by itself.
 		testArgs = []string{"-json", "-count=1", "-failfast=false"}
-		if f := runFilter(o.selected, ms); f != "" {
-			testArgs = append(testArgs, "-run", f)
-			fmt.Fprintf(o.Log, "  selected tests: %s\n", f)
+		if filter = runFilter(o.selected, ms); filter != "" {
+			testArgs = append(testArgs, "-run", filter)
+			fmt.Fprintf(o.Log, "  selected tests: %s\n", filter)
 		}
 		testArgs = append(testArgs, pkgs, "-args", "-test.failfast")
 		tested, testErr = o.run.test(ctx, o, sb, testArgs...)
@@ -677,14 +681,19 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 		if res.EvidenceFile, ferr = keepEvidence(o, ms, "", raw); ferr != nil {
 			return res, ferr
 		}
-		if err == nil { //subpoena:enforcement_guard false
-			// Green proves nothing yet. -test.failfast can be why: a TestMain that
-			// calls m.Run again gets a run of nothing, and exit 0, and a first m.Run
-			// that threw its output away leaves no fail event to say so. So every
-			// green run goes again as it would have run, on a fresh copy, as what the
-			// first run left there must not turn a survivor red. Red there still has
-			// to hold as a kill. The cost is one more test command for a survivor.
-			fmt.Fprintf(o.Log, "  green; running without -test.failfast\n")
+		again := len(failEvents(raw)) > 0 || filter == "" && len(quietPackages(raw, o.noTests)) > 0
+		if err == nil && again { //subpoena:enforcement_guard false
+			// Green with a failed test in it, or with a package that has tests and ran
+			// none. -test.failfast is why either can be: a TestMain that calls m.Run
+			// again gets a run of nothing, and exit 0, and a first m.Run that threw its
+			// output away leaves no fail event to say so. So the run goes again as it
+			// would have run, on a fresh copy, as what the first run left there must
+			// not turn a survivor red. Red there still has to hold as a kill, so printed
+			// text that made a fail event buys only this run. Any other green is a
+			// survivor. A selected run does not look for quiet packages: one with no
+			// selected test reads the same, and a mutant selection did not kill runs
+			// the whole suite next, which comes here with no filter.
+			fmt.Fprintf(o.Log, "  green with a failed test in it or a package that ran none; running without -test.failfast\n")
 			if err := sb.freshMutant(mutated); err != nil {
 				return res, err
 			}
@@ -920,6 +929,81 @@ func lastTries(args []string, raw string, first map[testID]bool) [][]string {
 		tries = append(tries, slices.Concat(only[:len(only)-1], []string{pkg}))
 	}
 	return tries
+}
+
+// noTestsLine is what package testing prints when an m.Run ran nothing at all.
+const noTestsLine = "testing: warning: no tests to run\n"
+
+// testsSeen is what a run's events say of each package that passed.
+type testsSeen struct {
+	passed bool // it has a pass event of its own: one with no test files has a skip
+	tests  bool // a Test or a Fuzz ran
+	shown  bool // m.Run's output reached go test: an Example ran, or noTestsLine
+}
+
+// packageTests reads testsSeen from raw. An Example is not a test here: package
+// testing stops Tests and Fuzz seeds under -test.failfast and runs Examples anyway,
+// so a second m.Run after a real failure can show them and nothing else.
+func packageTests(raw string) map[string]testsSeen {
+	seen := map[string]testsSeen{}
+	for _, line := range strings.Split(raw, "\n") {
+		var e struct{ Action, Package, Test, Output string }
+		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil {
+			continue
+		}
+		s := seen[e.Package]
+		switch {
+		case e.Action == "run" && exampleRE.MatchString(e.Test):
+			s.shown = true
+		case e.Action == "run":
+			s.tests = true
+		case e.Action == "output" && e.Test == "" && e.Output == noTestsLine:
+			s.shown = true
+		case e.Action == "pass" && e.Test == "":
+			s.passed = true
+		}
+		seen[e.Package] = s
+	}
+	return seen
+}
+
+// noTestPackages is the packages a green baseline shows to have no test: they
+// passed, no Test or Fuzz ran, and m.Run's output reached go test, so that is not
+// because it went elsewhere. The baseline has no -test.failfast, so a second m.Run
+// runs what a first one did. A package whose m.Run says nothing is not among them,
+// so it pays for a run it may not need. That is the side to lose on.
+func noTestPackages(raw string) map[string]bool {
+	none := map[string]bool{}
+	for pkg, s := range packageTests(raw) {
+		if s.passed && !s.tests && s.shown {
+			none[pkg] = true
+		}
+	}
+	return none
+}
+
+// quietPackages lists the packages of a green run that have tests and ran none,
+// sorted. That is all a kill looks like when a first m.Run's output went nowhere and
+// -test.failfast stopped the second. Any other package ran its tests where go test
+// could see them, so its green is what it says. A package with no test files has a
+// skip and no pass, and noTests is the baseline's packages with no test: their events
+// are the same as this signature's. A TestMain that prints a framed run line can hide
+// the signature, as it can print a test's whole run: see docs/architecture.md.
+//
+//subpoena:enforcement_point
+func quietPackages(raw string, noTests map[string]bool) []string {
+	var quiet []string
+	for pkg, s := range packageTests(raw) {
+		if s.tests || !s.passed {
+			continue
+		}
+		if noTests[pkg] {
+			continue //subpoena:enforcement
+		}
+		quiet = append(quiet, pkg)
+	}
+	slices.Sort(quiet)
+	return quiet
 }
 
 // passAfterFail reports whether a package with a failed test also said PASS.

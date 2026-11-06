@@ -224,10 +224,20 @@ skips packages not yet started as soon as one fails. So a package can hang on th
 after another has caught it: a run that timed out with a clean failure in a package that
 finished goes to the repeat, and with none it is a timeout. That flag can also turn a
 `TestMain` that calls `m.Run` a second time green, since the second run skips every test, and a
-first `m.Run` whose output was thrown away leaves no `fail` event to show it. So every green run
-goes again without the flag, on a fresh copy: a mutant reads survived only if that run is green too. This costs a
-survivor one more suite run, and gives a flake one more first try at a kill, which still has to
-fail again in the same test and pass three times without the mutant. A red one can also say `PASS` after
+first `m.Run` whose output was thrown away leaves no `fail` event to show it. What that leaves is a
+package with tests in which no `Test` or `Fuzz` ran: no `run` event but an `Example`'s, as package testing
+stops the first two under that flag and runs Examples anyway. So a green run with such a package goes again
+without the flag, on a fresh copy, as does one with a `fail` event in it, and the mutant reads survived
+only if that run is green too. Any other green run is a survivor at once, so a flake gets no extra first try there.
+A package with no test files has a `skip`, not a `pass`. A package with test files and no tests (helpers,
+benchmarks, a bare `TestMain`) gives the same events as a quiet one, so the baseline tells them apart: there
+`m.Run` runs everything, and a package that passed with no `Test` or `Fuzz` run and showed `m.Run`'s output, through an `Example`
+or package testing's `no tests to run` line, has none. A selected run does not look at all, since a package with no selected test reads the
+same, and the whole-suite run after it does. What is left pays: a `TestMain` that hides `m.Run`'s output
+and calls it again only on failure shows no test on any green run, so each of its package's survivors takes one more suite run,
+and a flake gets that one first try, which still has to fail again in the same test and pass three times
+without the mutant. A framed `=== RUN` line printed by a `TestMain` can hide the signature, as printed text can
+anything here, and that reads survived, which fails the run. A red one can also say `PASS` after
 a real failure, so when that leaves no failed test, the failed tests come from a run without the
 flag. A suite whose second `m.Run` truly passes says `PASS` there too, and that kill reads
 unconfirmed. Two more shapes of two `m.Run` calls lose a real kill the same way, and fail the run.
@@ -279,7 +289,9 @@ run's full `go test -json` output, killed ones included. `-j N` runs N single
 mutants at once, each in its own copy of the module (group runs stay
 sequential). On cross-self on 2026-10-27 it cut 490 s to 135 s at `-j 8` with
 the same verdicts. Those times are out of date and cross-self has not been timed
-since: a kill then took one suite run and now takes five, a survivor two. A kill takes one more if
+since: a kill then took one suite run and now takes five, a survivor one, or two under `-select`,
+where its selected run comes before the whole suite. A survivor takes one more if a package of its run
+ran no test (see above). A kill takes one more if
 its first run was green or said `PASS` after a failure, and one more for the first run's command
 plus up to two per package with a failed test if its repeat crashes or hangs, with the repeat a
 whole suite, and `pkg/witness` has gone from
