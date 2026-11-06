@@ -99,20 +99,22 @@ if that test passes without it. A green suite means the tests
 cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
 mutant that does not compile is "invalid", never "killed". Every run starts from
-a fresh copy, so no test sees what another case left there. After a kill, its
-failed tests run again without the mutant, three times, each on a fresh copy.
-The baseline, the mutant run and the reruns all start their test binaries the
-same way, so a test red only under the way it was started is red on the baseline
-too. If one fails, or does not finish, the verdict is
+a fresh copy, so no test sees what another case left there. After a kill, the
+mutant run's whole test command runs again: once with the mutant in place, then
+three times without it, each on a fresh copy. The whole command, because a
+failure can need the tests beside it. The baseline, the mutant run and the reruns
+all start their test binaries the same way, so a test red only under the way it
+was started is red on the baseline too. If the run with the mutant passes, or one
+without it fails or does not finish, the verdict is
 `enforcement-mutant-unconfirmed` and the run fails: something other than the
-mutant turned it red, such as state outside the copy that persists. State that
-clears itself before the reruns passes them. The same goes for a test
-that fails alone because it needs the tests before it. A flake needs more than
-one rerun to show: a test that fails half the time passes one rerun half the
-time. Three reruns leave such a test a one-in-eight way past, and a test that
-fails one run in fifty passes them nearly always, so a kill on a flaky suite
-stays a weak claim. Cross narrows this and does not close it: fix the flake, and
-confirm a surprising kill by rerunning cross. A removed `return`
+mutant turned it red, such as a flake or state outside the copy that persists. A
+real kill that needs a clean copy can come back unconfirmed too, since the repeat
+reuses the mutant's copy; that costs a kill, and a false one costs more. State
+that clears itself before the reruns passes them. A flake must fail twice in a row
+with the mutant, then pass three times without it: a test that fails one run in
+twenty-five does that on about one mutant in seven hundred, and a test that fails
+half the time on about one in thirty-two. Cross narrows this and does not close it: fix
+the flake, and confirm a surprising kill by rerunning cross. A removed `return`
 the function cannot end without gets a return of zero values in its place only
 when that turns an error to nil and changes nothing else; any other such return
 stays invalid, since zero can be the refusal itself (`return p.Check(u)`). That

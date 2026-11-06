@@ -87,7 +87,7 @@ func main() {
 				fmt.Println("  if the line above is a t.Log, not an assertion, move it after the witness check: go test prints both alike")
 			}
 		case cross.Unconfirmed:
-			fmt.Printf("  suite went red, but these tests also failed without the mutant: %s\n", strings.Join(r.Failing, ", "))
+			fmt.Printf("  suite went red, but it did not hold (green again with the mutant, or red without it): %s\n", strings.Join(r.Failing, ", "))
 			fmt.Println("  leftover state outside the copy, or a flake: the red run proves nothing. Fix the test:")
 			fmt.Println("  " + strings.ReplaceAll(r.Output, "\n", "\n  "))
 		case cross.Survived:

@@ -63,11 +63,17 @@ const (
 	MarkerGuard            = "subpoena:enforcement_guard"
 )
 
-// killReruns is how many times a kill's failed tests run again without the
+// killRepeats is how many times a kill's test command runs again with the
+// mutant still in place. A red run the mutant caused is red again; a rare flake
+// is not, and this is what stops one: runs without the mutant pass a flake that
+// fails one time in twenty-five nearly every time.
+var killRepeats = 1
+
+// killReruns is how many times a kill's test command runs again without the
 // mutant, each on a fresh copy. One rerun catches a test that fails half the
-// time only half the time, so it is more than one. A test that fails rarely
-// will still pass them: cross's reruns narrow a flake's way to a kill, and do
-// not close it. See docs/architecture.md.
+// time only half the time, so it is more than one. Together with killRepeats
+// these narrow a flake's way to a kill, and do not close it. See
+// docs/architecture.md.
 var killReruns = 3
 
 // maxGroup bounds a layer group, so the search for masking layers (one run per
@@ -89,9 +95,9 @@ const (
 	// TimedOut means the suite did not finish within Options.Timeout. A hang
 	// may be the mutant's doing or the host's, so it is not a kill.
 	TimedOut Outcome = "enforcement-mutant-timeout"
-	// Unconfirmed means the suite went red on an assertion, but a test that
-	// failed also failed in a rerun without the mutant: leftover state or a
-	// flake, so the mutant may have had no part in it. A kill it is not.
+	// Unconfirmed means the suite went red on an assertion, but it passed when
+	// run again with the mutant, or failed in a rerun without it: leftover state
+	// or a flake, so the mutant may have had no part in it. A kill it is not.
 	Unconfirmed Outcome = "enforcement-mutant-unconfirmed"
 	// Crashed means the suite went red with no clean failure message: a test
 	// binary died (panic, runtime fatal error, os.Exit), or a test failed
@@ -248,7 +254,8 @@ type Options struct {
 	RequireWitness bool
 	Target         string // directory to cross-examine, inside a Go module
 	// Timeout bounds each go command; 5 minutes if zero. A kill is a build and
-	// 1+killReruns test commands, so a mutant can take that many times as long.
+	// 1+killRepeats+killReruns test commands, so a mutant can take that many
+	// times as long.
 	Timeout time.Duration
 	Log     io.Writer // progress; io.Discard if nil
 	// EvidenceDir, if set, keeps the full go test -json output of every
@@ -514,7 +521,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 }
 
 // runCase applies the mutants together to a fresh copy of the snapshot, builds
-// and runs the suite, and runs the failed tests of a kill again without the
+// and runs the suite, and runs a kill's test command again with and without the
 // mutants. The first mutant is the Result's Mutant; the rest are With. A
 // canceled ctx is an error, never a verdict: the go command it stopped proves
 // nothing about the mutant.
@@ -608,13 +615,15 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 	}
 	var testOut string
 	var testErr error
+	var testArgs []string
 	if err == nil {
-		args := []string{"-json", "-count=1", "-failfast"}
+		testArgs = []string{"-json", "-count=1", "-failfast"}
 		if f := runFilter(o.selected, ms); f != "" {
-			args = append(args, "-run", f)
+			testArgs = append(testArgs, "-run", f)
 			fmt.Fprintf(o.Log, "  selected tests: %s\n", f)
 		}
-		testOut, testErr = o.run.test(ctx, o, sb, append(args, pkgs)...)
+		testArgs = append(testArgs, pkgs)
+		testOut, testErr = o.run.test(ctx, o, sb, testArgs...)
 	}
 	if ctx.Err() != nil {
 		return res, fmt.Errorf("cross: run stopped: %w", ctx.Err()) //subpoena:enforcement
@@ -657,7 +666,7 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 					if o.RequireWitness && ev != EvidenceWitness {
 						res.Outcome = KilledBySelfReport //subpoena:enforcement
 					}
-					if err := confirmKill(ctx, o, sb, raw, &res); err != nil {
+					if err := confirmKill(ctx, o, sb, testArgs, &res); err != nil {
 						return res, err
 					}
 				}
@@ -673,25 +682,33 @@ func runCase(ctx context.Context, o Options, sb sandbox, pkgs string, ms []Mutan
 	return res, nil
 }
 
-// confirmKill runs the tests that failed in raw again without the mutant,
-// killReruns times, each on a fresh copy. A test that fails there too, or does
-// not finish, was red for a reason other than the mutant, or may have been.
-// That is state outside the copy, or a flake, and a kill needs neither. A test
-// that needs the tests before it to pass alone comes back the same way: that
-// costs a real kill, and a false one costs more.
+// confirmKill runs the mutant run's own test command again, whole, since a
+// failure can need the tests beside it. First with the mutant in place,
+// killRepeats times: a run that passes means the red was not the mutant's, as a
+// flake's is not. Then without it, killReruns times, each on a fresh copy: a run
+// that fails or does not finish was red for a reason other than the mutant, or
+// may have been. That is state outside the copy, or a flake, and a kill needs
+// neither.
 //
 //subpoena:enforcement_point
-func confirmKill(ctx context.Context, o Options, sb sandbox, raw string, res *Result) error {
-	names, pkgs := failedTests(raw)
-	for i := range names {
-		names[i] = regexp.QuoteMeta(names[i])
+func confirmKill(ctx context.Context, o Options, sb sandbox, args []string, res *Result) error {
+	for n := range killRepeats {
+		fmt.Fprintf(o.Log, "  repeat %d of %d with the mutant\n", n+1, killRepeats)
+		out, err := o.run.test(ctx, o, sb, args...)
+		if ctx.Err() != nil {
+			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
+		}
+		if err == nil {
+			res.Output = "the suite passed when run again with the mutant\n" + tail(testText(out), 20)
+			res.Outcome = Unconfirmed //subpoena:enforcement
+			return nil
+		}
 	}
-	args := append([]string{"-json", "-count=1", "-run", "^(" + strings.Join(names, "|") + ")$"}, pkgs...)
 	for n := range killReruns {
 		if err := sb.fresh(); err != nil {
 			return err
 		}
-		fmt.Fprintf(o.Log, "  rerun %d of %d without the mutant: %s\n", n+1, killReruns, strings.Join(names, " "))
+		fmt.Fprintf(o.Log, "  rerun %d of %d without the mutant\n", n+1, killReruns)
 		out, err := o.run.test(ctx, o, sb, args...)
 		if ctx.Err() != nil {
 			return fmt.Errorf("cross: run stopped: %w", ctx.Err())
@@ -703,24 +720,6 @@ func confirmKill(ctx context.Context, o Options, sb sandbox, raw string, res *Re
 		}
 	}
 	return nil
-}
-
-// failedTests lists the top-level tests that failed in raw, and their packages.
-func failedTests(raw string) (names, pkgs []string) {
-	for _, line := range strings.Split(raw, "\n") {
-		var e struct{ Action, Package, Test string }
-		if !strings.HasPrefix(line, "{") || json.Unmarshal([]byte(line), &e) != nil || e.Action != "fail" || e.Test == "" {
-			continue
-		}
-		name, _, _ := strings.Cut(e.Test, "/")
-		if !slices.Contains(names, name) {
-			names = append(names, name)
-		}
-		if !slices.Contains(pkgs, e.Package) {
-			pkgs = append(pkgs, e.Package)
-		}
-	}
-	return names, pkgs
 }
 
 // testText turns go test -json output back into the plain text go test

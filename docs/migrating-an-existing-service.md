@@ -327,8 +327,8 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 
 Cross-examination is the check that matters most. It requires a green baseline, removes
 each marked enforcement statement in a temporary copy, and runs the tests. A
-suite red on an assertion is `enforcement-mutant-killed`, once the tests that
-failed pass again without the mutant; if one fails there too it is
+suite red on an assertion is `enforcement-mutant-killed`, once it is red again
+with the mutant and green without it; if not, it is
 `enforcement-mutant-unconfirmed`, which fails the run: fix the flake or the state
 it left. A kill means a test noticed, not that a test examined the refusal: an
 allowed-path test can kill a removal that stops the allowed path too, so read the

@@ -81,13 +81,13 @@ FLAKE = '''
         except FileNotFoundError:
             n = 0
         open(path, "a").write("x")
-        assert n + 1 not in (2, 4), "upstream was slow"
+        assert n + 1 not in (2, 3, 5), "upstream was slow"
 '''
 
 
 @pytest.mark.parametrize("reruns,want", [(1, KILLED), (3, UNCONFIRMED)])
 def test_a_flake_needs_more_than_one_rerun(tmp_path, monkeypatch, reruns, want):
-    # Fails on its second and fourth runs: the mutant run and the second rerun.
+    # Fails on runs 2, 3 and 5: the mutant run, its repeat and the second rerun.
     monkeypatch.setattr(cross, "_RERUNS", reruns, raising=False)
     (tmp_path / "state").mkdir()
     path = str(tmp_path / "state" / "count")
@@ -405,8 +405,8 @@ def test_a_sighting_ahead_of_bad_health_stays_witness_evidence(tmp_path):
 # --- -select keeps an unconfirmed (review 3: p05) ---
 
 def test_select_does_not_replace_unconfirmed_with_a_kill(tmp_path):
-    # Runs: baseline, coverage, subset, mutant (red), rerun (red), then a
-    # whole-suite retry would be red too, with a green rerun after it.
+    # Runs: baseline, coverage, subset, mutant (red), repeat (red), rerun (red),
+    # then a whole-suite retry would be red too, with a green rerun after it.
     count = tmp_path / "count"
     r = outcome(tmp_path / "p", {"app.py": BODY, "test_app.py": f"""
         import os
@@ -415,7 +415,7 @@ def test_select_does_not_replace_unconfirmed_with_a_kill(tmp_path):
             p = {str(count)!r}
             n = (len(open(p).read()) if os.path.exists(p) else 0) + 1
             open(p, "w").write("x" * n)
-            assert n not in (4, 5, 6), f"flake on run {{n}}"
+            assert n not in (4, 5, 6, 7), f"flake on run {{n}}"
             serve("mallory")
             assert serve("ann").status == 200
     """}, select=True)
@@ -488,7 +488,7 @@ def test_a_test_cannot_read_that_it_is_a_mutant_run(tmp_path):
     assert r.outcome == SURVIVED
 
 
-def test_reruns_under_xdist_run_the_failed_tests_only(tmp_path):
+def test_reruns_run_the_whole_suite_under_xdist_too(tmp_path):
     count = tmp_path / "count"
     r = outcome(tmp_path / "p", {"app.py": BODY, "test_app.py": f"""
         from app import serve
@@ -499,4 +499,60 @@ def test_reruns_under_xdist_run_the_failed_tests_only(tmp_path):
                 f.write("x")
     """}, "-n", "2")
     assert r.outcome == KILLED
-    assert len(count.read_text()) == 2  # baseline and mutant, not the rerun
+    assert len(count.read_text()) == 4  # baseline, mutant, its repeat, the rerun
+
+
+# --- review 4, finding 2: a failure can need a sibling test ---
+
+def test_a_failure_that_needs_a_sibling_is_no_kill(tmp_path):
+    mark = tmp_path / "mark"
+    r = outcome(tmp_path / "p", {"auth.py": GATE, "test_a.py": f"""
+        import os
+        import auth
+        stale = []
+        def test_a_reads_state():
+            stale.append(os.path.exists({str(mark)!r}))
+            open({str(mark)!r}, "w").close()
+        def test_b_unrelated():
+            assert not stale[0], "stale state from a previous run"
+    """}, "-p", "no:randomly")
+    assert r.outcome == UNCONFIRMED
+
+
+# --- a rare flake passes every run without the mutant (T34) ---
+
+def test_a_kill_must_repeat_with_the_mutant(tmp_path):
+    count = tmp_path / "count"
+    r = outcome(tmp_path / "p", {"auth.py": GATE, "test_a.py": f"""
+        import os
+        import auth
+        def test_flaky():
+            p = {str(count)!r}
+            n = (len(open(p).read()) if os.path.exists(p) else 0) + 1
+            open(p, "w").write("x" * n)
+            assert n != 2, "upstream was slow"
+    """})
+    assert r.outcome == UNCONFIRMED and "again with the mutant" in r.output
+
+
+# --- review 4, finding 1: a doctest's path is a production file ---
+
+def test_a_doctest_makes_no_production_file_a_test_file(tmp_path):
+    r = outcome(tmp_path / "p", {"app.py": """
+        def check(user):
+            \'\'\'
+            >>> check("ann")
+            'ok'
+            \'\'\'
+            denied = False
+            if user == "mallory":
+                denied = True  # subpoena:enforcement
+            assert denied or user != "mallory"
+            return "ok"
+    """.replace("def check", "# subpoena:enforcement_point\n        def check"),
+        "test_app.py": """
+        from app import check
+        def test_runs():
+            check("mallory")
+    """}, "--doctest-modules")
+    assert r.outcome == "enforcement-mutant-crashed"

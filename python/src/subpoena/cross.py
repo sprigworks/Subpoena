@@ -25,10 +25,11 @@ that can carry the allow decision, so it is invalid. Mark the guard. Verdicts:
   A kill says a test noticed, not that it examined the refusal: a removal that
   stops the allowed path too is killed by an allowed-path test alone
   (docs/architecture.md, "What a kill does not prove").
-- unconfirmed: a kill, but a test that failed also failed in one of _RERUNS
-  reruns without the mutant, each on a fresh copy: state outside the copy, or a
-  flake. A rare flake can pass them all, and state that clears itself is gone
-  by the first rerun. -select does not retry it. The run fails.
+- unconfirmed: a kill, but the suite passed in one of _REPEATS runs with the
+  mutant, or failed in one of _RERUNS reruns without it, each on a fresh copy:
+  state outside the copy, or a flake. A flake can still pass them all, and state
+  that clears itself is gone by the first rerun. -select does not retry it. The
+  run fails.
 - survived: the suite stayed green. The run fails.
 - crashed: the suite went red only by another exception, or the test process
   died. A crash is not evidence that the enforcement is tested; the run fails.
@@ -85,7 +86,12 @@ INVALID = "enforcement-mutant-invalid"
 TIMED_OUT = "enforcement-mutant-timeout"
 MASKED = "enforcement-layer-masked"
 
-# How many times a kill's failed tests run again without the mutant. One rerun
+# How many times a kill's test run repeats with the mutant in place. A red run
+# the mutant caused is red again; a rare flake is not, and runs without the
+# mutant pass one nearly every time.
+_REPEATS = 1
+
+# How many times a kill's test run happens again without the mutant. One rerun
 # catches a test that fails half the time only half the time.
 _RERUNS = 3
 
@@ -754,14 +760,22 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                 if require_witness and outcome == KILLED and evidence != "witness":
                     outcome = KILLED_BY_SELF_REPORT
                 if outcome in {KILLED, KILLED_BY_SELF_REPORT}:
-                    # Red for a reason other than the mutant, or it may have
-                    # been. A test that needs the tests before it comes back
-                    # the same way: that costs a real kill, a false one more.
-                    for _ in range(_RERUNS):
-                        code, out, records, _ = baseline(sorted(set(failing)), label="confirm")
-                        if not _clean(code, records):
+                    # The mutant run's own tests, whole, since a failure can
+                    # need the tests beside it. Green with the mutant: the red
+                    # was not the mutant's. Red without it: red for another
+                    # reason, or it may have been.
+                    for _ in range(_REPEATS):
+                        code, out, records, _ = suite(copy, selected=selected, members=members, label="repeat")
+                        if _clean(code, records):
                             outcome = UNCONFIRMED
+                            out = "the suite passed when run again with the mutant\n" + out
                             break
+                    else:
+                        for _ in range(_RERUNS):
+                            code, out, records, _ = baseline(selected, label="confirm")
+                            if not _clean(code, records):
+                                outcome = UNCONFIRMED
+                                break
                 return Result(members[0], outcome, failing, evidence, first,
                               "" if outcome == KILLED else _tail(out, 20),
                               with_mutants=list(members[1:]), selected=list(selected or []),
@@ -773,8 +787,8 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
             i, m = item
             tests = selected_tests.get(i)
             result = case([m], tests)
-            # An unconfirmed is a test seen failing without the mutant, and no
-            # later run takes that back: a retry would give a flake a second way
+            # An unconfirmed is a red run that did not hold, and no later run
+            # takes that back: a retry would give a flake a second way
             # to a kill.
             if tests and result.outcome not in {KILLED, UNCONFIRMED}:
                 result = case([m])
@@ -857,7 +871,7 @@ _EXPLAIN = {
     KILLED_BY_SELF_REPORT: "require-witness: first failure was not independent witness evidence",
     MASKED: "layer is masked by other surviving layers; requires a reviewed cross-masked.txt entry",
     SURVIVED: "suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced",
-    UNCONFIRMED: "suite went red, but a failed test also failed without the mutant: leftover state outside "
+    UNCONFIRMED: "suite went red, but it did not hold (green again with the mutant, or red without it): leftover state outside "
                  "the copy, or a flake. The red run proves nothing; fix the test:",
     CRASHED: "suite went red only by a crash (an exception other than an assertion, or the process died); "
              "a crash is not a kill:",

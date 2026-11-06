@@ -198,9 +198,10 @@ run. Never add a group or acceptance entry to hide a testable survivor. Keep
 release checks at `-j 1`, or confirm parallel kills there: contention can alter
 timing-sensitive tests. `--timeout` remains the per-run timeout in seconds.
 
-A kill's failed tests run three more times without the mutant, each on a fresh
-copy. One that fails is `enforcement-mutant-unconfirmed`, which fails the run,
-and `-select` does not retry it on the whole suite.
+A kill's tests run again as a whole, once with the mutant and three times without
+it, each of those on a fresh copy. A pass with the mutant or a failure without it
+is `enforcement-mutant-unconfirmed`, which fails the run, and `-select` does not
+retry it on the whole suite.
 
 `--require-witness` accepts a mutant kill only when the first failure is a
 `harness.WitnessFailure`: the harness's own witness checks raise it, and a test

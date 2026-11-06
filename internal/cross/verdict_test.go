@@ -345,8 +345,9 @@ func TestFirstRunOnly(t *testing.T) {
 }
 
 // A flake can pass one rerun, so a kill takes killReruns of them (repro
-// e5-flake, made certain: this test fails on its second and fourth runs, which
-// are the mutant run and the second rerun). With one rerun it comes back a kill.
+// e5-flake, made certain: this test fails on its second, third and fifth runs,
+// which are the mutant run, its repeat and the second rerun). With one rerun it
+// comes back a kill.
 func TestAFlakeNeedsMoreThanOneRerun(t *testing.T) {
 	count := filepath.Join(t.TempDir(), "count")
 	test := `package mini
@@ -361,7 +362,7 @@ func TestFlaky(t *testing.T) {
 	b, _ := os.ReadFile(count)
 	b = append(b, 'x')
 	os.WriteFile(count, b, 0o644)
-	if len(b) == 2 || len(b) == 4 {
+	if len(b) == 2 || len(b) == 3 || len(b) == 5 {
 		t.Fatal("upstream was slow")
 	}
 }
@@ -408,19 +409,70 @@ func TestFirstRunOnly(t *testing.T) {
 	}
 }
 
-// A rerun's names come from the events, top-level names only, since -run reads
-// a slash as a subtest level; a package with no failed test is not rerun.
-func TestFailedTestsNamesWhatToRerun(t *testing.T) {
-	names, pkgs := failedTests(strings.Join([]string{
-		`{"Action":"fail","Package":"p","Test":"TestA/sub"}`,
-		`{"Action":"fail","Package":"p","Test":"TestA"}`,
-		`{"Action":"pass","Package":"p","Test":"TestB"}`,
-		`{"Action":"fail","Package":"p"}`,
-		`{"Action":"fail","Package":"q"}`,
-		`{"Action":"fail","Package":"r","Test":"TestC"}`,
-	}, "\n"))
-	if strings.Join(names, " ") != "TestA TestC" || strings.Join(pkgs, " ") != "p r" {
-		t.Fatalf("got %v %v", names, pkgs)
+// The rerun is the mutant run's whole command: a failure that needs a sibling
+// test comes back without the mutant only if the sibling runs too (Review 4,
+// finding 2, repro r1sibling).
+func TestAFailureThatNeedsASiblingIsNoKill(t *testing.T) {
+	mark := filepath.Join(t.TempDir(), "mark")
+	test := `package mini
+
+import (
+	"os"
+	"testing"
+)
+
+var stale bool
+
+func TestAReadsState(t *testing.T) {
+	const mark = "` + mark + `"
+	_, err := os.Stat(mark)
+	stale = err == nil
+	os.WriteFile(mark, nil, 0o644)
+}
+
+func TestBUnrelated(t *testing.T) {
+	if stale {
+		t.Fatal("stale state from a previous run")
+	}
+}
+`
+	rep, err := run(t, module(t, map[string]string{"gate.go": gateGo, "gate_test.go": test}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Outcome != Unconfirmed || !strings.Contains(r.Output, "stale state") {
+		t.Fatalf("want unconfirmed, got %s %q\n%s", r.Outcome, r.FirstFailure, r.Output)
+	}
+}
+
+// A rare flake passes every run without the mutant, so those cannot catch it.
+// It fails only on the mutant run here, the shape of go-kratos/gateway's
+// TestRetryBreaker: red once with the mutant, then green with it.
+func TestAKillMustRepeatWithTheMutant(t *testing.T) {
+	count := filepath.Join(t.TempDir(), "count")
+	test := `package mini
+
+import (
+	"os"
+	"testing"
+)
+
+func TestFlaky(t *testing.T) {
+	const count = "` + count + `"
+	b, _ := os.ReadFile(count)
+	b = append(b, 'x')
+	os.WriteFile(count, b, 0o644)
+	if len(b) == 2 {
+		t.Fatal("upstream was slow")
+	}
+}
+`
+	rep, err := run(t, module(t, map[string]string{"gate.go": gateGo, "gate_test.go": test}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rep.Results[0]; r.Outcome != Unconfirmed || !strings.Contains(r.Output, "again with the mutant") {
+		t.Fatalf("want unconfirmed, got %s %q\n%s", r.Outcome, r.FirstFailure, r.Output)
 	}
 }
 

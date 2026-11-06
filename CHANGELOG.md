@@ -49,12 +49,16 @@
 - **A kill needs its tests to pass without the mutant.** A suite that went red
   for any reason was a kill: a file a test left in the shared copy, a marker
   outside it, a flake, with the enforcement never called. Each Go case now gets
-  a fresh copy, as Python's did, and in both languages a kill's failed tests run
-  three more times without the mutant, each on a fresh copy and started the same
-  way as the mutant run. One that fails is the new
+  a fresh copy, as Python's did, and in both languages a kill's whole test command
+  runs again: once with the mutant, then three times without it, each on a fresh
+  copy and started the same way as the mutant run. The whole command, so a failure
+  that needs a sibling test comes back too, and with the mutant, so a rare flake
+  does not pass: runs without the mutant alone let one through nearly every time.
+  A pass with the mutant, or a failure without it, is the new
   `enforcement-mutant-unconfirmed`, which fails the run, with or without `-select`.
-  A rare flake, or state that clears itself before the reruns, can still pass
-  them, so it stays a weak spot, stated in `docs/architecture.md`.
+  A kill now costs up to five suite runs. State that clears itself before the
+  reruns, or a flake that fails twice running, can still pass, so it stays a weak
+  spot, stated in `docs/architecture.md`.
 - **Cross reads a test binary's exit code.** A panic beside another writer's
   open line (`....panic: runtime error`) matched no crash line, so a real panic
   came back a kill about half the time. `go test -json` gives no exit code, so

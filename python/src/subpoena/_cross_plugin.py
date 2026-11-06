@@ -168,7 +168,8 @@ def pytest_collectreport(report):
 
 @pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(session, config, items):
-    _TEST_FILES.update(os.path.realpath(str(item.path)) for item in items)
+    # pytest.Function only: a doctest or a linter item has a production file's path.
+    _TEST_FILES.update(os.path.realpath(str(item.path)) for item in items if isinstance(item, pytest.Function))
     if _SELECTED is None:
         return
     available = {item.nodeid for item in items}
