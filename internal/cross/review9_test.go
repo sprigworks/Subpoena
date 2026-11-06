@@ -210,21 +210,22 @@ func TestAPassEndsATestUnlessAWitnessFailureOutlivesIt(t *testing.T) {
 		raw  string
 		want []string
 	}{
-		"pass then fail, either printed": {run + pass + boom + fail + end, nil},
-		"printed fail, real pass":        {run + fail + pass + real + end, []string{b}},
-		"printed fail, real skip":        {run + fail + event("skip", "p", a, "") + real + end, []string{b}},
-		"real pass, a later test prints": {run + pass + real + fail + end, []string{b}},
-		"a subtest starts in between":    {run + pass + event("run", "p", a+"/s", "") + event("pass", "p", a+"/s", "") + boom + fail + end, nil},
-		"another package's test starts":  {run + pass + event("run", "q", b, "") + boom + fail + end, nil},
-		"witness, printed pass first":    {run + pass + mark + fail + end, []string{a}},
-		"witness, printed pass after":    {run + mark + fail + pass + end, []string{a}},
-		"witness, printed skip first":    {run + event("skip", "p", a, "") + mark + fail + end, []string{a}},
-		"witness, another test between":  {run + pass + event("run", "p", b, "") + mark + fail + end, nil},
-		"witness, own subtest between":   {run + pass + event("run", "p", a+"/s", "") + mark + fail + end, []string{a}},
-		"witness, a test after the fail": {run + mark + fail + event("run", "p", b, "") + pass + end, []string{a}},
-		"another key's mark":             {run + pass + forged + fail + end, nil},
-		"a tag with no mark":             {run + pass + bare + fail + end, nil},
-		"a witness that never ran":       {pass + mark + fail + end, nil},
+		"pass then fail, either printed":         {run + pass + boom + fail + end, nil},
+		"printed fail, real pass":                {run + fail + pass + real + end, []string{b}},
+		"printed fail, real skip":                {run + fail + event("skip", "p", a, "") + real + end, []string{b}},
+		"real pass, a later test prints":         {run + pass + real + fail + end, []string{b}},
+		"a subtest starts in between":            {run + pass + event("run", "p", a+"/s", "") + event("pass", "p", a+"/s", "") + boom + fail + end, nil},
+		"another package's test starts":          {run + pass + event("run", "q", b, "") + boom + fail + end, nil},
+		"witness, printed pass first":            {run + pass + mark + fail + end, []string{a}},
+		"witness, printed pass after":            {run + mark + fail + pass + end, []string{a}},
+		"witness, printed skip first":            {run + event("skip", "p", a, "") + mark + fail + end, []string{a}},
+		"witness, another test between":          {run + pass + event("run", "p", b, "") + mark + fail + end, nil},
+		"witness, another package's test starts": {run + pass + event("run", "q", b, "") + mark + fail + end, []string{a}},
+		"witness, own subtest between":           {run + pass + event("run", "p", a+"/s", "") + mark + fail + end, []string{a}},
+		"witness, a test after the fail":         {run + mark + fail + event("run", "p", b, "") + pass + end, []string{a}},
+		"another key's mark":                     {run + pass + forged + fail + end, nil},
+		"a tag with no mark":                     {run + pass + bare + fail + end, nil},
+		"a witness that never ran":               {pass + mark + fail + end, nil},
 	} {
 		var got []string
 		for k := range failedTests(tc.raw, testKey) {
