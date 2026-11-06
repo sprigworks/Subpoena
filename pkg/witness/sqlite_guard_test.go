@@ -48,7 +48,14 @@ func TestAFrameWithOtherSaltsEndsTheLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if _, err := f.WriteAt([]byte{0xaa}, max(size, walHdrSize)+8); err != nil { // the first new frame's salt-1
+	at := max(size, walHdrSize) + 8 // the first new frame's salt-1
+	was := make([]byte, 1)
+	if _, err := f.ReadAt(was, at); err != nil {
+		t.Fatal(err)
+	}
+	// The salt is random: a fixed byte equals it one run in 256, and then
+	// nothing has changed. Flip the bit instead.
+	if _, err := f.WriteAt([]byte{was[0] ^ 0xff}, at); err != nil {
 		t.Fatal(err)
 	}
 	wantVerdict(t, d.Change(nil), SQLiteNoChange)
