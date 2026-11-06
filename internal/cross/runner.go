@@ -205,7 +205,7 @@ func quoteField(s string) (string, error) {
 }
 
 // test runs go test in sb under the wrapper, and adds to its output an exit
-// event for each package that failed.
+// event for each package that failed, and under RequireWitness crashEvents.
 func (r *runner) test(ctx context.Context, o Options, sb sandbox, args ...string) (string, error) {
 	record := filepath.Join(r.dir, "codes-"+strconv.FormatInt(r.n.Add(1), 10))
 	field, err := quoteField(record)
@@ -217,7 +217,11 @@ func (r *runner) test(ctx context.Context, o Options, sb sandbox, args ...string
 		value += " " + r.user
 	}
 	raw, err := goIn(ctx, o.Timeout, sb, append([]string{"test", "-exec", value}, args...)...)
-	return raw + exitEvents(record, raw, sb.dir, o.modPath), err
+	events := exitEvents(record, raw, sb.dir, o.modPath)
+	if o.RequireWitness {
+		events += crashEvents(raw)
+	}
+	return raw + events, err
 }
 
 // exitEvents gives an exit event for each package that failed in raw, a run in

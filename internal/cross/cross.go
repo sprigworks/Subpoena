@@ -1457,7 +1457,7 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 		}
 		switch e.Action {
 		case "output":
-			if crashRE.MatchString(e.Output) || ginkgoPanicRE.MatchString(e.Output) {
+			if crashLine(e.Output) {
 				crash[k] = true
 			}
 		case exitAction:
@@ -1548,6 +1548,39 @@ func readFailures(raw string) ([]failure, map[string]bool) {
 	return clean, dead
 }
 
+// crashLine reports whether an output event, ANSI colour gone, opens a crash report.
+func crashLine(output string) bool {
+	return crashRE.MatchString(output) || ginkgoPanicRE.MatchString(output)
+}
+
+// crashEvents gives an exit event of exitCrashLine for each failed package with a
+// crash line in any test's output. readFailures takes a passing test's line for a
+// log line, but a framed "=== NAME" line can put a real crash line on any test, one
+// that passed or one that will, and no reading of the output tells that from a log
+// line. RequireWitness asks for what holds against printed text, so it reads the
+// line as a crash wherever it sits. The cost: a passing test that prints such a line
+// at the start of a line, beside a witness failure in its package, reads crashed.
+// Without RequireWitness the line stays a log line. See docs/architecture.md.
+//
+//subpoena:enforcement_point
+func crashEvents(raw string) string {
+	seen := map[string]bool{}
+	for _, line := range strings.Split(raw, "\n") {
+		var e struct{ Action, Package, Output string }
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &e) == nil && e.Action == "output" {
+			seen[e.Package] = seen[e.Package] || crashLine(ansiRE.ReplaceAllString(e.Output, ""))
+		}
+	}
+	ends := endings(raw)
+	var b strings.Builder
+	for _, pkg := range slices.Sorted(maps.Keys(seen)) {
+		if seen[pkg] && ends[eventKey{pkg, ""}].failed {
+			b.WriteString(exitEvent(pkg, exitCrashLine) + "\n") //subpoena:enforcement
+		}
+	}
+	return b.String()
+}
+
 // failLine is the match of a failure message on line, nil if it holds none, and
 // whether it came after open text.
 func failLine(line string) ([]string, bool) {
@@ -1596,6 +1629,9 @@ const exitAction = "subpoena-exit"
 // wrapper's other word for a code, 1-before-testing-ended, is an exit 1 from a
 // binary that never finished testing: anything but "1" is a death.
 const exitUnknown = "unknown"
+
+// exitCrashLine is the code crashEvents gives a package, after its real one.
+const exitCrashLine = "crash-line"
 
 func exitEvent(pkg, code string) string {
 	b, _ := json.Marshal(struct{ Action, Package, Output string }{exitAction, pkg, code})
