@@ -281,11 +281,8 @@ func (s *pgSession) readable(st *statement) *statement {
 //subpoena:enforcement_point
 func (s *pgSession) parameterStatus(body []byte) error {
 	name, rest, ok := cstring(body)
-	if !ok {
-		return s.unreadableLocked("ParameterStatus without a terminator") //subpoena:enforcement
-	}
-	value, _, ok := cstring(rest)
-	if !ok {
+	value, _, ok2 := cstring(rest)
+	if !ok || !ok2 {
 		return s.unreadableLocked("ParameterStatus without a terminator") //subpoena:enforcement
 	}
 	switch name {

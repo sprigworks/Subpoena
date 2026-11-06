@@ -455,10 +455,11 @@ func TestPostgresSQLPrepareRebindsTheName(t *testing.T) {
 		w.server(frame('1'), pgReady('I'))
 		w.client(pgQuery(drop))
 		w.server(pgDone(strings.Fields(drop)[0]), pgReady('I'))
-		w.client(pgQuery("PREPARE s AS DELETE FROM a"))
+		// A SELECT's tag, so nothing but the name can give it away.
+		w.client(pgQuery("PREPARE s AS WITH d AS (DELETE FROM a RETURNING 1) SELECT 1"))
 		w.server(pgDone("PREPARE"), pgReady('I'))
 		w.client(pgBind("", "s"), pgExecute(""), pgSync())
-		w.server(frame('2'), pgDone("DELETE 1"), pgReady('I'))
+		w.server(frame('2'), pgDone("SELECT 1"), pgReady('I'))
 		found := false
 		for _, e := range w.cap.snapshot() {
 			found = found || (e.Opaque && e.Outcome == witness.OutcomeCommitted)
