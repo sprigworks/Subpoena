@@ -165,6 +165,8 @@ var alwaysMissed = []string{
 	"rows written by triggers, rules and foreign-key actions, on tables the statement does not name",
 	"rows changed by a statement that reports zero rows, such as an insert a trigger redirected",
 	"the bound values of a statement: it sees that a table was written, not with what",
+	"routines installed before the capture that read as something else: a view over a writing function, a function called as a column (o.w for w(o)), an overload of a listed function, operator or cast for other argument types",
+	"work a function on another connection committed, such as dblink inside a statement that then failed",
 }
 
 func (c *capture) coverage() witness.DBCoverage {
@@ -212,8 +214,16 @@ func (c *capture) coverage() witness.DBCoverage {
 type txLog struct {
 	cap        *capture
 	conn       int
-	pending    []witness.RowEvent
+	pending    []pendingRow
 	savepoints []savepoint
+}
+
+// pendingRow is a write waiting for its transaction. autonomous marks a routine
+// that ran where it could commit by itself: the end of the transaction around it
+// does not decide what it did.
+type pendingRow struct {
+	witness.RowEvent
+	autonomous bool
 }
 
 type savepoint struct {
@@ -236,12 +246,33 @@ func (t *txLog) done(st *statement, rows int64, o witness.Outcome) {
 
 // add holds a write the server has done, until its transaction ends.
 func (t *txLog) add(st *statement, rows int64) {
-	t.pending = append(t.pending, t.event(st, rows, witness.OutcomeUnknown))
+	t.pending = append(t.pending, pendingRow{RowEvent: t.event(st, rows, witness.OutcomeUnknown)})
 }
 
+// addAutonomous holds a routine that may have committed by itself.
+func (t *txLog) addAutonomous(st *statement) {
+	t.pending = append(t.pending, pendingRow{RowEvent: t.event(st, witness.RowsUnknown, witness.OutcomeUnknown), autonomous: true})
+}
+
+// unknown records a statement that ended in failure after it could have committed
+// work of its own. Neither "failed" nor "committed" would be proof; the capture
+// cannot certify absence.
+//
+//subpoena:enforcement_point
+func (t *txLog) unknown(st *statement) {
+	t.cap.fault("connection %d: %s failed where it could have committed part of its work", t.conn, st.verb) //subpoena:enforcement
+	t.done(st, witness.RowsUnknown, witness.OutcomeUnknown)
+}
+
+//subpoena:enforcement_point
 func (t *txLog) settle(from int, o witness.Outcome) {
-	for _, e := range t.pending[from:] {
+	for _, p := range t.pending[from:] {
+		e := p.RowEvent
 		e.Outcome = o
+		if p.autonomous && o == witness.OutcomeRolledBack {
+			e.Outcome = witness.OutcomeUnknown //subpoena:enforcement
+			t.cap.fault("connection %d: %s was rolled back after it could have committed part of its work", t.conn, e.Verb)
+		}
 		t.cap.record(e)
 	}
 	t.pending = t.pending[:from]

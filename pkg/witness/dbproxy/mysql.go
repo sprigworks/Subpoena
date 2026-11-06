@@ -27,6 +27,7 @@ const (
 	myStatusInTrans      = 0x0001
 	myStatusMoreResults  = 0x0008
 	myStatusCursorExists = 0x0040
+	myStatusNoBackslash  = 0x0200
 
 	myMaxPacket = 0xffffff
 )
@@ -110,8 +111,9 @@ type mySession struct {
 	status     uint16
 	blind      bool
 	terminated bool
-	infile     bool // the client is sending a LOAD DATA LOCAL file
-	resetting  bool // COM_CHANGE_USER is re-authenticating
+	taint      string // why no statement on this connection can be read any more
+	infile     bool   // the client is sending a LOAD DATA LOCAL file
+	resetting  bool   // COM_CHANGE_USER is re-authenticating
 	queue      []*myItem
 	prepared   map[uint32]*statement
 
@@ -124,6 +126,63 @@ type mySession struct {
 func newMySQLSession(c *capture, id int) *mySession {
 	return &mySession{cap: c, id: id, tx: txLog{cap: c, conn: id}, prepared: map[uint32]*statement{}}
 }
+
+// tainted marks the connection as one whose statements can't be read, for good,
+// as pgSession's.
+//
+//subpoena:enforcement_point
+func (s *mySession) tainted(why string) {
+	if s.taint == "" {
+		s.taint = why //subpoena:enforcement
+	}
+}
+
+// readable is st as far as the session's state allows, asked at the reply: MySQL
+// lexes each statement of a multi-statement text only when it reaches it.
+//
+//subpoena:enforcement_point
+func (s *mySession) readable(st *statement) *statement {
+	if s.taint != "" && (st.class == classRead || st.class == classWrite) {
+		return st.opaqued("the session cannot be read: %s", s.taint) //subpoena:enforcement
+	}
+	return st
+}
+
+// noteStatus reads the one lexing setting the server reports.
+//
+//subpoena:enforcement_point
+func (s *mySession) noteStatus(status uint16) {
+	if status&myStatusNoBackslash != 0 {
+		s.tainted("NO_BACKSLASH_ESCAPES is on") //subpoena:enforcement
+	}
+}
+
+// failed applies an ERR to the statement it ends. ERR carries no status flags. A
+// routine that failed may have committed part of its work, in or out of a
+// transaction, and a statement that commits implicitly did so before it failed.
+//
+//subpoena:enforcement_point
+func (s *mySession) failed(st *statement) {
+	st = s.readable(st)
+	if st.mayCommit() {
+		s.tx.commit()
+		s.tx.unknown(st) //subpoena:enforcement
+		return
+	}
+	if myImplicitCommit[st.verb] {
+		s.tx.commit() //subpoena:enforcement
+	}
+	s.tx.done(st, witness.RowsUnknown, witness.OutcomeFailed)
+}
+
+// myImplicitCommit are the known verbs that commit the open transaction before
+// they run, so before they can fail.
+var myImplicitCommit = wordSet("CREATE ALTER DROP TRUNCATE")
+
+// myAsciiTrailCollations are the handshake's collation ids of big5, sjis, gbk,
+// cp932 and gb18030, whose multibyte characters can end in a backslash.
+var myAsciiTrailCollations = map[byte]bool{1: true, 84: true, 13: true, 88: true, 28: true, 87: true, 95: true,
+	96: true, 248: true, 249: true, 250: true}
 
 // unreadableLocked faults the connection and stops reading it, as pgSession's.
 //
@@ -225,6 +284,9 @@ func (s *mySession) handshakeResponse(p []byte) error {
 		return s.unreadableLocked("the client does not speak protocol 4.1") //subpoena:enforcement
 	}
 	s.caps = caps & s.serverCaps
+	if len(p) > 8 && myAsciiTrailCollations[p[8]] {
+		s.tainted("the client charset can hide quotes in multibyte characters") //subpoena:enforcement
+	}
 	s.phase = phaseAuth
 	return nil
 }
@@ -289,6 +351,7 @@ func (s *mySession) command(p []byte, cut bool) error {
 		s.push(&myItem{kind: myResetting})
 	case comChangeUser:
 		s.phase, s.resetting = phaseAuth, true
+		s.tainted("COM_CHANGE_USER can set a charset") //subpoena:enforcement
 	case comStmtLong:
 	case comQuery:
 		sql, ok := s.queryText(body)
@@ -298,6 +361,9 @@ func (s *mySession) command(p []byte, cut bool) error {
 		}
 		if !ok {
 			stmts = []statement{opaqueStatement("", "QUERY", "query attributes ahead of the text")} //subpoena:enforcement
+		}
+		for i := range stmts {
+			s.tainted(stmts[i].taint)
 		}
 		s.push(&myItem{stmts: stmts, text: sql})
 	case comStmtPrepare:
@@ -309,8 +375,7 @@ func (s *mySession) command(p []byte, cut bool) error {
 		id := binary.LittleEndian.Uint32(body)
 		st := s.prepared[id]
 		if st == nil {
-			o := opaqueStatement("", "EXECUTE", "ran statement %d, which the witness did not see prepared", id)
-			st = &o
+			st = unseenStatement("ran statement %d, which the witness did not see prepared", id)
 		}
 		s.push(&myItem{stmts: []statement{*st}})
 	case comStmtClose:
@@ -418,6 +483,7 @@ func (s *mySession) authReply(p []byte) error {
 		}
 		if ok, good := parseOK(p); good {
 			s.status = ok.status
+			s.noteStatus(ok.status)
 		}
 	}
 	return nil
@@ -584,6 +650,7 @@ func (s *mySession) prepareReply(it *myItem, p []byte) error {
 	columns := uint64(binary.LittleEndian.Uint16(p[5:]))
 	params := uint64(binary.LittleEndian.Uint16(p[7:]))
 	st := onePrepared(dialectMySQL, it.text)
+	s.tainted(st.taint)
 	if it.cut {
 		st = st.opaqued("too long to read") //subpoena:enforcement
 	}
@@ -616,7 +683,7 @@ func (s *mySession) firstPacket(it *myItem, p []byte) error {
 		}
 		s.resultDone(it, ok, true)
 	case p[0] == 0xff:
-		s.tx.done(it.current(), witness.RowsUnknown, witness.OutcomeFailed)
+		s.failed(it.current())
 		s.pop()
 	case p[0] == 0xfb:
 		s.infile = true
@@ -642,7 +709,7 @@ func (s *mySession) firstPacket(it *myItem, p []byte) error {
 //subpoena:enforcement_point
 func (s *mySession) columnsEnd(it *myItem, p []byte) error {
 	if p[0] == 0xff {
-		s.tx.done(it.current(), witness.RowsUnknown, witness.OutcomeFailed)
+		s.failed(it.current())
 		s.pop()
 		return nil
 	}
@@ -668,7 +735,7 @@ func (s *mySession) rowPacket(it *myItem, p []byte) error {
 	switch {
 	case p[0] == 0xff:
 		if it.kind == myResult {
-			s.tx.done(it.current(), witness.RowsUnknown, witness.OutcomeFailed)
+			s.failed(it.current())
 		}
 		s.pop()
 	case s.isEnd(p):
@@ -690,6 +757,7 @@ func (it *myItem) current() *statement {
 		return &it.stmts[it.next]
 	}
 	o := opaqueStatement(it.text, firstWord(it.text), "more results than statements were read")
+	o.unread = true
 	return &o
 }
 
@@ -713,6 +781,7 @@ func (s *mySession) resultDone(it *myItem, ok myOKPacket, hasCount bool) {
 //
 //subpoena:enforcement_point
 func (s *mySession) apply(st *statement, ok myOKPacket, hasCount bool) {
+	st = s.readable(st)
 	switch st.tx {
 	case txBegin, txCommit:
 		s.tx.commit() // BEGIN commits a transaction already open
@@ -732,6 +801,8 @@ func (s *mySession) apply(st *statement, ok myOKPacket, hasCount bool) {
 		s.tx.release(st.savepoint)
 	}
 	switch {
+	case st.mayCommit():
+		s.tx.addAutonomous(st) //subpoena:enforcement
 	case st.class == classOpaque:
 		s.tx.add(st, witness.RowsUnknown)
 	case st.class == classWrite:
@@ -746,6 +817,7 @@ func (s *mySession) apply(st *statement, ok myOKPacket, hasCount bool) {
 		s.tx.done(st, witness.RowsUnknown, witness.OutcomeRead)
 	}
 	s.status = ok.status
+	s.noteStatus(ok.status)
 	if ok.status&myStatusInTrans == 0 {
 		s.tx.commit() //subpoena:enforcement
 	}
