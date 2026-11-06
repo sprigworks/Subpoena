@@ -258,6 +258,49 @@ func TestJournalCommitThenRestoreIsUnknown(t *testing.T) {
 	wantVerdict(t, d.Change(nil), SQLiteNoChange) // with no writes, nothing says otherwise
 }
 
+// M4's other half: the same undoing, then one more commit. The counter reads
+// one, and the pages show only the second commit, through a real witness.
+func TestJournalRestoreThenCommitIsNotExact(t *testing.T) {
+	path := fixture(t, "DELETE")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := baseline(t, path)
+	w := watch(t, filepath.Dir(path))
+	p := openSQLite(t, path)
+	p.exec("UPDATE users SET name='mallory'")
+	p.close()
+	if err := os.WriteFile(path, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	q := openSQLite(t, path)
+	q.exec("INSERT INTO audit(what) VALUES('denied')")
+	q.close()
+	w.Stop()
+	c := d.Change(w.Wrote(""))
+	if c.Commits != 1 || c.Exact || c.Changed("users") {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// One ordinary commit keeps Exact, so a table claim beside it can still pass.
+func TestJournalOneCommitStaysExactThroughAWitness(t *testing.T) {
+	for _, mode := range []string{"DELETE", "TRUNCATE", "PERSIST"} {
+		path := fixture(t, mode)
+		d := baseline(t, path)
+		w := watch(t, filepath.Dir(path))
+		p := openSQLite(t, path)
+		p.exec("PRAGMA journal_mode="+mode, "INSERT INTO audit(what) VALUES('denied')")
+		p.close()
+		w.Stop()
+		c := d.Change(w.Wrote(""))
+		if c.Commits != 1 || !c.Exact || !c.Changed("audit") || c.Changed("users") {
+			t.Fatalf("%s: %+v", mode, c)
+		}
+	}
+}
+
 // L2: a frame with a good checksum can name any page. It must be refused, not
 // allocated: a fatal out-of-memory cannot be recovered.
 func TestAForgedWALFrameIsRefused(t *testing.T) {

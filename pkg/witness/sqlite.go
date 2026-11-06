@@ -551,6 +551,26 @@ func wroteTo(events []FileEvent, path string) bool {
 	})
 }
 
+// writeRuns counts the runs of events on a rollback-mode database that its
+// journal's events separate. One commit is one run: journal, then database,
+// then journal. A spilled transaction is several, which costs a table claim
+// Exact, in the safe direction.
+func writeRuns(events []FileEvent, path string) int {
+	runs, in := 0, false
+	for _, e := range events {
+		switch {
+		case e.Touches(path):
+			if !in {
+				runs++
+			}
+			in = true
+		case e.Path == path+"-journal":
+			in = false
+		}
+	}
+	return runs
+}
+
 // touched reports whether any event touches path. For the main file that is
 // stricter than wroteTo: SQLite neither creates nor removes it during a window,
 // and a hard link put back at its name needs no write.
@@ -640,6 +660,11 @@ func (d *SQLiteDB) readPages(c *SQLiteChange, end *sqliteImage, events []FileEve
 	case c.Commits > 1:
 		c.Exact = false //subpoena:enforcement
 		c.Reason = "several commits: a change undone by a later one leaves no mark on the pages"
+	case c.Commits == 1 && writeRuns(events, d.path) > 1:
+		// The counter is bytes in the file: a commit undone by copying the
+		// file back, then one more commit, shows a count of one.
+		c.Exact = false //subpoena:enforcement
+		c.Reason = "one commit by the counter, but the database was written in separate runs: an earlier change may have been undone"
 	case c.Commits == 0 && len(changed) != 0:
 		c.Exact = false //subpoena:enforcement
 		c.Reason = "the pages changed and the change counter did not: this was not an ordinary commit"

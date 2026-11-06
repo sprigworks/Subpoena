@@ -486,7 +486,8 @@ numbers and `TableError`, with no table list.
 
 **`Exact` is what a table claim rests on.** It means every committed page of the
 window was seen, so a table not listed did not change. It holds on the
-`wal-frames` basis, and on `page-diff` for a single commit in rollback mode.
+`wal-frames` basis, and on `page-diff` for a single commit in rollback mode whose
+writes to the database were one run.
 With several commits in rollback mode, or with a WAL's frames gone, a change
 made and then undone leaves no mark on the pages, so `Exact` is false, and
 `NoCommit` about a table not listed is Inconclusive; a table that is listed is
@@ -520,11 +521,14 @@ does not is not covering the database, and `NoCommit` is Inconclusive.
 Limits. `Commits` comes from the change counter in rollback mode, and a
 connection in `locking_mode=EXCLUSIVE` bumps that only once, so several commits
 there can read as one and `Exact` is then wrong. The counter is only bytes in a
-file the application can write: a commit undone by restoring the file followed
-by one ordinary commit shows a counter of one and the second commit's pages, and
-the claim about the first table passes. WAL mode has no such hole while its
-frames last. A claim that must hold against an application that rewrites its own
-database file needs WAL mode. An encrypted database is not a
+file the application can write. A commit undone by copying the file back, then
+one more commit, shows a count of one, so the reader also counts runs of writes
+to the database between journal events, and more than one clears `Exact`. That
+costs a spilled transaction its `Exact` too. It needs a journal file to separate
+the runs: with `journal_mode=MEMORY` or `OFF`, or an application writing the
+file's bytes itself and setting the counter, one run can hide a change undone,
+and `Exact` is then wrong. A claim that must hold against an application that
+rewrites its own database file needs WAL mode. An encrypted database is not a
 SQLite file to this reader: `WatchSQLite` fails. The whole database is read into
 memory, and held for the baseline. The reader takes no locks: read while the
 code under test is idle. It retries a read that a write crossed, but a write
