@@ -1,6 +1,29 @@
 # Changelog
 
-## Unreleased
+## v0.1.0-alpha.5 and v0.1.0-alpha.6 (2026-11-07)
+
+Tagged `v0.1.0-alpha.5` and `v0.1.0-alpha.6`, on the same commit: the fixes and the new witnesses
+landed interleaved, so no earlier commit holds the fixes alone. No Python release goes with these
+tags. PyPI stays at 0.1.0a4 until a `python/` tag is cut.
+
+What is new:
+
+- **Three witnesses:** file writes, database commits (Postgres and MySQL, experimental) and
+  delivery on an inbound socket.
+- **A kill has to hold:** it reruns on the whole suite, with and without the mutant, and a Go kill
+  needs a failed test that links the mutated package.
+- **Sinkhole** can answer 200, and `Marked` tells one arrival from another.
+- **Cross output** prints upstream line numbers and counts markers against mutants.
+- **Python verdicts:** `--test-helper` declares test code, `Mock.assert_*` under pytest-mock is a
+  kill, and production code run by `--doctest-modules` no longer counts as test code.
+
+Stated limits:
+
+- Forged runner output can fool a plain kill. Only a verified witness mark under
+  `--require-witness` holds against it (docs/architecture.md, "What forged output can do").
+- A witness mark does not hold against code that reads the key and signs its own mark. Do not rely
+  on one against a suite written to cheat.
+- A Pass from the database witness is experimental, and its known gaps are listed in its entry below.
 
 - **A run that cost a kill says which test failed in it.** An unconfirmed kill showed the last 20
   lines of the red run and the mutant run's failing tests. In a long suite those lines are the slowest

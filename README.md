@@ -39,7 +39,7 @@ that kind of code in three ways.
 
 To see a failure ordinary tests miss, run `make demo`. A gateway answers 403 and logs the denial, but it has already run the tool ([`examples/saidno`](examples/saidno)).
 
-**Status: alpha, v0.1.0-alpha.4.** APIs will change. Go is the reference
+**Status: alpha, v0.1.0-alpha.6.** APIs will change. Go is the reference
 implementation, and Python is a port (see [Languages](#languages)).
 
 ## What a test looks like
