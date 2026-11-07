@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,12 +42,10 @@ import (
 //     in the capture: such a process that lived shorter than that may have
 //     been missed. The kernel-side witness (pkg/witness/execbpf) does not
 //     have this gap.
-//   - A name seen inside a forked child's exec is withdrawn when the child's
-//     first own line names that program, from the same binary and cgroup. If
-//     the name came from an earlier exec of that binary with other arguments,
-//     or the process rewrote its argv before the line was read, the arguments
-//     it first ran with go unreported, as they do when no poll lands in the
-//     window at all.
+//   - A poll that lands inside a forked child's exec waits up to execSettle
+//     for the arguments, and what it reads then stands for the sighting, as a
+//     later poll would. An exec that rewrites its argv in that wait is read
+//     rewritten, as it is when no poll lands in the window at all.
 //   - Seeing a calibration probe proves the witness observed that probe, not
 //     that capture was complete: a shorter process can still slip between
 //     polls.
@@ -77,9 +74,8 @@ type ProcWitness struct {
 	mu           sync.Mutex
 	baseline     map[procKey]bool
 	tracked      map[procKey]*ProcessEvent
-	lineComm     map[procKey]string    // the task name when Command's command line was read
-	inherited    map[procKey]bool      // Command is the parent's command line, seen before an exec
-	nameSights   map[procKey]nameSight // what each kept name event was read with, by its key
+	lineComm     map[procKey]string // the task name when Command's command line was read
+	inherited    map[procKey]bool   // Command is the parent's command line, seen before an exec
 	order        []procKey
 	stop         chan struct{}
 	done         chan struct{}
@@ -91,15 +87,13 @@ type ProcWitness struct {
 	coverage     Coverage
 	lastScan     time.Time // when the latest successful full scan started
 
-	afterScan func() // test hook: runs in Poll between the scan and recording
+	afterScan  func() // test hook: runs in Poll between the scan and recording
+	beforeWait func() // test hook: runs in settle before each re-read
 }
 
-// nameSight is what the sightings of a kept name showed. It is read from the
-// sightings themselves, because a kept event carries the latest of each.
-type nameSight struct {
-	exe, cgroup string
-	mixed       bool // the sightings disagreed
-}
+// execSettle bounds how long a poll that lands inside an exec waits for the
+// new arguments. It holds up the pollers, and runs at most once a process.
+const execSettle = 5 * time.Millisecond
 
 type procKey struct {
 	pid   int
@@ -172,7 +166,6 @@ func (w *ProcWitness) Start() error {
 	w.tracked = map[procKey]*ProcessEvent{}
 	w.lineComm = map[procKey]string{}
 	w.inherited = map[procKey]bool{}
-	w.nameSights = map[procKey]nameSight{}
 	w.order = nil
 	w.stop, w.done = make(chan struct{}), make(chan struct{})
 	iv := w.Interval
@@ -616,23 +609,18 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 // was never the child's.
 //
 // An exec sets the task name before the new arguments exist, so a poll can
-// land on a forked child with its new name and no line. That name is kept as
-// above, because the child may exit there. If the child's first own line then
-// names that program, and every sighting of the name read the binary and cgroup
-// this one reads, the two are taken for one exec and the name's event goes. That
-// is a trade: see the limit on the type. Anything else leaves it. w.mu must be
-// held.
+// land on a forked child with its new name and no line. settle gives that
+// sighting a moment to become a whole one. w.mu must be held.
 //
 //subpoena:enforcement_point
 func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
+	s = w.settle(k, s)
 	newName, oldLine := "", ""
 	switch {
 	case s.cmdline != "":
 		if ev.CommandSource == CommandLine && ev.Command != s.cmdline && w.inherited != nil {
 			if !w.inherited[k] {
 				oldLine = ev.Command //subpoena:enforcement
-			} else if s.comm == lineProgram(s.cmdline) {
-				w.dropName(k, s) //subpoena:enforcement
 			}
 			delete(w.inherited, k)
 		}
@@ -660,11 +648,54 @@ func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 	// and attribution.
 	if newName != "" {
 		w.keepAs(k, ev, "/name:"+newName, newName, CommandName)
-		w.noteName(k, s)
 	}
 	if oldLine != "" {
 		w.keepAs(k, ev, "/line:"+oldLine, oldLine, CommandLine)
 	}
+}
+
+// settle re-reads a forked child caught between its new name and its new line,
+// and returns the sighting to use: the re-read, if it found a line with the
+// same name, binary and cgroup, as a poll landing a moment later would have.
+// Otherwise s, so a child that exits or changes in the wait keeps its name as a
+// name event. A later poll's sighting is the only thing it stands for: nothing
+// recorded is ever withdrawn. w.mu must be held.
+func (w *ProcWitness) settle(k procKey, s *procSnap) *procSnap {
+	if !w.inherited[k] || s.cmdline != "" || s.comm == "" || s.exe == "" || s.comm == w.lineComm[k] {
+		return s
+	}
+	if _, kept := w.tracked[procKey{pid: k.pid, start: k.start + "/name:" + s.comm}]; kept {
+		return s // this name already had its wait
+	}
+	for deadline := time.Now().Add(execSettle); time.Now().Before(deadline); time.Sleep(50 * time.Microsecond) {
+		if w.beforeWait != nil {
+			w.beforeWait()
+		}
+		if !w.running(k) {
+			return s
+		}
+		n := w.readSnap(k.pid)
+		if n.cmdline == "" {
+			continue
+		}
+		if n.comm == s.comm && n.exe == s.exe && n.cgroup == s.cgroup {
+			return n
+		}
+		return s
+	}
+	return s
+}
+
+// running reports whether k is still that process and not a zombie, which has
+// no line to wait for.
+func (w *ProcWitness) running(k procKey) bool {
+	b, err := os.ReadFile(filepath.Join(w.root(), strconv.Itoa(k.pid), "stat"))
+	if err != nil {
+		return false
+	}
+	_, start, ok := parseStat(string(b))
+	i := strings.LastIndexByte(string(b), ')')
+	return ok && start == k.start && !strings.HasPrefix(strings.TrimSpace(string(b[i+1:])), "Z")
 }
 
 // keepAs records, as an event of its own, a command the process k showed
@@ -683,52 +714,6 @@ func (w *ProcWitness) keepAs(k procKey, ev *ProcessEvent, tag, command string, s
 	if seen {
 		kept.SeenAt = seenAt
 	}
-}
-
-// nameKey is the key keepAs files k's name event under.
-func nameKey(k procKey, name string) procKey {
-	return procKey{pid: k.pid, start: k.start + "/name:" + name}
-}
-
-// noteName adds the sighting s to what k's current name was read with.
-// w.mu must be held.
-func (w *ProcWitness) noteName(k procKey, s *procSnap) {
-	nk := nameKey(k, s.comm)
-	sight, seen := w.nameSights[nk]
-	if seen && (sight.exe != s.exe || sight.cgroup != s.cgroup) {
-		sight.mixed = true
-	}
-	sight.exe, sight.cgroup = s.exe, s.cgroup
-	w.nameSights[nk] = sight
-}
-
-// dropName removes the event keepAs recorded for k's current name, if every
-// sighting of the name read the binary and cgroup s shows. A binary or cgroup
-// that could not be read matches nothing. w.mu must be held.
-func (w *ProcWitness) dropName(k procKey, s *procSnap) {
-	nk := nameKey(k, s.comm)
-	sight, seen := w.nameSights[nk]
-	if !seen || sight.mixed || s.exe == "" || s.cgroup == "" || sight.exe != s.exe || sight.cgroup != s.cgroup {
-		return
-	}
-	delete(w.tracked, nk)
-	w.order = slices.DeleteFunc(w.order, func(o procKey) bool { return o == nk })
-}
-
-// lineProgram guesses the task name of a command line's program: its first
-// word without the directory, cut to 15 bytes. It is a guess because the
-// process controls argv[0], and a script's name is not its interpreter's. A
-// miss keeps a name event. A forged match is why dropName wants more than this.
-func lineProgram(line string) string {
-	f := strings.Fields(line)
-	if len(f) == 0 {
-		return ""
-	}
-	name := filepath.Base(f[0])
-	if len(name) > 15 {
-		name = name[:15]
-	}
-	return name
 }
 
 // cmdlineOf reads pid's command line now, or "" if it cannot.
@@ -823,8 +808,7 @@ func (w *ProcWitness) Events() []ProcessEvent {
 // be excluded; see the type comment). Events whose cgroup names a different
 // trace are excluded. These are events, not processes: one process that
 // showed several command lines, or a line and then another name, gives one
-// event for each (bar the exec window in refresh), so do not count processes
-// by them.
+// event for each, so do not count processes by them.
 func (w *ProcWitness) Spawned(traceID string) []ProcessEvent {
 	var out []ProcessEvent
 	for _, ev := range w.Events() {

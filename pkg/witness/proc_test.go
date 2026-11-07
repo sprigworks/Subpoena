@@ -611,9 +611,10 @@ func TestForkedChildsInheritedLineIsReplaced(t *testing.T) {
 	}
 }
 
-// execWindow plays a forked child through an exec a poll landed in: first its
-// parent's line, then the new task name and binary with no line yet.
-func execWindow(t *testing.T, pid int, name string) (*ProcWitness, string) {
+// execWindow plays a forked child into an exec a poll lands in: its parent's
+// line first, then the new name and binary with no line. during runs before each
+// re-read in the poll's wait, as the process moves on.
+func execWindow(t *testing.T, pid int, name string, during func(dir string)) (*ProcWitness, string) {
 	t.Helper()
 	w, root := freshFake(t, nil)
 	dir := filepath.Join(root, strconv.Itoa(pid))
@@ -622,24 +623,18 @@ func execWindow(t *testing.T, pid int, name string) (*ProcWitness, string) {
 	setExe(t, dir, "/bin/gateway")
 	fakeChildren(t, root, 100, pid)
 	w.pollChildren()
-	showName(t, w, dir, name, "/bin/"+name)
-	return w, dir
-}
-
-// showName polls a process with a task name and binary and no line.
-func showName(t *testing.T, w *ProcWitness, dir, name, exe string) {
-	t.Helper()
 	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
 	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte(name+"\n"), 0o644))
-	setExe(t, dir, exe)
+	setExe(t, dir, "/bin/"+name)
+	w.mu.Lock()
+	w.beforeWait = func() {
+		if during != nil {
+			during(dir)
+		}
+	}
+	w.mu.Unlock()
 	w.pollChildren()
-}
-
-// showLine polls a process with a line. name and exe stay as they are.
-func showLine(t *testing.T, w *ProcWitness, dir, line string) {
-	t.Helper()
-	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte(line), 0o644))
-	w.pollChildren()
+	return w, dir
 }
 
 func setExe(t *testing.T, dir, exe string) {
@@ -651,232 +646,152 @@ func setExe(t *testing.T, dir, exe string) {
 	}
 }
 
-// The first real line runs the program the window showed, so the process is
-// one event. Counted as two, an Allowed rule failed a process that did nothing
-// wrong: 4 of 240 batches of the gateway suite, and one CI run.
-func TestAPollInsideAnExecLeavesOneEvent(t *testing.T) {
-	for _, tc := range []struct{ name, comm, line, want string }{
-		{"bare", "sleep", "sleep\x000.15\x00", "sleep 0.15"},
-		{"directory", "sleep", "/usr/bin/sleep\x000.15\x00", "/usr/bin/sleep 0.15"},
-		{"cut name", "a-sixteen-byte-", "/bin/a-sixteen-byte-program\x00x\x00", "/bin/a-sixteen-byte-program x"},
-		{"cut rune", "aaaaaaaaaaaaaa\xc3", "aaaaaaaaaaaaaa\xc3\xa9\x00x\x00", "aaaaaaaaaaaaaa\xc3\xa9 x"},
+func wantNameKept(t *testing.T, w *ProcWitness, name string) {
+	t.Helper()
+	if got := byCmd(w.Events()); !got[name].NameOnly() {
+		t.Fatalf("want name-only %q kept, got %s", name, brief(w.Events()))
+	}
+}
+
+// The line arrives in the wait: one event. Counted as two, an Allowed rule
+// failed a process that did nothing wrong: 4 of 240 batches of the gateway
+// suite, and one CI run.
+func TestAPollInsideAnExecWaitsForTheLine(t *testing.T) {
+	w, _ := execWindow(t, 941, "sleep", func(dir string) {
+		must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("sleep\x000.15\x00"), 0o644))
+	})
+	evs := w.Events()
+	if len(evs) != 1 || evs[0].Command != "sleep 0.15" || evs[0].NameOnly() {
+		t.Fatalf("got %s", brief(evs))
+	}
+}
+
+// Anything that moved in the wait is another exec, and the name stands.
+func TestAChangeInTheWaitKeepsTheName(t *testing.T) {
+	line := func(dir string) {
+		must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("sleep\x001\x00"), 0o644))
+	}
+	for name, change := range map[string]func(dir string){
+		"binary": func(dir string) { setExe(t, dir, "/usr/bin/sleep") },
+		"name": func(dir string) {
+			must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("other\n"), 0o644))
+		},
+		"cgroup": func(dir string) {
+			must(t, os.WriteFile(filepath.Join(dir, "cgroup"), []byte("0::/moved"), 0o644))
+		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			w, dir := execWindow(t, 941, tc.comm)
-			showLine(t, w, dir, tc.line)
-			evs := w.Events()
-			if len(evs) != 1 || evs[0].Command != tc.want || evs[0].NameOnly() {
-				t.Fatalf("got %s", brief(evs))
+		t.Run(name, func(t *testing.T) {
+			w, _ := execWindow(t, 942, "sleep", func(dir string) { change(dir); line(dir) })
+			wantNameKept(t, w, "sleep")
+		})
+	}
+}
+
+// No line in the wait: the name stays, and takes no second wait.
+func TestAWaitThatRunsOutKeepsTheName(t *testing.T) {
+	w, _ := execWindow(t, 943, "sleep", nil)
+	wantNameKept(t, w, "sleep")
+	waits := 0
+	w.mu.Lock()
+	w.beforeWait = func() { waits++ }
+	w.mu.Unlock()
+	w.pollChildren()
+	if waits != 0 {
+		t.Fatalf("waited %d times again", waits)
+	}
+}
+
+// A child gone in the wait, or a zombie, or another process on the PID, has no
+// line to wait for: the wait ends at once and the name stays.
+func TestAChildThatEndsInTheWaitKeepsTheName(t *testing.T) {
+	for name, end := range map[string]func(dir string){
+		"gone": func(dir string) { must(t, os.RemoveAll(dir)) },
+		"zombie": func(dir string) {
+			must(t, os.WriteFile(filepath.Join(dir, "stat"), []byte("944 (sleep) Z 100 0 0 0 0 0 0 0 0 0 0 0 0 0 20 0 1 0 240 0 0\n"), 0o644))
+		},
+		"reused": func(dir string) {
+			must(t, os.WriteFile(filepath.Join(dir, "stat"), []byte("944 (sleep) S 100 0 0 0 0 0 0 0 0 0 0 0 0 0 20 0 1 0 999 0 0\n"), 0o644))
+			must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("sleep\x001\x00"), 0o644))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			waits := 0
+			w, _ := execWindow(t, 944, "sleep", func(dir string) {
+				if waits++; waits == 1 {
+					end(dir)
+				}
+			})
+			wantNameKept(t, w, "sleep")
+			if waits != 1 {
+				t.Fatalf("kept waiting: %d", waits)
 			}
 		})
 	}
 }
 
-// A line that runs another program does not explain the name: rm was seen and
-// never read, whether the line came from a second exec or a rewritten argv.
-func TestALineForAnotherProgramKeepsTheName(t *testing.T) {
-	for _, comm := range []string{"rm", "benign"} {
-		t.Run(comm, func(t *testing.T) {
-			w, dir := execWindow(t, 942, "rm")
-			must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte(comm+"\n"), 0o644))
-			showLine(t, w, dir, "benign\x00x\x00")
-			got := byCmd(w.Events())
-			if len(got) != 2 || !got["rm"].NameOnly() || got["benign x"].PID != 942 {
-				t.Fatalf("got %s", brief(w.Events()))
-			}
-		})
-	}
-}
-
-// A name only has to start the line's program to look alike; it must equal it.
-func TestALineThatOnlyStartsWithTheNameKeepsIt(t *testing.T) {
-	w, dir := execWindow(t, 945, "s")
-	showLine(t, w, dir, "sleep\x001\x00")
-	if got := byCmd(w.Events()); len(got) != 2 || !got["s"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// Same name, other binary: /tmp/x/sleep ran, then exec'd /usr/bin/sleep. The
-// line explains the second and says nothing about the first.
-func TestAnotherBinaryWithTheNameKeepsIt(t *testing.T) {
-	w, dir := execWindow(t, 946, "sleep")
-	setExe(t, dir, "/usr/bin/sleep")
-	showLine(t, w, dir, "sleep\x000.15\x00")
-	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// A binary that cannot be read cannot be matched.
-func TestAnUnreadBinaryKeepsTheName(t *testing.T) {
-	w, dir := execWindow(t, 947, "sleep")
-	setExe(t, dir, "")
-	showLine(t, w, dir, "sleep\x000.15\x00")
-	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-
-	// Unread at the window too: an empty binary matches nothing.
-	w2, root := freshFake(t, nil)
-	dir = filepath.Join(root, "948")
-	fakeProc(t, root, 948, 100, "248", "gateway", "0::/")
-	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
-	fakeChildren(t, root, 100, 948)
-	w2.pollChildren()
-	showName(t, w2, dir, "sleep", "")
-	showLine(t, w2, dir, "sleep\x000.15\x00")
-	if got := byCmd(w2.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
-		t.Fatalf("got %s", brief(w2.Events()))
-	}
-}
-
-// Every sighting counts, not the last: /tmp/x/sleep was seen and then replaced
-// by /usr/bin/sleep, inside one window each.
-func TestANameSeenWithTwoBinariesStays(t *testing.T) {
-	w, dir := execWindow(t, 953, "sleep")
-	showName(t, w, dir, "sleep", "/usr/bin/sleep")
-	showLine(t, w, dir, "sleep\x000.15\x00")
-	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// The same when the line's binary is the one the name was first seen with.
-func TestANameSeenWithABinaryInBetweenStays(t *testing.T) {
-	w, dir := execWindow(t, 956, "sleep")
-	showName(t, w, dir, "sleep", "/tmp/x/sleep")
-	setExe(t, dir, "/bin/sleep")
-	showLine(t, w, dir, "sleep\x000.15\x00")
-	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// The same for a name seen under two cgroups, ending in the line's.
-func TestANameSeenInTwoCgroupsStays(t *testing.T) {
-	w, dir := execWindow(t, 954, "sleep")
-	must(t, os.WriteFile(filepath.Join(dir, "cgroup"), []byte("0::/moved"), 0o644))
-	w.pollChildren()
-	showLine(t, w, dir, "sleep\x000.15\x00")
-	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// And when the line's cgroup is the one the name was first seen in.
-func TestANameSeenInACgroupInBetweenStays(t *testing.T) {
-	w, dir := execWindow(t, 957, "sleep")
-	must(t, os.WriteFile(filepath.Join(dir, "cgroup"), []byte("0::/moved"), 0o644))
-	w.pollChildren()
-	must(t, os.WriteFile(filepath.Join(dir, "cgroup"), []byte("0::/"), 0o644))
-	showLine(t, w, dir, "sleep\x000.15\x00")
-	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// A cgroup never read matches nothing, even at another unread read.
-func TestAnUnreadCgroupKeepsTheName(t *testing.T) {
+// Only a forked child still showing its parent's line waits. One that has its
+// own line and then shows a name is a rename: TestRenameKeepsTheCommandLine
+// holds the event, this holds that no wait is spent on it.
+func TestAnOwnLineTakesNoWait(t *testing.T) {
 	w, root := freshFake(t, nil)
-	dir := filepath.Join(root, "955")
-	fakeProc(t, root, 955, 100, "255", "gateway", "0::/")
-	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
-	fakeChildren(t, root, 100, 955)
-	w.pollChildren()
-	must(t, os.Remove(filepath.Join(dir, "cgroup")))
-	showName(t, w, dir, "sleep", "/bin/sleep")
-	showLine(t, w, dir, "sleep\x000.15\x00")
-	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// A move between the window and the line leaves the name with the trace it
-// was seen under.
-func TestACgroupMoveKeepsTheName(t *testing.T) {
-	w, dir := execWindow(t, 949, "rm")
-	must(t, os.WriteFile(filepath.Join(dir, "cgroup"), []byte("0::/moved"), 0o644))
-	showLine(t, w, dir, "rm\x00x\x00")
-	if got := byCmd(w.Events()); len(got) != 2 || !got["rm"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// Two windows: only the name the line explains goes.
-func TestOnlyTheExplainedNameGoes(t *testing.T) {
-	w, dir := execWindow(t, 950, "rm")
-	showName(t, w, dir, "sleep", "/bin/sleep")
-	showLine(t, w, dir, "sleep\x001\x00")
-	got := byCmd(w.Events())
-	if len(got) != 2 || !got["rm"].NameOnly() || got["sleep 1"].PID != 950 {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// A withdrawn name leaves no trace behind: the same name seen again after a
-// rename is reported.
-func TestAWithdrawnNameCanBeSeenAgain(t *testing.T) {
-	w, dir := execWindow(t, 951, "sleep")
-	showLine(t, w, dir, "sleep\x001\x00")
-	showName(t, w, dir, "other", "/bin/sleep")
-	showLine(t, w, dir, "other\x00y\x00")
-	showName(t, w, dir, "sleep", "/bin/sleep")
-	if got := byCmd(w.Events()); !got["sleep"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// Only the child's first own line replaces: the second keeps it.
-func TestAnInheritedChildsSecondLineKeepsTheFirst(t *testing.T) {
-	w, root := freshFake(t, nil)
-	fakeProc(t, root, 952, 100, "252", "gateway", "0::/")
-	fakeChildren(t, root, 100, 952)
-	w.pollChildren()
-	dir := filepath.Join(root, "952")
-	showLine(t, w, dir, "a\x00x\x00")
-	showLine(t, w, dir, "b\x00y\x00")
-	if got := byCmd(w.Events()); len(got) != 2 || got["a x"].PID != 952 || got["b y"].PID != 952 {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// A blank command line names no program.
-func TestABlankLineMatchesNoName(t *testing.T) {
-	if got := lineProgram("  "); got != "" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-// A child that exits inside the window was never read: its name stays.
-func TestAnExitInsideAnExecKeepsTheName(t *testing.T) {
-	w, dir := execWindow(t, 943, "rm")
-	must(t, os.RemoveAll(dir))
-	w.pollChildren()
-	if got := byCmd(w.Events()); !got["rm"].NameOnly() {
-		t.Fatalf("got %s", brief(w.Events()))
-	}
-}
-
-// A line that was the child's own is not the window: a name seen after it
-// stays when the same program's line follows.
-func TestANameAfterAnOwnLineStays(t *testing.T) {
-	w, root := freshFake(t, nil)
-	dir := filepath.Join(root, "944")
-	fakeProc(t, root, 944, 100, "244", "myservice\x00--serve\x00", "0::/")
-	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("myservice\n"), 0o644))
-	setExe(t, dir, "/bin/rm")
-	fakeChildren(t, root, 100, 944)
+	dir := filepath.Join(root, "945")
+	fakeProc(t, root, 945, 100, "245", "own\x00line\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("own\n"), 0o644))
+	setExe(t, dir, "/bin/own")
+	fakeChildren(t, root, 100, 945)
 	w.pollChildren()
 	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
 	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("rm\n"), 0o644))
+	waits := 0
+	w.mu.Lock()
+	w.beforeWait = func() { waits++ }
+	w.mu.Unlock()
 	w.pollChildren()
-	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("rm\x00x\x00"), 0o644))
-	w.pollChildren()
-	got := byCmd(w.Events())
-	if len(got) != 3 || !got["rm"].NameOnly() || got["myservice --serve"].PID != 944 || got["rm x"].PID != 944 {
-		t.Fatalf("got %s", brief(w.Events()))
+	if waits != 0 {
+		t.Fatalf("waited %d times", waits)
 	}
+	wantNameKept(t, w, "rm")
+}
+
+// A child that never exec'd has no new name, so nothing to wait for.
+func TestAnUnchangedNameTakesNoWait(t *testing.T) {
+	w, root := freshFake(t, nil)
+	dir := filepath.Join(root, "947")
+	fakeProc(t, root, 947, 100, "247", "gateway", "0::/")
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
+	setExe(t, dir, "/bin/gateway")
+	fakeChildren(t, root, 100, 947)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
+	waits := 0
+	w.mu.Lock()
+	w.beforeWait = func() { waits++ }
+	w.mu.Unlock()
+	w.pollChildren()
+	if waits != 0 {
+		t.Fatalf("waited %d times", waits)
+	}
+}
+
+// A binary that cannot be read cannot be compared: no wait, the name stays.
+func TestAnUnreadBinaryTakesNoWait(t *testing.T) {
+	w, root := freshFake(t, nil)
+	dir := filepath.Join(root, "946")
+	fakeProc(t, root, 946, 100, "246", "gateway", "0::/")
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
+	fakeChildren(t, root, 100, 946)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("sleep\n"), 0o644))
+	waits := 0
+	w.mu.Lock()
+	w.beforeWait = func() { waits++ }
+	w.mu.Unlock()
+	w.pollChildren()
+	if waits != 0 {
+		t.Fatalf("waited %d times", waits)
+	}
+	wantNameKept(t, w, "sleep")
 }
 
 // Coverage counts both pollers and reports the longest gap between full

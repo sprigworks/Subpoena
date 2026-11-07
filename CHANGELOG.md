@@ -25,14 +25,12 @@ Stated limits:
   on one against a suite written to cheat.
 - A Pass from the database witness is experimental, and its known gaps are listed in its entry below.
 
-- **A poll inside an exec no longer leaves a second event for a plain binary.** `ProcWitness` could
-  land after an exec set the new task name and before the arguments existed, and it kept that name
-  as an unidentified event for good. Under an `Allowed` list that went red with nothing wrong, in
-  about 2 of 100 batches of the gateway suite under load. The name is now withdrawn when the child's
-  first own line names that program and every sighting of the name read the same binary and cgroup.
-  A shebang script, a changed `argv[0]`, and a read that pairs the old name with the new line can
-  still go red this way. New cost: an earlier exec of that binary with other arguments, or an argv
-  rewritten before the line was read, goes unreported, as it does when no poll lands there.
+- **A poll inside an exec waits for the arguments.** `ProcWitness` could land after an exec set the
+  new task name and before the arguments existed, and it kept that name as an unidentified event for
+  good. Under an `Allowed` list that went red with nothing wrong, in about 2 of 100 batches of the
+  gateway suite under load. Such a poll now re-reads the process for up to 5ms, and takes the line if
+  the name, binary and cgroup still match. If they do not, or the wait runs out, the name stays and
+  the check goes red as before. A read that pairs the old name with the new line can still go red.
 - **A run that cost a kill says which test failed in it.** An unconfirmed kill showed the last 20
   lines of the red run and the mutant run's failing tests. In a long suite those lines are the slowest
   tests' passes, so the test that failed without the mutant could not be seen. Where that run has a

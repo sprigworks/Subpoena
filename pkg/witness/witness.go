@@ -30,10 +30,9 @@ const (
 	// bytes: the arguments could not be read (the process exited first, or
 	// the kernel witness's argv read failed), or ProcWitness saw the name
 	// change after reading a command line (an exec or a rename; the line is
-	// kept as its own event). ProcWitness withdraws such a name if the line
-	// that follows explains it, see its limits. The process was seen but not
-	// identified: "touch" may have been an allowed "touch approved" or a
-	// refused "touch rejected".
+	// kept as its own event). The process was seen but not identified:
+	// "touch" may have been an allowed "touch approved" or a refused
+	// "touch rejected".
 	CommandName CommandSource = "comm"
 )
 
