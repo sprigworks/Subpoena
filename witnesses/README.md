@@ -69,7 +69,11 @@ keep refused probes long-lived so a refused one is always seen whole. A child
 first seen with its parent's command line (just forked) that is later seen
 with no arguments and a different name has exec'd (or renamed itself) since:
 its command line is kept, and the name is added as a second, name-only event
-for the same process. A later, different command line (`bash -c` replacing
+for the same process. The exception is a poll landing inside the exec, after
+the name changes and before the arguments exist: if the child's first own line
+names that program, from the same binary and cgroup, the name's event is
+withdrawn. An earlier exec of that binary with other arguments, seen only in
+that window, then goes unreported, as it does when no poll lands there. A later, different command line (`bash -c` replacing
 itself with its last command, or a process rewriting its own argv) likewise
 keeps the earlier line as an event of its own; only a child's first line that
 equals its parent's is replaced by its exec, since it was never the child's.

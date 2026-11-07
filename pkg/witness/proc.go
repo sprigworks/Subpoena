@@ -43,6 +43,11 @@ import (
 //     in the capture: such a process that lived shorter than that may have
 //     been missed. The kernel-side witness (pkg/witness/execbpf) does not
 //     have this gap.
+//   - A name seen inside a forked child's exec is withdrawn when the child's
+//     first own line names that program, from the same binary and cgroup. If
+//     the name came from an earlier exec of that binary with other arguments,
+//     whose line no poll read, those arguments go unreported, as they do when
+//     no poll lands in the window at all.
 //   - Seeing a calibration probe proves the witness observed that probe, not
 //     that capture was complete: a shorter process can still slip between
 //     polls.
@@ -603,8 +608,9 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 // An exec sets the task name before the new arguments exist, so a poll can
 // land on a forked child with its new name and no line. That name is kept as
 // above, because the child may exit there. If the child's first own line then
-// runs that same program, the name said nothing the line does not, and its
-// event goes. A line that runs any other program leaves it. w.mu must be held.
+// names that program, and the binary and cgroup are the ones the name was seen
+// with, the two are taken for one exec and the name's event goes. That is a
+// trade: see the limit on the type. Anything else leaves it. w.mu must be held.
 //
 //subpoena:enforcement_point
 func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
@@ -615,7 +621,7 @@ func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 			if !w.inherited[k] {
 				oldLine = ev.Command //subpoena:enforcement
 			} else if s.comm == lineProgram(s.cmdline) {
-				w.dropKept(k, "/name:"+s.comm) //subpoena:enforcement
+				w.dropName(k, s) //subpoena:enforcement
 			}
 			delete(w.inherited, k)
 		}
@@ -667,19 +673,23 @@ func (w *ProcWitness) keepAs(k procKey, ev *ProcessEvent, tag, command string, s
 	}
 }
 
-// dropKept removes an event keepAs recorded for k under tag, if there is one.
+// dropName removes the event keepAs recorded for k's current name, if it was
+// seen with the binary and cgroup s shows. An unread binary leaves it.
 // w.mu must be held.
-func (w *ProcWitness) dropKept(k procKey, tag string) {
-	nk := procKey{pid: k.pid, start: k.start + tag}
-	if _, seen := w.tracked[nk]; !seen {
+func (w *ProcWitness) dropName(k procKey, s *procSnap) {
+	nk := procKey{pid: k.pid, start: k.start + "/name:" + s.comm}
+	kept, seen := w.tracked[nk]
+	if !seen || s.exe == "" || kept.Exe != s.exe || kept.Cgroup != s.cgroup {
 		return
 	}
 	delete(w.tracked, nk)
 	w.order = slices.DeleteFunc(w.order, func(o procKey) bool { return o == nk })
 }
 
-// lineProgram is the task name the kernel gives the program of a command
-// line: its first word without the directory, cut to 15 bytes.
+// lineProgram guesses the task name of a command line's program: its first
+// word without the directory, cut to 15 bytes. It is a guess because the
+// process controls argv[0], and a script's name is not its interpreter's: a
+// wrong guess only fails to match, which keeps a name event.
 func lineProgram(line string) string {
 	f := strings.Fields(line)
 	if len(f) == 0 {
@@ -784,7 +794,8 @@ func (w *ProcWitness) Events() []ProcessEvent {
 // be excluded; see the type comment). Events whose cgroup names a different
 // trace are excluded. These are events, not processes: one process that
 // showed several command lines, or a line and then another name, gives one
-// event for each, so do not count processes by them.
+// event for each (bar the exec window in refresh), so do not count processes
+// by them.
 func (w *ProcWitness) Spawned(traceID string) []ProcessEvent {
 	var out []ProcessEvent
 	for _, ev := range w.Events() {

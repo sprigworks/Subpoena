@@ -612,38 +612,58 @@ func TestForkedChildsInheritedLineIsReplaced(t *testing.T) {
 }
 
 // execWindow plays a forked child through an exec a poll landed in: first its
-// parent's line, then the new task name with no line yet.
+// parent's line, then the new task name and binary with no line yet.
 func execWindow(t *testing.T, pid int, name string) (*ProcWitness, string) {
 	t.Helper()
 	w, root := freshFake(t, nil)
 	dir := filepath.Join(root, strconv.Itoa(pid))
 	fakeProc(t, root, pid, 100, "240", "gateway", "0::/")
 	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
+	setExe(t, dir, "/bin/gateway")
 	fakeChildren(t, root, 100, pid)
 	w.pollChildren()
+	showName(t, w, dir, name, "/bin/"+name)
+	return w, dir
+}
+
+// showName polls a process with a task name and binary and no line.
+func showName(t *testing.T, w *ProcWitness, dir, name, exe string) {
+	t.Helper()
 	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
 	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte(name+"\n"), 0o644))
+	setExe(t, dir, exe)
 	w.pollChildren()
-	return w, dir
+}
+
+// showLine polls a process with a line. name and exe stay as they are.
+func showLine(t *testing.T, w *ProcWitness, dir, line string) {
+	t.Helper()
+	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte(line), 0o644))
+	w.pollChildren()
+}
+
+func setExe(t *testing.T, dir, exe string) {
+	t.Helper()
+	link := filepath.Join(dir, "exe")
+	must(t, os.RemoveAll(link))
+	if exe != "" {
+		must(t, os.Symlink(exe, link))
+	}
 }
 
 // The first real line runs the program the window showed, so the process is
 // one event. Counted as two, an Allowed rule failed a process that did nothing
-// wrong: 5 of 240 batches of the gateway suite, and one CI run.
+// wrong: 4 of 240 batches of the gateway suite, and one CI run.
 func TestAPollInsideAnExecLeavesOneEvent(t *testing.T) {
 	for _, tc := range []struct{ name, comm, line, want string }{
 		{"bare", "sleep", "sleep\x000.15\x00", "sleep 0.15"},
 		{"directory", "sleep", "/usr/bin/sleep\x000.15\x00", "/usr/bin/sleep 0.15"},
-		{"cut name", "a-sixteen-byte-p", "/bin/a-sixteen-byte-program\x00x\x00", "/bin/a-sixteen-byte-program x"},
+		{"cut name", "a-sixteen-byte-", "/bin/a-sixteen-byte-program\x00x\x00", "/bin/a-sixteen-byte-program x"},
+		{"cut rune", "aaaaaaaaaaaaaa\xc3", "aaaaaaaaaaaaaa\xc3\xa9\x00x\x00", "aaaaaaaaaaaaaa\xc3\xa9 x"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			comm := tc.comm
-			if len(comm) > 15 {
-				comm = comm[:15]
-			}
-			w, dir := execWindow(t, 941, comm)
-			must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte(tc.line), 0o644))
-			w.pollChildren()
+			w, dir := execWindow(t, 941, tc.comm)
+			showLine(t, w, dir, tc.line)
 			evs := w.Events()
 			if len(evs) != 1 || evs[0].Command != tc.want || evs[0].NameOnly() {
 				t.Fatalf("got %s", brief(evs))
@@ -659,13 +679,111 @@ func TestALineForAnotherProgramKeepsTheName(t *testing.T) {
 		t.Run(comm, func(t *testing.T) {
 			w, dir := execWindow(t, 942, "rm")
 			must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte(comm+"\n"), 0o644))
-			must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("benign\x00x\x00"), 0o644))
-			w.pollChildren()
+			showLine(t, w, dir, "benign\x00x\x00")
 			got := byCmd(w.Events())
 			if len(got) != 2 || !got["rm"].NameOnly() || got["benign x"].PID != 942 {
 				t.Fatalf("got %s", brief(w.Events()))
 			}
 		})
+	}
+}
+
+// A name only has to start the line's program to look alike; it must equal it.
+func TestALineThatOnlyStartsWithTheNameKeepsIt(t *testing.T) {
+	w, dir := execWindow(t, 945, "s")
+	showLine(t, w, dir, "sleep\x001\x00")
+	if got := byCmd(w.Events()); len(got) != 2 || !got["s"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// Same name, other binary: /tmp/x/sleep ran, then exec'd /usr/bin/sleep. The
+// line explains the second and says nothing about the first.
+func TestAnotherBinaryWithTheNameKeepsIt(t *testing.T) {
+	w, dir := execWindow(t, 946, "sleep")
+	setExe(t, dir, "/usr/bin/sleep")
+	showLine(t, w, dir, "sleep\x000.15\x00")
+	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// A binary that cannot be read cannot be matched.
+func TestAnUnreadBinaryKeepsTheName(t *testing.T) {
+	w, dir := execWindow(t, 947, "sleep")
+	setExe(t, dir, "")
+	showLine(t, w, dir, "sleep\x000.15\x00")
+	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+
+	// Unread at the window too: an empty binary matches nothing.
+	w2, root := freshFake(t, nil)
+	dir = filepath.Join(root, "948")
+	fakeProc(t, root, 948, 100, "248", "gateway", "0::/")
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
+	fakeChildren(t, root, 100, 948)
+	w2.pollChildren()
+	showName(t, w2, dir, "sleep", "")
+	showLine(t, w2, dir, "sleep\x000.15\x00")
+	if got := byCmd(w2.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
+		t.Fatalf("got %s", brief(w2.Events()))
+	}
+}
+
+// A move between the window and the line leaves the name with the trace it
+// was seen under.
+func TestACgroupMoveKeepsTheName(t *testing.T) {
+	w, dir := execWindow(t, 949, "rm")
+	must(t, os.WriteFile(filepath.Join(dir, "cgroup"), []byte("0::/moved"), 0o644))
+	showLine(t, w, dir, "rm\x00x\x00")
+	if got := byCmd(w.Events()); len(got) != 2 || !got["rm"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// Two windows: only the name the line explains goes.
+func TestOnlyTheExplainedNameGoes(t *testing.T) {
+	w, dir := execWindow(t, 950, "rm")
+	showName(t, w, dir, "sleep", "/bin/sleep")
+	showLine(t, w, dir, "sleep\x001\x00")
+	got := byCmd(w.Events())
+	if len(got) != 2 || !got["rm"].NameOnly() || got["sleep 1"].PID != 950 {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// A withdrawn name leaves no trace behind: the same name seen again after a
+// rename is reported.
+func TestAWithdrawnNameCanBeSeenAgain(t *testing.T) {
+	w, dir := execWindow(t, 951, "sleep")
+	showLine(t, w, dir, "sleep\x001\x00")
+	showName(t, w, dir, "other", "/bin/sleep")
+	showLine(t, w, dir, "other\x00y\x00")
+	showName(t, w, dir, "sleep", "/bin/sleep")
+	if got := byCmd(w.Events()); !got["sleep"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// Only the child's first own line replaces: the second keeps it.
+func TestAnInheritedChildsSecondLineKeepsTheFirst(t *testing.T) {
+	w, root := freshFake(t, nil)
+	fakeProc(t, root, 952, 100, "252", "gateway", "0::/")
+	fakeChildren(t, root, 100, 952)
+	w.pollChildren()
+	dir := filepath.Join(root, "952")
+	showLine(t, w, dir, "a\x00x\x00")
+	showLine(t, w, dir, "b\x00y\x00")
+	if got := byCmd(w.Events()); len(got) != 2 || got["a x"].PID != 952 || got["b y"].PID != 952 {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// A blank command line names no program.
+func TestABlankLineMatchesNoName(t *testing.T) {
+	if got := lineProgram("  "); got != "" {
+		t.Fatalf("got %q", got)
 	}
 }
 
