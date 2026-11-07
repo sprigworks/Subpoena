@@ -611,6 +611,9 @@ func TestForkedChildsInheritedLineIsReplaced(t *testing.T) {
 	}
 }
 
+// testSettle is long enough that a loaded machine cannot run a wait out early.
+const testSettle = 300 * time.Millisecond
+
 // execWindow plays a forked child into an exec a poll lands in: its parent's
 // line first, then the new name and binary with no line. during runs before each
 // re-read in the poll's wait, as the process moves on.
@@ -627,6 +630,7 @@ func execWindow(t *testing.T, pid int, name string, during func(dir string)) (*P
 	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte(name+"\n"), 0o644))
 	setExe(t, dir, "/bin/"+name)
 	w.mu.Lock()
+	w.settleFor = testSettle
 	w.beforeWait = func() {
 		if during != nil {
 			during(dir)
@@ -653,20 +657,24 @@ func wantNameKept(t *testing.T, w *ProcWitness, name string) {
 	}
 }
 
-// The line arrives in the wait: one event. Counted as two, an Allowed rule
-// failed a process that did nothing wrong: 4 of 240 batches of the gateway
+// The line arrives on the third look: one event. Counted as two, an Allowed
+// rule failed a process that did nothing wrong: 4 of 240 batches of the gateway
 // suite, and one CI run.
 func TestAPollInsideAnExecWaitsForTheLine(t *testing.T) {
+	looks := 0
 	w, _ := execWindow(t, 941, "sleep", func(dir string) {
-		must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("sleep\x000.15\x00"), 0o644))
+		if looks++; looks == 3 {
+			must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("sleep\x000.15\x00"), 0o644))
+		}
 	})
 	evs := w.Events()
-	if len(evs) != 1 || evs[0].Command != "sleep 0.15" || evs[0].NameOnly() {
-		t.Fatalf("got %s", brief(evs))
+	if looks != 3 || len(evs) != 1 || evs[0].Command != "sleep 0.15" || evs[0].NameOnly() {
+		t.Fatalf("%d looks, got %s", looks, brief(evs))
 	}
 }
 
-// Anything that moved in the wait is another exec, and the name stands.
+// Anything that moved in the wait is not the sighting's process as it was, and
+// the name stands.
 func TestAChangeInTheWaitKeepsTheName(t *testing.T) {
 	line := func(dir string) {
 		must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("sleep\x001\x00"), 0o644))
@@ -687,17 +695,82 @@ func TestAChangeInTheWaitKeepsTheName(t *testing.T) {
 	}
 }
 
-// No line in the wait: the name stays, and takes no second wait.
+// No line in the wait: it looks until the time is up, the name stays, and the
+// process gets no second wait, under this name or a new one.
 func TestAWaitThatRunsOutKeepsTheName(t *testing.T) {
-	w, _ := execWindow(t, 943, "sleep", nil)
+	looks := 0
+	began := time.Now()
+	w, dir := execWindow(t, 943, "sleep", func(string) { looks++ })
+	if took := time.Since(began); looks < 2 || took < testSettle || took > testSettle*10 {
+		t.Fatalf("%d looks in %v", looks, took)
+	}
 	wantNameKept(t, w, "sleep")
-	waits := 0
-	w.mu.Lock()
-	w.beforeWait = func() { waits++ }
-	w.mu.Unlock()
+	looks = 0
 	w.pollChildren()
-	if waits != 0 {
-		t.Fatalf("waited %d times again", waits)
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("other\n"), 0o644))
+	w.pollChildren()
+	if looks != 0 {
+		t.Fatalf("waited %d times again", looks)
+	}
+	wantNameKept(t, w, "other")
+}
+
+// One poll's waits share one budget: children made to stall the pollers cost
+// it once, and the rest keep their names.
+func TestAPollSpendsOneBudgetOnWaits(t *testing.T) {
+	w, root := freshFake(t, nil)
+	pids := []int{960, 961, 962}
+	for i, pid := range pids {
+		dir := filepath.Join(root, strconv.Itoa(pid))
+		fakeProc(t, root, pid, 100, strconv.Itoa(260+i), "gateway", "0::/")
+		must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
+		setExe(t, dir, "/bin/gateway")
+	}
+	fakeChildren(t, root, 100, pids...)
+	w.pollChildren()
+	for _, pid := range pids {
+		dir := filepath.Join(root, strconv.Itoa(pid))
+		must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
+		must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("n"+strconv.Itoa(pid)+"\n"), 0o644))
+		setExe(t, dir, "/bin/x")
+	}
+	w.mu.Lock()
+	w.settleFor = testSettle
+	w.mu.Unlock()
+	began := time.Now()
+	w.pollChildren()
+	if took := time.Since(began); took > testSettle*2 {
+		t.Fatalf("three waits took %v", took)
+	}
+	for _, pid := range pids {
+		wantNameKept(t, w, "n"+strconv.Itoa(pid))
+	}
+}
+
+// A sighting read longer ago than the wait gets none: what it held may be gone,
+// and a line read now would stand in for it.
+func TestAStaleSightingTakesNoWait(t *testing.T) {
+	w, root := freshFake(t, nil)
+	dir := filepath.Join(root, "963")
+	fakeProc(t, root, 963, 100, "263", "gateway", "0::/")
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
+	setExe(t, dir, "/bin/gateway")
+	fakeChildren(t, root, 100, 963)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("refused\n"), 0o644))
+	setExe(t, dir, "/bin/refused")
+	looks := 0
+	w.mu.Lock()
+	w.settleFor = testSettle
+	w.beforeWait = func() { looks++ }
+	s := w.readSnap(963)
+	s.readAt = s.readAt.Add(-2 * testSettle)
+	w.waitLeft = testSettle
+	got := w.settle(procKey{pid: 963, start: "263"}, s)
+	w.mu.Unlock()
+	if got != s || looks != 0 {
+		t.Fatalf("%d looks, got %+v", looks, got)
 	}
 }
 

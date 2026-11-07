@@ -42,10 +42,12 @@ import (
 //     in the capture: such a process that lived shorter than that may have
 //     been missed. The kernel-side witness (pkg/witness/execbpf) does not
 //     have this gap.
-//   - A poll that lands inside a forked child's exec waits up to execSettle
-//     for the arguments, and what it reads then stands for the sighting, as a
-//     later poll would. An exec that rewrites its argv in that wait is read
-//     rewritten, as it is when no poll lands in the window at all.
+//   - A poll that lands inside a forked child's exec waits for the arguments,
+//     up to execSettle from reading that sighting, and what it reads then
+//     stands for the sighting, as a later poll would. An exec that rewrites
+//     its argv in that wait is read rewritten, as it is when no poll lands in
+//     the window at all. The wait holds up both pollers: a poll can run
+//     execSettle over its interval, once for each new child that hits it.
 //   - Seeing a calibration probe proves the witness observed that probe, not
 //     that capture was complete: a shorter process can still slip between
 //     polls.
@@ -87,12 +89,16 @@ type ProcWitness struct {
 	coverage     Coverage
 	lastScan     time.Time // when the latest successful full scan started
 
-	afterScan  func() // test hook: runs in Poll between the scan and recording
-	beforeWait func() // test hook: runs in settle before each re-read
+	afterScan  func()           // test hook: runs in Poll between the scan and recording
+	beforeWait func()           // test hook: runs in settle before each re-read
+	settleFor  time.Duration    // test hook: replaces execSettle if set
+	waited     map[procKey]bool // had its wait; see settle
+	waitLeft   time.Duration    // what this poll may still spend in settle
 }
 
-// execSettle bounds how long a poll that lands inside an exec waits for the
-// new arguments. It holds up the pollers, and runs at most once a process.
+// execSettle bounds how long after reading a sighting a poll that landed
+// inside an exec waits for the new arguments, and how long one poll spends on
+// all such waits: a wait holds up both pollers. A process gets one wait.
 const execSettle = 5 * time.Millisecond
 
 type procKey struct {
@@ -166,6 +172,7 @@ func (w *ProcWitness) Start() error {
 	w.tracked = map[procKey]*ProcessEvent{}
 	w.lineComm = map[procKey]string{}
 	w.inherited = map[procKey]bool{}
+	w.waited = map[procKey]bool{}
 	w.order = nil
 	w.stop, w.done = make(chan struct{}), make(chan struct{})
 	iv := w.Interval
@@ -221,6 +228,7 @@ type procInfo struct {
 // were unreadable (the process had exited, or had not yet exec'd).
 type procSnap struct {
 	cmdline, comm, exe, cgroup string
+	readAt                     time.Time
 }
 
 // scan reads the stat of every process, and the details of every process not in
@@ -375,7 +383,7 @@ func exited(err error) bool {
 
 func (w *ProcWitness) readSnap(pid int) *procSnap {
 	dir := filepath.Join(w.root(), strconv.Itoa(pid))
-	s := &procSnap{}
+	s := &procSnap{readAt: time.Now()}
 	// The name is read with every command line, and first: an exec between
 	// the two reads then pairs the old name with the new line, which a later
 	// sighting reports as an extra name (see refresh), never the reverse.
@@ -425,6 +433,7 @@ func (w *ProcWitness) Poll() {
 	start := time.Now()
 	procs, err := w.scan(baseline)
 	w.mu.Lock()
+	w.waitLeft = w.settleTime()
 	// A process can be born just after a scan listed /proc and be gone before
 	// the next scan read it: the window runs from one scan's start to the
 	// next one's end. A failed scan covers nothing, so it neither counts nor
@@ -532,6 +541,7 @@ func (w *ProcWitness) pollChildren() {
 	if walkErr != nil && w.walkErr == nil {
 		w.walkErr = walkErr
 	}
+	w.waitLeft = w.settleTime()
 	for _, f := range news {
 		w.record(f.k, f.p)
 	}
@@ -658,32 +668,51 @@ func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 // and returns the sighting to use: the re-read, if it found a line with the
 // same name, binary and cgroup, as a poll landing a moment later would have.
 // Otherwise s, so a child that exits or changes in the wait keeps its name as a
-// name event. A later poll's sighting is the only thing it stands for: nothing
-// recorded is ever withdrawn. w.mu must be held.
+// name event. Nothing recorded is ever withdrawn.
+//
+// The wait ends execSettle after s was read, and draws on waitLeft, so a stale
+// sighting gets none and children made to stall the pollers cost one poll
+// execSettle at most, each once. Past that the name stays. w.mu must be held.
+//
+//subpoena:enforcement_point
 func (w *ProcWitness) settle(k procKey, s *procSnap) *procSnap {
 	if !w.inherited[k] || s.cmdline != "" || s.comm == "" || s.exe == "" || s.comm == w.lineComm[k] {
 		return s
 	}
-	if _, kept := w.tracked[procKey{pid: k.pid, start: k.start + "/name:" + s.comm}]; kept {
-		return s // this name already had its wait
+	if w.waited[k] {
+		return s //subpoena:enforcement
 	}
-	for deadline := time.Now().Add(execSettle); time.Now().Before(deadline); time.Sleep(50 * time.Microsecond) {
+	w.waited[k] = true
+	began := time.Now()
+	defer func() { w.waitLeft -= time.Since(began) }()
+	deadline := s.readAt.Add(w.settleTime())
+	if budget := began.Add(w.waitLeft); budget.Before(deadline) {
+		deadline = budget
+	}
+	for ; time.Now().Before(deadline); time.Sleep(50 * time.Microsecond) {
 		if w.beforeWait != nil {
 			w.beforeWait()
 		}
 		if !w.running(k) {
-			return s
+			return s //subpoena:enforcement
 		}
 		n := w.readSnap(k.pid)
 		if n.cmdline == "" {
 			continue
 		}
-		if n.comm == s.comm && n.exe == s.exe && n.cgroup == s.cgroup {
-			return n
+		if n.comm != s.comm || n.exe != s.exe || n.cgroup != s.cgroup {
+			return s //subpoena:enforcement
 		}
-		return s
+		return n
 	}
 	return s
+}
+
+func (w *ProcWitness) settleTime() time.Duration {
+	if w.settleFor != 0 {
+		return w.settleFor
+	}
+	return execSettle
 }
 
 // running reports whether k is still that process and not a zombie, which has

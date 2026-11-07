@@ -70,8 +70,8 @@ first seen with its parent's command line (just forked) that is later seen
 with no arguments and a different name has exec'd (or renamed itself) since:
 its command line is kept, and the name is added as a second, name-only event
 for the same process. A poll that lands inside the exec, after the name changes
-and before the arguments exist, first waits up to 5ms for them, so a plain exec
-reads as one event. A later, different command line (`bash -c` replacing
+and before the arguments exist, first waits up to 5ms for them, once per
+process, so a plain exec usually reads as one event. A later, different command line (`bash -c` replacing
 itself with its last command, or a process rewriting its own argv) likewise
 keeps the earlier line as an event of its own; only a child's first line that
 equals its parent's is replaced by its exec, since it was never the child's.
@@ -191,7 +191,7 @@ session cgroup falls back to ppid lineage from the watched process (`ByLineage`)
 It is a unit-test stand-in, and it is honest about its gaps:
 
 - Polling can miss a process that lives less than the polling interval (2ms by
-  default). Tests spawn something that lives a little longer (the toy gateway
+  default, plus up to 5ms on a poll that waits inside an exec). Tests spawn something that lives a little longer (the toy gateway
   runs `sleep 0.15`). A kernel-side witness has no such gap.
 - A Go program's first `os/exec` call forks a throwaway probe (the runtime
   checking pidfd support) that briefly carries the parent's command line.
