@@ -766,7 +766,6 @@ func TestAStaleSightingTakesNoWait(t *testing.T) {
 	w.beforeWait = func() { looks++ }
 	s := w.readSnap(963)
 	s.readAt = s.readAt.Add(-2 * testSettle)
-	w.waitLeft = testSettle
 	got := w.settle(procKey{pid: 963, start: "263"}, s)
 	w.mu.Unlock()
 	if got != s || looks != 0 {
