@@ -205,7 +205,7 @@ frame to whichever test printed last, so a parallel test's `panic:` line can lan
 There it is a crash. The cost is a passing test that prints such a line beside a real failure, `panic:`
 or `fatal error:` at the start of a line, or `test panicked:` after a file and line, anywhere on a
 line, as `t.Log` gives it: that kill reads crashed, and the run fails, wherever the line lands. Sequential tests keep the
-rule, and so do subtests in turn inside one parallel test, unless a name runs twice: a test's span goes from its first
+rule, and so do subtests in turn inside one parallel test, unless another parallel test printed last and takes the line, which is then beside the failure and reads crashed, or a name runs twice: a test's span goes from its first
 start to its last end, so a `TestMain` that calls `m.Run` again after a failure makes sequential tests overlap,
 and a passing test's line beside that failure reads crashed, exit 1. Which test holds which is read from what ran, not cut
 from the names, as go keeps a slash in a subtest's name: `T/GET_/admin` is a subtest of `T`, and `T/read/all` a sibling of `T/read` if it

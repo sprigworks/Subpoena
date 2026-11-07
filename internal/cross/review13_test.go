@@ -236,6 +236,34 @@ func goTable(first, second string, wait int) string {
 `
 }
 
+// inTurnBeside is two subtests in turn inside a parallel test, with another parallel
+// test running beside them. A line with no frame lands on whichever test printed last,
+// so TestOther says all it will say before the subtests start, and stays quiet until
+// they end: left to the scheduler its cont can come after the subtest's run, and the
+// line is then on a test beside the failure, which is a crash. A repeat that runs only
+// the failed test has no TestOther to wait for.
+func inTurnBeside(logs, refused string) string {
+	return `var started, ended = make(chan bool), make(chan bool)
+
+func TestRoutes(t *testing.T) {
+	t.Parallel()
+	defer close(ended)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+	}
+	t.Run("logs", func(t *testing.T) { ` + logs + ` })
+	t.Run("refused", func(t *testing.T) { ` + refused + ` })
+}
+
+func TestOther(t *testing.T) {
+	t.Parallel()
+	close(started)
+	<-ended
+}
+`
+}
+
 // Review 13, H2. Subtests started from goroutines run at once with no pause or cont, so
 // overlap is read from run to end. A paused test is doing nothing, so one that paused
 // counts from cont: a sequential test around it did not run beside it. Every shape
@@ -296,14 +324,26 @@ func TestRefused(t *testing.T) { ` + refused + ` }
 	t.Run("refused", func(t *testing.T) { ` + refused + ` })
 }
 `, Killed},
-		"subtests in turn in a parallel test": {`func TestRoutes(t *testing.T) {
+		"subtests in turn in a parallel test": {inTurnBeside(logs, refused), Killed},
+		// The same two subtests, with the line taken by the test beside them.
+		"a line a parallel test took": {`var running, named = make(chan bool), make(chan bool)
+
+func TestRoutes(t *testing.T) {
 	t.Parallel()
-	t.Run("logs", func(t *testing.T) { ` + logs + ` })
+	t.Run("logs", func(t *testing.T) { close(running); <-named; ` + logs + ` })
 	t.Run("refused", func(t *testing.T) { ` + refused + ` })
 }
 
-func TestOther(t *testing.T) { t.Parallel() }
-`, Killed},
+func TestOther(t *testing.T) {
+	t.Parallel()
+	select {
+	case <-running:
+		t.Log("the next line printed with no frame lands here")
+		close(named)
+	case <-time.After(5 * time.Second):
+	}
+}
+`, Crashed},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

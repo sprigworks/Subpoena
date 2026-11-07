@@ -297,14 +297,7 @@ func TestRefused(t *testing.T) { if Check("mallory") == nil { t.Fatal("mallory l
 }
 `
 	// Two subtests in turn inside a parallel test ran one after the other.
-	const inTurn = `func TestOuter(t *testing.T) {
-	t.Parallel()
-	t.Run("logs", func(t *testing.T) { fmt.Println("panic: recovered and logged") })
-	t.Run("refused", func(t *testing.T) { if Check("mallory") == nil { t.Fatal("mallory let in") } })
-}
-
-func TestOther(t *testing.T) { t.Parallel() }
-`
+	inTurn := inTurnBeside(`fmt.Println("panic: recovered and logged")`, `if Check("mallory") == nil { t.Fatal("mallory let in") }`)
 	// Each pair of parallel subtests waits for its parent, so these two groups never meet.
 	const apart = `func TestFirst(t *testing.T) {
 	t.Run("logs", func(t *testing.T) { t.Parallel(); fmt.Println("panic: recovered and logged") })
