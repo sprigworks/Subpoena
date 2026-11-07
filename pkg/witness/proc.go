@@ -46,8 +46,9 @@ import (
 //   - A name seen inside a forked child's exec is withdrawn when the child's
 //     first own line names that program, from the same binary and cgroup. If
 //     the name came from an earlier exec of that binary with other arguments,
-//     whose line no poll read, those arguments go unreported, as they do when
-//     no poll lands in the window at all.
+//     or the process rewrote its argv before the line was read, the arguments
+//     it first ran with go unreported, as they do when no poll lands in the
+//     window at all.
 //   - Seeing a calibration probe proves the witness observed that probe, not
 //     that capture was complete: a shorter process can still slip between
 //     polls.
@@ -76,8 +77,9 @@ type ProcWitness struct {
 	mu           sync.Mutex
 	baseline     map[procKey]bool
 	tracked      map[procKey]*ProcessEvent
-	lineComm     map[procKey]string // the task name when Command's command line was read
-	inherited    map[procKey]bool   // Command is the parent's command line, seen before an exec
+	lineComm     map[procKey]string    // the task name when Command's command line was read
+	inherited    map[procKey]bool      // Command is the parent's command line, seen before an exec
+	nameSights   map[procKey]nameSight // what each kept name event was read with, by its key
 	order        []procKey
 	stop         chan struct{}
 	done         chan struct{}
@@ -90,6 +92,13 @@ type ProcWitness struct {
 	lastScan     time.Time // when the latest successful full scan started
 
 	afterScan func() // test hook: runs in Poll between the scan and recording
+}
+
+// nameSight is what the sightings of a kept name showed. It is read from the
+// sightings themselves, because a kept event carries the latest of each.
+type nameSight struct {
+	exe, cgroup string
+	mixed       bool // the sightings disagreed
 }
 
 type procKey struct {
@@ -163,6 +172,7 @@ func (w *ProcWitness) Start() error {
 	w.tracked = map[procKey]*ProcessEvent{}
 	w.lineComm = map[procKey]string{}
 	w.inherited = map[procKey]bool{}
+	w.nameSights = map[procKey]nameSight{}
 	w.order = nil
 	w.stop, w.done = make(chan struct{}), make(chan struct{})
 	iv := w.Interval
@@ -608,9 +618,10 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 // An exec sets the task name before the new arguments exist, so a poll can
 // land on a forked child with its new name and no line. That name is kept as
 // above, because the child may exit there. If the child's first own line then
-// names that program, and the binary and cgroup are the ones the name was seen
-// with, the two are taken for one exec and the name's event goes. That is a
-// trade: see the limit on the type. Anything else leaves it. w.mu must be held.
+// names that program, and every sighting of the name read the binary and cgroup
+// this one reads, the two are taken for one exec and the name's event goes. That
+// is a trade: see the limit on the type. Anything else leaves it. w.mu must be
+// held.
 //
 //subpoena:enforcement_point
 func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
@@ -649,6 +660,7 @@ func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 	// and attribution.
 	if newName != "" {
 		w.keepAs(k, ev, "/name:"+newName, newName, CommandName)
+		w.noteName(k, s)
 	}
 	if oldLine != "" {
 		w.keepAs(k, ev, "/line:"+oldLine, oldLine, CommandLine)
@@ -673,13 +685,30 @@ func (w *ProcWitness) keepAs(k procKey, ev *ProcessEvent, tag, command string, s
 	}
 }
 
-// dropName removes the event keepAs recorded for k's current name, if it was
-// seen with the binary and cgroup s shows. An unread binary leaves it.
+// nameKey is the key keepAs files k's name event under.
+func nameKey(k procKey, name string) procKey {
+	return procKey{pid: k.pid, start: k.start + "/name:" + name}
+}
+
+// noteName adds the sighting s to what k's current name was read with.
 // w.mu must be held.
+func (w *ProcWitness) noteName(k procKey, s *procSnap) {
+	nk := nameKey(k, s.comm)
+	sight, seen := w.nameSights[nk]
+	if seen && (sight.exe != s.exe || sight.cgroup != s.cgroup) {
+		sight.mixed = true
+	}
+	sight.exe, sight.cgroup = s.exe, s.cgroup
+	w.nameSights[nk] = sight
+}
+
+// dropName removes the event keepAs recorded for k's current name, if every
+// sighting of the name read the binary and cgroup s shows. A binary or cgroup
+// that could not be read matches nothing. w.mu must be held.
 func (w *ProcWitness) dropName(k procKey, s *procSnap) {
-	nk := procKey{pid: k.pid, start: k.start + "/name:" + s.comm}
-	kept, seen := w.tracked[nk]
-	if !seen || s.exe == "" || kept.Exe != s.exe || kept.Cgroup != s.cgroup {
+	nk := nameKey(k, s.comm)
+	sight, seen := w.nameSights[nk]
+	if !seen || sight.mixed || s.exe == "" || s.cgroup == "" || sight.exe != s.exe || sight.cgroup != s.cgroup {
 		return
 	}
 	delete(w.tracked, nk)
@@ -688,8 +717,8 @@ func (w *ProcWitness) dropName(k procKey, s *procSnap) {
 
 // lineProgram guesses the task name of a command line's program: its first
 // word without the directory, cut to 15 bytes. It is a guess because the
-// process controls argv[0], and a script's name is not its interpreter's: a
-// wrong guess only fails to match, which keeps a name event.
+// process controls argv[0], and a script's name is not its interpreter's. A
+// miss keeps a name event. A forged match is why dropName wants more than this.
 func lineProgram(line string) string {
 	f := strings.Fields(line)
 	if len(f) == 0 {

@@ -731,6 +731,67 @@ func TestAnUnreadBinaryKeepsTheName(t *testing.T) {
 	}
 }
 
+// Every sighting counts, not the last: /tmp/x/sleep was seen and then replaced
+// by /usr/bin/sleep, inside one window each.
+func TestANameSeenWithTwoBinariesStays(t *testing.T) {
+	w, dir := execWindow(t, 953, "sleep")
+	showName(t, w, dir, "sleep", "/usr/bin/sleep")
+	showLine(t, w, dir, "sleep\x000.15\x00")
+	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// The same when the line's binary is the one the name was first seen with.
+func TestANameSeenWithABinaryInBetweenStays(t *testing.T) {
+	w, dir := execWindow(t, 956, "sleep")
+	showName(t, w, dir, "sleep", "/tmp/x/sleep")
+	setExe(t, dir, "/bin/sleep")
+	showLine(t, w, dir, "sleep\x000.15\x00")
+	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// The same for a name seen under two cgroups, ending in the line's.
+func TestANameSeenInTwoCgroupsStays(t *testing.T) {
+	w, dir := execWindow(t, 954, "sleep")
+	must(t, os.WriteFile(filepath.Join(dir, "cgroup"), []byte("0::/moved"), 0o644))
+	w.pollChildren()
+	showLine(t, w, dir, "sleep\x000.15\x00")
+	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// And when the line's cgroup is the one the name was first seen in.
+func TestANameSeenInACgroupInBetweenStays(t *testing.T) {
+	w, dir := execWindow(t, 957, "sleep")
+	must(t, os.WriteFile(filepath.Join(dir, "cgroup"), []byte("0::/moved"), 0o644))
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(dir, "cgroup"), []byte("0::/"), 0o644))
+	showLine(t, w, dir, "sleep\x000.15\x00")
+	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// A cgroup never read matches nothing, even at another unread read.
+func TestAnUnreadCgroupKeepsTheName(t *testing.T) {
+	w, root := freshFake(t, nil)
+	dir := filepath.Join(root, "955")
+	fakeProc(t, root, 955, 100, "255", "gateway", "0::/")
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
+	fakeChildren(t, root, 100, 955)
+	w.pollChildren()
+	must(t, os.Remove(filepath.Join(dir, "cgroup")))
+	showName(t, w, dir, "sleep", "/bin/sleep")
+	showLine(t, w, dir, "sleep\x000.15\x00")
+	if got := byCmd(w.Events()); len(got) != 2 || !got["sleep"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
 // A move between the window and the line leaves the name with the trace it
 // was seen under.
 func TestACgroupMoveKeepsTheName(t *testing.T) {
@@ -789,7 +850,8 @@ func TestABlankLineMatchesNoName(t *testing.T) {
 
 // A child that exits inside the window was never read: its name stays.
 func TestAnExitInsideAnExecKeepsTheName(t *testing.T) {
-	w, _ := execWindow(t, 943, "rm")
+	w, dir := execWindow(t, 943, "rm")
+	must(t, os.RemoveAll(dir))
 	w.pollChildren()
 	if got := byCmd(w.Events()); !got["rm"].NameOnly() {
 		t.Fatalf("got %s", brief(w.Events()))
@@ -803,6 +865,7 @@ func TestANameAfterAnOwnLineStays(t *testing.T) {
 	dir := filepath.Join(root, "944")
 	fakeProc(t, root, 944, 100, "244", "myservice\x00--serve\x00", "0::/")
 	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("myservice\n"), 0o644))
+	setExe(t, dir, "/bin/rm")
 	fakeChildren(t, root, 100, 944)
 	w.pollChildren()
 	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
