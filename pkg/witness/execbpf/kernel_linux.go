@@ -23,6 +23,11 @@ type kernel struct {
 	rd    eventReader
 	done  chan struct{}
 	lost  func() (uint64, error) // read after detaching, before unloading
+	left  func() (uint64, error) // the same, for tasks that left a session
+	deep  func() (uint64, error) // the same, for cgroup paths too long to walk
+	// misses is the invocations the kernel skipped, every program together. It
+	// reads the programs, so it too must run before they are unloaded.
+	misses func() (uint64, error)
 }
 
 type eventReader interface {
@@ -34,6 +39,8 @@ type eventReader interface {
 const (
 	kindExec = 1
 	kindFork = 2
+
+	nameLen = 64 // NAME_LEN in bpf/exec.c
 )
 
 // Start loads and attaches the program. Execs after Start returns are seen.
@@ -46,6 +53,10 @@ func (w *Witness) Start() error {
 	w.mu.Lock()
 	w.events, w.healthErr, w.finished = nil, nil, false
 	w.mu.Unlock()
+	base, err := sessionBase(w.base)
+	if err != nil {
+		return err
+	}
 	// Kernels before 5.11 charge eBPF memory to RLIMIT_MEMLOCK.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return fmt.Errorf("execbpf: %w", err)
@@ -58,9 +69,9 @@ func (w *Witness) Start() error {
 	if err := syscall.Stat("/proc/self/ns/pid", &st); err != nil {
 		return fmt.Errorf("execbpf: own PID namespace: %w", err)
 	}
-	vars := map[string]uint32{"pidns_inum": uint32(st.Ino)}
+	vars := map[string]any{"pidns_inum": uint32(st.Ino), "session_base": base}
 	if w.cfg.RootPID != 0 {
-		vars["track_forks"] = 1
+		vars["track_forks"] = uint32(1)
 	}
 	for name, val := range vars {
 		v, ok := spec.Variables[name]
@@ -86,11 +97,11 @@ func (w *Witness) Start() error {
 		}
 		return fmt.Errorf("execbpf: load: %w", err)
 	}
-	for _, p := range []*ebpf.Program{k.objs.HandleExec, k.objs.HandleFork} {
-		l, err := link.AttachTracing(link.TracingOptions{Program: p})
+	for _, h := range k.hooks() {
+		l, err := link.AttachTracing(link.TracingOptions{Program: h.prog})
 		if err != nil {
 			k.close()
-			return fmt.Errorf("execbpf: attach %s: %w", p, err)
+			return fmt.Errorf("execbpf: attach %s: %w", h.name, err)
 		}
 		k.links = append(k.links, l)
 	}
@@ -98,17 +109,10 @@ func (w *Witness) Start() error {
 		k.close()
 		return fmt.Errorf("execbpf: %w", err)
 	}
-	k.lost = func() (uint64, error) {
-		var perCPU []uint64
-		if err := k.objs.Lost.Lookup(uint32(0), &perCPU); err != nil {
-			return 0, fmt.Errorf("execbpf: read loss counter: %w", err)
-		}
-		var total uint64
-		for _, n := range perCPU {
-			total += n
-		}
-		return total, nil
-	}
+	k.lost = func() (uint64, error) { return sum(k.objs.Lost, "loss") }
+	k.left = func() (uint64, error) { return sum(k.objs.LeftSession, "left-session") }
+	k.deep = func() (uint64, error) { return sum(k.objs.TooDeep, "too-deep") }
+	k.misses = k.recursionMisses
 	w.mu.Lock()
 	w.events, w.healthErr, w.finished = nil, nil, false
 	if w.cfg.RootPID != 0 {
@@ -118,6 +122,64 @@ func (w *Witness) Start() error {
 	w.k = k
 	go w.read(k)
 	return nil
+}
+
+// hook is one program to attach.
+type hook struct {
+	name string
+	prog *ebpf.Program
+}
+
+func (k *kernel) hooks() []hook {
+	return []hook{
+		{"handle_exec", k.objs.HandleExec},
+		{"handle_fork", k.objs.HandleFork},
+		{"handle_attach", k.objs.HandleAttach},
+	}
+}
+
+// recursionMisses adds up what the kernel counts for every program: invocations it
+// skipped because a program was already active on that CPU, each maybe an exec or
+// a move that was never reported, with no event and no ring-buffer loss. Linux
+// before 5.12 has neither the guard nor the count, and reads as zero.
+func (k *kernel) recursionMisses() (uint64, error) {
+	var total uint64
+	for _, h := range k.hooks() {
+		st, err := h.prog.Stats()
+		if err != nil {
+			return 0, fmt.Errorf("execbpf: read recursion misses of %s: %w", h.name, err)
+		}
+		total += st.RecursionMisses
+	}
+	return total, nil
+}
+
+// sum adds up a per-CPU counter.
+func sum(m *ebpf.Map, what string) (uint64, error) {
+	var perCPU []uint64
+	if err := m.Lookup(uint32(0), &perCPU); err != nil {
+		return 0, fmt.Errorf("execbpf: read %s counter: %w", what, err)
+	}
+	var total uint64
+	for _, n := range perCPU {
+		total += n
+	}
+	return total, nil
+}
+
+// sessionBase is the kernel filter's copy of the session root's last element. The
+// kernel reads path elements up to nameLen-1 bytes long, so a longer name could
+// never compare equal, and a task leaving its session would go uncounted. Refused
+// here, like a root with no last element, or one no cgroup can have for a name.
+//
+//subpoena:enforcement_point
+func sessionBase(base string) ([nameLen]byte, error) {
+	var out [nameLen]byte
+	if base == "" || base == "/" || base == "." || base == ".." || len(base) >= nameLen {
+		return out, fmt.Errorf("execbpf: cgroup root element %q cannot be matched in the kernel", base) //subpoena:enforcement
+	}
+	copy(out[:], base)
+	return out, nil
 }
 
 func (w *Witness) read(k *kernel) {
@@ -179,6 +241,27 @@ func (w *Witness) Stop() error {
 	}
 	if lost != 0 {
 		stopErr = errors.Join(stopErr, fmt.Errorf("execbpf: lost %d kernel event(s)", lost)) //subpoena:enforcement
+	}
+	misses, err := k.misses()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
+	}
+	if misses != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("execbpf: the kernel skipped the programs %d time(s) (recursion misses): execs may have gone unseen", misses)) //subpoena:enforcement
+	}
+	left, err := k.left()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
+	}
+	if left != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("execbpf: %d task(s) left a session cgroup during the capture, and what they did after is no session's", left)) //subpoena:enforcement
+	}
+	deep, err := k.deep()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
+	}
+	if deep != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("execbpf: %d exec(s) or move(s) in a cgroup path too long to walk, so nothing says whose they were", deep)) //subpoena:enforcement
 	}
 	k.close()
 	w.mu.Lock()

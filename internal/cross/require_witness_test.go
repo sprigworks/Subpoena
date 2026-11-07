@@ -19,10 +19,10 @@ func TestRequireWitness(t *testing.T) {
 		{"return value", strongTest, true, KilledBySelfReport},
 		{"testimony", strings.Replace(strongTest, "non-admin must be denied", "testimony: no denial span", 1), true, KilledBySelfReport},
 		{"witness", tagTest, true, Killed},
-		{"later witness", strings.Replace(strongTest, `t.Fatal("non-admin must be denied")`, `t.Error("non-admin must be denied"); t.Error("witness: process ran")`, 1), true, KilledBySelfReport},
+		{"later witness", strings.Replace(strongTest, `t.Fatal("non-admin must be denied")`, `t.Error("non-admin must be denied"); t.Error(signed("witness: process ran"))`, 1), true, KilledBySelfReport},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": tc.test})
+			dir := module(t, map[string]string{"auth.go": authOK, "auth_test.go": tc.test, "signed_test.go": signedHelper})
 			rep, err := Run(context.Background(), Options{Target: dir, RequireWitness: tc.strict})
 			if err != nil {
 				t.Fatal(err)

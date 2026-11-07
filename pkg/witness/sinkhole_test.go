@@ -4,10 +4,22 @@
 package witness
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/netip"
+	"net/url"
+	"os"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestSinkholeRecordsArrivalsForEveryTrace(t *testing.T) {
@@ -122,5 +134,184 @@ func TestSinkholeFailedDrainCannotCertifyAbsence(t *testing.T) {
 	}
 	if err := s.Stop(); !errors.Is(err, broken) {
 		t.Fatalf("second Stop = %v, erased the failure", err)
+	}
+}
+
+// A sinkhole at a chosen address records arrivals there, over IPv6 too.
+func TestSinkholeAtChosenAddress(t *testing.T) {
+	for _, want := range []string{"127.0.0.2", "::1"} {
+		t.Run(want, func(t *testing.T) {
+			addr := netip.MustParseAddr(want)
+			s, err := NewSinkholeAt(netip.AddrPortFrom(addr, 0))
+			if err != nil {
+				t.Skipf("address unavailable here: %v", err)
+			}
+			if got := s.Addr().Addr(); got != addr || s.Addr().Port() == 0 {
+				t.Fatalf("listening on %v, want %v and a real port", s.Addr(), addr)
+			}
+			c, err := net.Dial("tcp", s.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Close()
+			if err := s.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.Dialed("any"); len(got) != 1 || got[0].Dest != s.Addr() {
+				t.Fatalf("want one arrival at %v, got %+v", s.Addr(), got)
+			}
+		})
+	}
+}
+
+// An address the host doesn't have is an error, not a sinkhole that sees nothing.
+func TestSinkholeAtUnavailableAddressFails(t *testing.T) {
+	if s, err := NewSinkholeAt(netip.MustParseAddrPort("192.0.2.1:0")); err == nil {
+		s.Stop()
+		t.Fatal("want an error binding an address this host does not have")
+	}
+}
+
+func answering(t *testing.T) *Sinkhole {
+	t.Helper()
+	s, err := NewAnsweringSinkhole()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Stop() })
+	return s
+}
+
+// The B20 shape: a reverse proxy turns the plain Sinkhole's hangup into a 502,
+// and the answering one's reply into the upstream's 200.
+func TestAnsweringSinkholeStandsInForAnUpstream(t *testing.T) {
+	s := answering(t)
+	front := httptest.NewServer(httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: s.Addr().String()}))
+	defer front.Close()
+	req, _ := http.NewRequest("POST", front.URL+"/secret?x=1", strings.NewReader("a body"))
+	req.Header.Set(MarkHeader, "trace-a")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || len(body) != 0 {
+		t.Fatalf("got %d %q, want 200 and no body", resp.StatusCode, body)
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Health(); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Marked("trace-a")
+	if len(got) != 1 || got[0].HTTP.Line != "POST /secret?x=1 HTTP/1.1" || got[0].Attribution != ByDestination {
+		t.Fatalf("events %+v", got)
+	}
+}
+
+// A mark tells two arrivals apart for the test, and hides none from an absence
+// check: it comes through the code under test (Review 5, finding 5).
+func TestAMarkHidesNoArrival(t *testing.T) {
+	s := answering(t)
+	for _, mark := range []string{"a", "b", ""} {
+		req, _ := http.NewRequest("GET", "http://"+s.Addr().String()+"/", nil)
+		if mark != "" {
+			req.Header.Set(MarkHeader, mark)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	s.Stop()
+	if got := s.Marked("a"); len(got) != 1 {
+		t.Fatalf("Marked(a) = %+v", got)
+	}
+	if got := s.Dialed("c"); len(got) != 3 {
+		t.Fatalf("Dialed(c) = %+v, want all three", got)
+	}
+}
+
+// What cannot be read as a request still arrived.
+func TestAnArrivalThatIsNotHTTPStillCounts(t *testing.T) {
+	s := answering(t)
+	c, err := net.Dial("tcp", s.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Write([]byte("not http\r\n\r\n"))
+	c.Close()
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Dialed("any"); len(got) != 1 || got[0].HTTP != nil || got[0].Attribution != ByDestination {
+		t.Fatalf("events %+v", got)
+	}
+}
+
+// Review 6, finding 14, and Review 7, finding 9: the same bytes read the same in
+// both languages, from one table (python/tests/test_network.py reads it too). Only
+// Marked and the answer differ by request: Dialed sees every arrival.
+func TestMarkedReadsARequestAsPythonDoes(t *testing.T) {
+	b, err := os.ReadFile("../../conformance/sinkhole.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Probes []string `yaml:"probes"`
+		Cases  []struct {
+			Name     string   `yaml:"name"`
+			Request  string   `yaml:"request"`
+			Fill     int      `yaml:"fill"`
+			Answered bool     `yaml:"answered"`
+			Marks    []string `yaml:"marks"`
+		} `yaml:"cases"`
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Cases) < 60 {
+		t.Fatalf("only %d cases", len(doc.Cases))
+	}
+	for _, tc := range doc.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			t.Parallel()
+			text := strings.ReplaceAll(tc.Request, "@FILL@", strings.Repeat("y", tc.Fill))
+			raw := make([]byte, 0, len(text))
+			for _, r := range text {
+				raw = append(raw, byte(r)) // a character stands for a byte
+			}
+			s := answering(t)
+			c, err := net.Dial("tcp", s.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			c.Write(raw) // a refusal can come before all of it is read
+			c.(*net.TCPConn).CloseWrite()
+			c.SetReadDeadline(time.Now().Add(5 * time.Second))
+			reply, _ := io.ReadAll(c)
+			s.Stop()
+			if got := len(reply) > 0; got != tc.Answered {
+				t.Errorf("answered = %v, reply %q", got, reply)
+			}
+			for _, mark := range doc.Probes {
+				want := 0
+				if slices.Contains(tc.Marks, mark) {
+					want = 1
+				}
+				if got := len(s.Marked(mark)); got != want {
+					t.Errorf("Marked(%q) = %d, want %d", mark, got, want)
+				}
+			}
+			if got := len(s.Dialed("any")); got != 1 {
+				t.Errorf("Dialed = %d", got)
+			}
+		})
 	}
 }

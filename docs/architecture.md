@@ -59,8 +59,8 @@ because the instrumentation is a separate statement from the enforcement. A
 suite that trusts spans alone can be green over broken enforcement.
 
 So enforcement is proven by a witness: something outside the application's
-control that observes the side effect directly. Here, process exec events and
-outbound connection attempts.
+control that observes the side effect directly. Here, process exec events,
+outbound connection attempts, and sends on sockets already open.
 Tier 1 uses `ProcWitness`, which polls `/proc` and correlates by cgroup first:
 the gateway puts each session's processes in a cgroup named with the trace ID
 (`pkg/cgroup`), and the witness reads `/proc/<pid>/cgroup` to tie a process to a
@@ -69,9 +69,13 @@ The exec span records which correlation applies (`subpoena.witness.correlation`)
 Tier 2 and production use `pkg/witness/execbpf`: an eBPF program on the exec
 tracepoint that reads each process's cgroup in the kernel, run as
 `cmd/subpoena-witness` with its events shipped to Loki. That command ships
-exec events only. Tier 1 network absence uses `witness.Sinkhole`, a listener
-the test stands up. The kernel sibling is `pkg/witness/netbpf`, in
-`make test-ebpf`; it is not what `cmd/subpoena-witness` runs. See
+exec events, plus sends with `-deliveries`. Tier 1 network absence uses
+`witness.Sinkhole`, a listener the test stands up. The kernel sibling is
+`pkg/witness/netbpf`, in `make test-ebpf`; it is not what `cmd/subpoena-witness`
+runs for dials. Delivery on a socket already open has no tier 1: only `netbpf`
+sees it. Tier 1 file absence uses `witness.FileWatch`, inotify on a root the
+test names, with a reader of SQLite's WAL and pages on top;
+`subpoena-witness -file-root` runs it for a test in another language. See
 `witnesses/README.md` for the gaps in each.
 
 The tier-2 OATS fixture proxies test requests through an independent capture
@@ -94,38 +98,216 @@ checks, per enforcement point, that the suite notices when enforcement is gone.
 It copies the module to a temp directory, discovers enforcement points from
 that copy, and removes the statement marked
 `//subpoena:enforcement` inside each `//subpoena:enforcement_point` function,
-and runs the tests. A red suite kills the mutant. A green suite means the tests
+and runs the tests. A suite that goes red on a test's assertion kills the mutant,
+if that test passes without it. A green suite means the tests
 cannot tell enforced from unenforced behaviour, and subpoena-cross reports
 `enforcement-mutant-survived <func>`. It requires a green baseline first, and a
-mutant that does not compile is "invalid", never "killed". A mutant whose tests
+mutant that does not compile is "invalid", never "killed". Every run starts from
+a fresh copy, so no test sees what another case left there. After a kill, it must
+hold. The mutant run's whole command runs again with the mutant, on a fresh copy,
+in Go without `-failfast`, so a test that catches the mutant is sure to run whatever
+test stopped the first run. That costs a longer repeat, a whole suite where the
+first run could stop early, and `-failfast` in `GOFLAGS` does not change it. It must be a clean kill, with a test of the first run
+among the failed, read in Go from go test's `fail` events, since a test's output can
+print the line go test prints for a failure. A test can print the byte go test frames
+its own lines with too, and go test then makes a `fail` or `pass` event of that text. So
+printed text must not make a kill, and where that costs a real one, it does. A package counts
+only if its binary exited 1, and the exit code is one thing a test cannot print, so a printed
+fail in a package that went green is nothing, whatever crashed elsewhere. A test must have a
+`run` event, and a pass ends it: a test with both a `pass` and a `fail` event reads as not
+failed, whichever came first, as what is printed and what is real can come in either order.
+Only a witness failure with this run's mark outlives a pass, printed ahead of it or after, and
+not if another test started between the pass and the `fail`, since a framed line can move a real
+message to a test that passed. That has a price, paid on purpose. A printed pass in a test with
+a plain failure costs that kill, wherever it lands, and so does one in a witness test that then
+runs beside another, such as a parallel one: the run reads unconfirmed, and stays red. A lost kill says so, and a false
+one says nothing. A test can also print the framed run line and fail line of a test that never
+ran, and go test cannot tell those events from the real thing. But a binary that exits 1 with
+no test failed did so in `TestMain`, after `m.Run` said `PASS`, so a package that said `PASS` gives
+no failed test but a marked one. Printing `PASS` can cost a kill, as a printed pass can. Hiding it
+can make one: `m.Run` writes `PASS` to the current `os.Stdout`, so a suite that swaps `os.Stdout`
+around it, prints such a pair of lines, and exits 1 from `TestMain` on the mutant reads as a plain
+kill, with every real test passed. Nothing in the output gives that away, since a missing line
+proves nothing and a printed `FAIL` could stand in for a real one. Only `--require-witness` stops
+it. The same pair of lines beside a real failure in the same package is left too, where
+something in that package did fail with the mutant. In Go a repeat where
+a package crashes, or that hangs, can do so in a test the first run never reached, and
+under `-shuffle` such a test can come first. So the first run's own command goes again,
+as a test can need what ran before it. If that stops short too, each package with a test of
+the first run goes alone: the command in that package, then its failed tests, so a hang
+elsewhere is left out, even one a test name or a `TestMain` reaches. Each goes by the same rule: a clean kill, in a test of the first run. A test
+that needs another to run first can still come back unconfirmed if the command stops short
+in its own package as well, as under `-shuffle` it can. A hang in the failed package itself, on every try, also
+stays unconfirmed: cross says the repeats hung, and does not call it a flake. With
+`--require-witness`, a test of the first run must give witness evidence on the repeat
+too, as its own first failure, wherever it ran: go test gives packages in the order they
+finished, so in Go another package's plain failure takes nothing from it. In Go a package
+that died on the repeat gets the same second look. `-evidence-dir` keeps each of these runs.
+If not, the kill is `enforcement-mutant-killed-by-self-report`: only one of the two
+runs had independent evidence. Then three runs without the mutant, each on a
+fresh copy: the first is the whole command, because a failure can
+need a test in another package, and in Go the others are the failed packages. None has
+`-test.failfast`, as a `TestMain` that calls `m.Run` again would make a suite red by
+itself read green there. A rerun that passes runs the same tests either way, so this costs only
+the rest of a package's tests on a rerun that fails, which ends the mutant anyway. The
+baseline, the mutant run and the reruns all start their test binaries the same
+way, so a test red only under the way it was started is red on the baseline too.
+A kill that does not hold is `enforcement-mutant-unconfirmed`, the run fails, and
+cross says why: something other than the mutant turned it red, such as a flake or
+state outside the copy that persists. State that clears itself before the reruns
+passes them. A flake must fail twice with the mutant in the same test, then pass
+without it. If its runs are independent, a test that fails one run in twenty-five
+does that on about one mutant in seven hundred, and a test that fails half the
+time on about one in thirty-two; state the test keeps between runs can make that
+worse. Cross narrows this and does not close it: fix the flake, and confirm a
+surprising kill by rerunning cross. In Go a kill also
+needs a failed test whose binary links the mutated package (`go list -deps
+-test`). A suite that runs the code as a separate program links none of it, so
+its kills come back unconfirmed. A removed `return`
+the function cannot end without gets a return of zero values in its place only
+when that turns an error to nil and changes nothing else; any other such return
+stays invalid, since zero can be the refusal itself (`return p.Check(u)`). That
+includes a return with a call in its error, `fmt.Errorf` too: the call can be
+the work itself (`return s.Authorize(admins)`), and cross cannot see what a
+call does. A mutant whose tests
 run past `-timeout` (5 minutes by default) is `enforcement-mutant-timeout`, also
 never "killed": a hang may be the host's, and no assertion caught it. A suite
 that goes red with no clean failure message is `enforcement-mutant-crashed`,
 which fails the run too: a crash is not evidence that the enforcement is
 tested. A package whose test binary died (a panic, a runtime fatal error or
 `os.Exit`) gives no kills at all, since a test's log lines before its panic
-look like failure messages; a clean failure in another package still counts. Mutant runs use `go test -json -failfast`, so a
-package stops at its first red test. Each kill reports its first evidence, the
-first failure message of a failed test: `witness` or `testimony` when the
+look like failure messages; a clean failure in another package still counts.
+That holds for an assertion library's report too: `go test -json` carries it as
+plain text, which the code under test can print, so a testify or Ginkgo failure
+ahead of a panic is a crash. Cross reads the death from the binary's exit code,
+which it records through `go test -exec`, since `go test -json` does not give
+it: anything but 1 is a death, wherever the panic's text fell, even beside
+another writer's open line. The wrapper is a small Go program cross builds for
+the run. It adds nothing to the environment, a project's own `-exec` or
+`go_$GOOS_$GOARCH_exec` runs under it, and with no wrapper cross stops rather than
+read the output alone. An exit 1 counts only if the binary finished testing: the
+wrapper asks for a heap profile, which package testing writes when `m.Run` ends,
+and an `os.Exit(1)` in the middle of a test leaves none. Output cannot show this,
+since `go test -json` trusts a `--- FAIL:` line behind the `^V` byte whoever wrote
+it. Code that goes looking can still write the profile path it finds in
+`os.Args`. A runner that runs the binary elsewhere leaves no profile: if the path
+exists there, its kills are crashes, and if it does not, package testing exits 2
+on a passing suite and cross stops at the baseline. `GOFLAGS=-memprofile=...`
+overrides the wrapper's own flag, so on a single-package target every kill is a
+crash: unset it for a cross run. A `panic:` line also voids a package's kills when it
+sits in a test that did not pass, so a panic something recovered, with the
+binary exiting 1, stays a crash. So does one printed outside any test, from `TestMain` say, in a
+failed package, in any run. In a test that passed it is a log line, and
+order does not matter: the binary lived. The exception is a test that passed beside one that did
+not, read from each test's events from `run`, or from `cont` if it paused, to its end, which covers subtests
+started from goroutines that do not pause: package testing's frames carry a line printed with no
+frame to whichever test printed last, so a parallel test's `panic:` line can land on its neighbour.
+There it is a crash. The cost is a passing test that prints such a line beside a real failure, `panic:`
+or `fatal error:` at the start of a line, or `test panicked:` after a file and line, anywhere on a
+line, as `t.Log` gives it: that kill reads crashed, and the run fails, wherever the line lands. Sequential tests keep the
+rule, and so do subtests in turn inside one parallel test, unless another parallel test printed last and takes the line, which is then beside the failure and reads crashed, or a name runs twice: a test's span goes from its first
+start to its last end, so a `TestMain` that calls `m.Run` again after a failure makes sequential tests overlap,
+and a passing test's line beside that failure reads crashed, exit 1. Which test holds which is read from what ran, not cut
+from the names, as go keeps a slash in a subtest's name: `T/GET_/admin` is a subtest of `T`, and `T/read/all` a sibling of `T/read` if it
+started while that test was paused. Three goroutine shapes cannot be read, and nothing need be forged in any of them. In each a recovered
+panic's line lands on a subtest that passes, stays a log line, and the failure beside it is a plain kill, exit 0. A subtest started from a goroutine, whose name goes on from a
+sibling's and which passes and ends while that sibling runs, has the same events as a real subtest of a test that failed later. So has a subtest a parent
+started in a goroutine, when the parent carries on and recovers the panic in its own body: a test does not run beside its own subtest, and no slash is needed.
+And a subtest started from a goroutine that works and then calls `t.Parallel` counts only from its `cont`, so a line that lands on it before it pauses is not beside the failure. Under `--require-witness` all three are a crash (see
+What forged output can do). A test with a `fail` event has not passed here,
+whatever `pass` sits beside it, so a printed pass does not make a crash a log line. testify's `suite` reports one it recovered through `t.Errorf`, as `test panicked:` after a
+file and line, and in a test that did not pass that counts as a crash too, wherever it falls on the
+line. A failed test that logs those words so reads crashed. Other frameworks that recover a panic
+and report it as a plain failure are not known to cross, and read as plain kills. Ginkgo reports a recovered panic as `[PANICKED]`,
+which counts as a crash wherever it falls in the suite, since Ginkgo runs a suite
+as one test in random order. Failures outside any test never count: a line
+printed while `TestMain` or `init` ran is package output, whatever its shape. A line a
+test printed with no newline runs into the failure after it, and go test gives the two
+as one line: in a test with a `fail` event the failure is read after that text, at go
+test's own indent. A failed `Example` has no `file:line`, and package testing's `got:` report
+under its `fail` event is its failure, read as `other`. A printed log line can have the same shape, and go test's events cannot
+tell the two apart, so such a line counts only in a test with no failure on a line of its
+own, or with the harness's mark. A plain failure after open text therefore no longer stands
+ahead of a witness failure in the same test. A mutant's first run passes `-test.failfast` to each test binary, so a
+package stops at its first red test and every package runs: go test's own `-failfast`
+skips packages not yet started as soon as one fails. So a package can hang on the mutant
+after another has caught it: a run that timed out with a clean failure in a package that
+finished goes to the repeat, and with none it is a timeout. That flag can also turn a
+`TestMain` that calls `m.Run` a second time green, since the second run skips every test, and a
+first `m.Run` whose output was thrown away leaves no `fail` event to show it. What that leaves is a
+package with tests in which no `Test` or `Fuzz` ran: no `run` event but an `Example`'s or a `Benchmark`'s, as package testing
+stops the first two under that flag and runs the others anyway. So a green run with such a package goes again
+without the flag, on a fresh copy, as does one with a `fail` event in it, and the mutant reads survived
+only if that run is green too. That look is at the whole run, so one such package anywhere under the target sends every survivor of
+the target through the extra run, whichever package the survivor is in. Only a target with no such package has its green runs read as survivors at once.
+A package with no test files has a `skip`, not a `pass`, except under `-cover`, where one with statements passes with a `coverage:` line, and one whose functions have no statements (`func main() {}`, a marker method) passes with no such line, so it reads as a quiet package and pays as one. A package of only consts, types and vars still skips, unless a var holds a function literal. A package with test files and no tests (helpers,
+benchmarks, a bare `TestMain`) gives the same events as a quiet one, so the baseline tells them apart: there
+`m.Run` runs everything, and a package that passed with no `Test` or `Fuzz` run and showed `m.Run`'s output, through an `Example`, a `Benchmark`,
+package testing's `no tests to run` line or a `coverage:` line, has none. A selected run does not look at all, since a package with no selected test reads the
+same, and the whole-suite run after it does. What is left pays: any package under the target that still reads as quiet, one that passed and showed nothing of `m.Run`, costs every survivor of the target
+one more suite run and one more first try for a flake, which still has to fail again in the same test and pass three times
+without the mutant. Where it does, a true survivor reads as a kill, exit 0, in any package of the target. That package need not be rare. It can be a `TestMain` that hides `m.Run`'s output
+and calls it again only on failure, a `TestMain` gate that exits without calling `m.Run`, as an integration suite's does when its service is not there, or a bare `TestMain` that prints
+text with no newline, which runs into the `no tests to run` line. None shows anything to tell it from a quiet package, so all of them pay, the last of these only without `-cover`. That run can hang where the first did not, which reads as a timeout and fails the run. A `TestMain` that shows one `m.Run`, hides a later red one, and takes its exit code from a third shows tests on a green run, so it is not seen: that reads survived, and the run fails. A `=== RUN` or `coverage:` line printed by a `TestMain` can hide the signature, as printed text can
+anything here, and that reads survived, which fails the run. It need not be framed: test2json reads plain lines too until it has seen a frame, which a quiet first `m.Run` keeps from it. A red one can also say `PASS` after
+a real failure, so when that leaves no failed test, the failed tests come from a run without the
+flag. A suite whose second `m.Run` truly passes says `PASS` there too, and that kill reads
+unconfirmed. Two more shapes of two `m.Run` calls lose a real kill the same way, and fail the run.
+Where the failure comes only in the second `m.Run`, a suite run once per backend say, the test
+passed, another test ran, then it failed: that reads as a fail printed after a pass, so even a
+signed witness failure is dropped and the kill reads unconfirmed. Where a later test panics on the
+mutant, the run without the flag reaches the panic and gives no failed test, and that reads
+unconfirmed too, though the same suite with one `m.Run` reads killed. The reason cross gives for
+these can be "a different test failed" with advice to look for a flake: no flake need be there. Each kill reports its first evidence, the
+first failure message of a failed test, and in Go the first of each package, witness
+if any is, since packages finish in any order: `witness` or `testimony` when the
 message carries the harness tag (`witness:`, `testimony:`), otherwise `other`
 (an error return, exit code, audit row or output). A kill whose first evidence
-is not `witness` rested on the system's own account or its side effects. Tests
-can tag their own messages the same way. `--require-witness` opts into a stricter
+is not `witness` rested on the system's own account or its side effects. In Go
+a tag alone is not `witness`: the code under test can print a line in the shape
+of a `t.Log`, so under cross the harness signs its witness failures with a key
+made for that one `go test` command, and an unsigned `witness:` is `other`. A mark so belongs to
+one run of one mutant: a line kept from another mutant's run, or from this mutant's first run, is
+`other` too. Packages of one command share its key. A test that asks a
+witness itself reports through `harness.WitnessErrorf`, which signs. The output
+outside cross does not change. Only a `*testing.T`, `B` or `F` gets the mark, so
+a `testing.TB` of production code's own gets none, and a wrapper such as
+`GinkgoTB` reads as `other`. Production code set on it can still get a real
+`*testing.T` from `testing.RunTests` and sign with that, and no real test need fail. The key is not
+a secret from the code under test. A suite that does not link the harness keeps it in its
+environment, where plain `os.Getenv` reads it and child processes inherit it. Where the harness
+did unset it, `/proc/<pid>/environ` still keeps it, so in-process code, a child process, or any
+process of the same user can read it and compute a mark. The mark stops what a system prints in
+the ordinary way, not code set on forging one. In Python the failure's type decides: the harness
+raises `WitnessFailure`, a test that asks a witness itself calls
+`harness.witness_fail`, and no text counts, wherever it stands. A call from the
+code under test is a crash, read from the frames; in-process code can still build
+what it likes. An Inconclusive or a failed capture says the witness could not
+see, which the code under test can cause, so in both languages it fails the test
+under `inconclusive:` and reads as `other`. `--require-witness` opts into a stricter
 gate: a clean failure whose first evidence is `testimony` or `other` is
 `enforcement-mutant-killed-by-self-report` and fails the run. A witness failure
 later in that test or its cleanup cannot redeem it. Selection retries such a
-result on the full suite, and group and pair runs use the same rule, so a
+result on the full suite (an `unconfirmed` it keeps: a kill that did not hold, say a test seen failing without
+the mutant is not retried into a kill), and group and pair runs use the same rule, so a
 self-report kill cannot mask another layer. The default remains unchanged.
 The gateway and adopter CI paths select this gate. The Level 0 Python
 quickstart uses ordinary cross mode: its direct dictionary check is `other`,
 not a process/network witness. `make cross-self` also retains ordinary mode
-while the policy for pure-logic guard oracles is decided separately. Tags
-are reviewed claims, not authenticated proof of a message's origin; never add
-`witness:` to a return-value or span assertion to satisfy the gate. `-evidence-dir` keeps every mutant
+while the policy for pure-logic guard oracles is decided separately. A Python
+test's call to `harness.witness_fail`, and a Go test's to `harness.WitnessErrorf`, remain reviewed claims:
+never use either on a return-value or span assertion to satisfy the gate. `-evidence-dir` keeps every mutant
 run's full `go test -json` output, killed ones included. `-j N` runs N single
 mutants at once, each in its own copy of the module (group runs stay
-sequential); on cross-self it cut 490 s to 135 s at `-j 8` with the same
-verdicts. Load can flip a verdict either way: a polling witness sees less on a
+sequential). On cross-self on 2026-10-27 it cut 490 s to 135 s at `-j 8` with
+the same verdicts. Those times are out of date and cross-self has not been timed
+since: a kill then took one suite run and now takes five, a survivor one, or two under `-select`,
+where its selected run comes before the whole suite. A survivor takes one more if any package under the target
+reads as quiet on a green run (see above). A kill takes one more if
+its first run was green or said `PASS` after a failure, and one more for the first run's command
+plus up to two per package with a failed test if its repeat crashes or hangs, with the repeat a
+whole suite, and `pkg/witness` has gone from
+27 markers to 186 mutants. Load can flip a verdict either way: a polling witness sees less on a
 busy host, turning a kill into a survivor (which fails the run), and a
 timing-sensitive test can fail under contention, turning a survivor into a
 kill. Gate releases on `-j 1`, or confirm kills there. `-select`
@@ -138,11 +320,56 @@ tests that are green without the mutant: a test that fails alone, or a
 selected subset that fails together (tests that depend on each other's
 order), is an error. The coverage pass costs about
 one extra suite run, so it pays off when each mutant's suite is long: on
-cross-self (short suites) `-j 8 -select` took 141 s against 135 s for `-j 8`,
+cross-self on the same day (short suites) `-j 8 -select` took 141 s against 135 s for `-j 8`,
 with the same verdicts. An enforcement point
 with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.
+
+### What forged output can do
+
+Cross reads `go test` output, and the code under test can write that output: the lines go test
+frames, `PASS`, and what they turn into events. So a plain kill assumes the suite is not forging
+test-runner output. The rules above stop the shapes they know of a suite printing by accident or in
+the ordinary way, and where they cannot tell, they mostly cost a kill and not make one: a framework
+of a kind cross has not met can still turn a crash into a plain failure. They are no defence against a suite
+built to fool them. Only a verified witness mark under `--require-witness` holds against forged
+output: output that a suite prints. It does not hold against code that signs, which is any code
+that reads the key, by plain `os.Getenv` where the harness is not linked, or that reaches the
+harness with a real `*testing.T`. A false witness kill is open to such code. Under
+`--require-witness` a crash line counts as a crash in any test of a failed package, passed or not. A
+passing test that prints such a line beside a witness failure so reads crashed, if a run gets as far
+as that test: `-test.failfast` can stop first, and the last tries can then save the kill, and
+`-select` can leave the test out. Each `go test`
+command signs with a new key, so a signed line kept on disk and printed in a later run does not
+verify, and the kill reads `self-report`. That costs nothing: one random key per command. A line
+copied inside one command still verifies, in another package too. This closes replay only: code
+that can read the key signs a line of its own for the run it is in, as above.
+
+At least four forgeries read as plain kills and stay open. A pair of printed run and fail lines
+beside a real failure is above. Printed run and pass lines round a crash line inside a failing test are another, if the
+printed name goes on from the failing test's, as that reads as a real subtest of it. With any other name that printed test ran beside the failure, so it reads crashed. A suite that hides `m.Run`'s `PASS` is above. In
+another, a test recovers a panic and a framed `=== NAME` line moves the `panic:` line onto a test
+that passed, which takes the crash rule off it: without `--require-witness` that line is a log line,
+and the test's plain failure is a kill. Code that signs, by whatever route, is out of scope, as stated above.
+
+### What a kill does not prove
+
+A kill says that a test failed on an assertion once the marked statement was
+gone. It does not say that the test examined the refusal. This gap is known and
+cross does not close it. Removing an early return, an assignment or a `continue`
+can stop the allowed path as well (`user = None`, then the admin is refused), and
+so can a wrong guard value. Enforcement is then forced on, a test of the allowed
+path alone fails, and that is a kill, though no test ever asks about a refused
+user. A mutant that crashes a handler can read the same way when the test sees
+it second-hand: `assert 500 == 200`, or an `EOF` after `net/http` recovered the
+panic. Nothing in the output tells these apart from a real test of the refusal,
+so read each kill's first evidence: `admin was refused` on the mutant of a
+refusal is this gap. Then write the test of the refused path, which is the one
+that shows the enforcement is gone. Python's `None` on a marked return and
+Go's stand-in are held back for this reason, and only there: other removals
+run. `--require-witness` narrows the gap, since a witness failure is about the
+effect, not about the return value.
 
 Enforcement that is a condition, not a statement, is marked on the `if` line
 with `//subpoena:enforcement_guard true` (or `false`). The value is the one that
@@ -168,10 +395,18 @@ an unknown argument, a guard marker without its value or off an `if` line, and
 a group of one are errors. So is a marker that would take no effect: a
 statement or guard marker outside an enforcement point, a point marker that is
 not on a function's doc comment, and a misspelt `//subpoena:enforcement...`
-comment. A run whose context is canceled is an error, never a verdict.
+comment, whether that is the whole comment or follows upstream's comment on a line
+of code. Misspelt means from `subpoena:enforc` on, or those words in the wrong case
+or with two neighbouring letters swapped, with nothing after them but a marker's
+arguments. Another punctuation (`subpoena.enforcement`, `subpoena enforcement`) or a
+block comment is not read, since prose can be written that way, and neither is a wrong
+word beyond one swap. On a line of its own, a space by the colon with words after it is
+prose: `// subpoena: enforcement points are listed in docs.` On a line of code, prose
+that names a statement or guard marker reads as
+one, so it is an error too, and the message says to reword it. A run whose context is canceled is an error, never a verdict.
 
-Discovery, mutation and restoration use the same saved file bytes. Before each
-mutation, cross-examination checks that the copied file still matches discovery
+Discovery and mutation use the same saved file bytes. Before each
+mutation, cross-examination checks that the fresh copy still matches discovery
 and refuses if it has changed. The CLI prints `snapshot <sha256> <path>` for
 each mutant-bearing file, so its reported offsets and removals can be tied to
 those bytes. These hashes cover only files containing mutants, not tests, the

@@ -26,8 +26,6 @@ import (
 // and a selected subset that fails together, are errors. A mutant no test was
 // seen to execute runs the whole suite.
 
-var moduleRE = regexp.MustCompile(`(?m)^module\s+(\S+)`)
-
 // selectTests maps each mutant's Name to the tests that executed its line.
 // A test that fails alone, green in the full baseline, depends on the tests
 // before it: run in a subset it could fail with or without the mutant, and
@@ -35,15 +33,7 @@ var moduleRE = regexp.MustCompile(`(?m)^module\s+(\S+)`)
 //
 //subpoena:enforcement_point
 func selectTests(ctx context.Context, o Options, sb sandbox, pkgs string, mutants []Mutant) (map[string][]string, error) {
-	gomod, err := os.ReadFile(filepath.Join(sb.dir, "go.mod"))
-	if err != nil {
-		return nil, err
-	}
-	m := moduleRE.FindSubmatch(gomod)
-	if m == nil {
-		return nil, fmt.Errorf("cross: select: no module line in go.mod")
-	}
-	modPath := string(m[1])
+	modPath := o.modPath
 	// The packages the mutants live in, as coverage reports their files.
 	coverPkgs := map[string]bool{}
 	for _, mu := range mutants {
@@ -235,13 +225,13 @@ func checkSubsets(ctx context.Context, o Options, sb sandbox, pkgs string, mutan
 			continue
 		}
 		seen[f] = true
-		out, err := goIn(ctx, o.Timeout, sb, "test", "-count=1", "-run", f, pkgs)
+		out, err := o.run.test(ctx, o, sb, "-json", "-count=1", "-run", f, pkgs)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		var redErr error
 		if err != nil {
-			redErr = fmt.Errorf("cross: select: the tests %s fail together without any mutant, so they depend on tests left out; fix the tests or drop -select:\n%s", f, tail(out, 20))
+			redErr = fmt.Errorf("cross: select: the tests %s fail together without any mutant, so they depend on tests left out; fix the tests or drop -select:\n%s", f, tail(testText(out.raw), 20))
 		}
 		if redErr != nil {
 			return redErr //subpoena:enforcement
@@ -251,13 +241,19 @@ func checkSubsets(ctx context.Context, o Options, sb sandbox, pkgs string, mutan
 }
 
 // confirmOnWholeSuite runs again, on the whole suite, every single mutant
-// that selection did not kill, and returns the results with those replaced.
+// that selection did not kill, unconfirmed ones aside, and returns the results
+// with those replaced.
 //
 //subpoena:enforcement_point
 func confirmOnWholeSuite(ctx context.Context, o Options, workers []sandbox, pkgs string, mutants []Mutant, results []Result) ([]Result, error) {
 	var again []Mutant
 	var at []int
 	for i, r := range results {
+		// An unconfirmed is a kill that did not hold. It stands: a
+		// second run could only let a flake pass, and call that a kill.
+		if r.Outcome == Unconfirmed {
+			continue //subpoena:enforcement
+		}
 		if r.Outcome != Killed && runFilter(o.selected, []Mutant{mutants[i]}) != "" {
 			again = append(again, mutants[i])
 			at = append(at, i)

@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from conftest import CONFORMANCE
-from subpoena.harness import no_spawn
+from subpoena.harness import delivery_to, no_delivery, no_row, no_spawn, no_write
 from subpoena.witness import WitnessError, read_log
 
 DOC = yaml.safe_load((CONFORMANCE / "witness.yaml").read_text())
@@ -20,7 +20,8 @@ def test_the_cases_are_there():
     assert set(DOC) == {"traces", "cases"}
 
 
-KEYS = {"name", "lines", "read_error", "health", "spawned", "no_spawn"}
+KEYS = {"name", "lines", "read_error", "health", "spawned", "no_spawn", "wrote", "no_write", "no_write_paths",
+        "delivered", "no_delivery", "no_delivery_peers", "committed", "no_row"}
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
@@ -43,3 +44,19 @@ def test_witness_case(case):
     for name, want in (case.get("no_spawn") or {}).items():
         v, _ = no_spawn(log, TRACES[name])
         assert str(v) == want, name
+    for name, want in (case.get("no_row") or {}).items():
+        v, _ = no_row(log, TRACES[name])
+        assert str(v) == want, name
+    for name, paths in (case.get("wrote") or {}).items():
+        assert [e.path for e in log.wrote(TRACES[name])] == paths
+    for name, want in (case.get("no_write") or {}).items():
+        v, _ = no_write(log, TRACES[name], *(case.get("no_write_paths") or []))
+        assert str(v) == want, name
+    for name, peers in (case.get("delivered") or {}).items():
+        assert [str(e.peer) if e.peer else "" for e in log.delivered(TRACES[name])] == peers
+    match = delivery_to(*(case.get("no_delivery_peers") or []))
+    for name, want in (case.get("no_delivery") or {}).items():
+        v, _ = no_delivery(log, TRACES[name], match)
+        assert str(v) == want, name
+    for name, verbs in (case.get("committed") or {}).items():
+        assert [e.verb for e in log.committed(TRACES[name])] == verbs, name

@@ -209,6 +209,8 @@ func TestSessionTrace(t *testing.T) {
 		{"trace ID without the base", "0::/" + tid + "\n", "subpoena", "", false},
 		{"base is last element", "0::/subpoena\n", "subpoena", "", false},
 		{"custom base", "0::/lab/" + tid + "\n", "lab", tid, true},
+		{"a session built under the root is not one", "0::/subpoena/a/subpoena/" + tid + "\n", "subpoena", "", false},
+		{"the real session wins over one nested in it", "0::/subpoena/" + tid + "/a/subpoena/" + strings.Repeat("b", 32) + "\n", "subpoena", tid, true},
 		{"garbage", "not a cgroup file", "subpoena", "", false},
 		{"empty", "", "subpoena", "", false},
 	}

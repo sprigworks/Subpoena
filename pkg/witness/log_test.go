@@ -8,8 +8,10 @@ package witness
 
 import (
 	"encoding/json"
+	"net/netip"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -116,7 +118,8 @@ func TestAMalformedLineIsAnErrorWithItsLineNumber(t *testing.T) {
 
 // The schema is the contract other languages read; Line and Record are what
 // the witness writes. They must name the same fields, with the same ones
-// required: Line's in the schema's else branch, Record's in its then branch.
+// required: Record's in the schema's then branch, and in its else branch
+// RowLine's then and Line's else.
 func TestLineMatchesTheSchema(t *testing.T) {
 	b, err := os.ReadFile("../../docs/witness-event.schema.json")
 	if err != nil {
@@ -130,7 +133,19 @@ func TestLineMatchesTheSchema(t *testing.T) {
 		AdditionalProperties *bool                     `json:"additionalProperties"`
 		If                   branch                    `json:"if"`
 		Then                 branch                    `json:"then"`
-		Else                 branch                    `json:"else"`
+		Else                 struct {
+			If   branch `json:"if"`
+			Then branch `json:"then"`
+			Else struct {
+				If   branch `json:"if"`
+				Then branch `json:"then"`
+				Else struct {
+					If   branch `json:"if"`
+					Then branch `json:"then"`
+					Else branch `json:"else"`
+				} `json:"else"`
+			} `json:"else"`
+		} `json:"else"`
 	}
 	if err := json.Unmarshal(b, &schema); err != nil {
 		t.Fatal(err)
@@ -155,8 +170,20 @@ func TestLineMatchesTheSchema(t *testing.T) {
 	}
 	lineFields, lineReq := fieldsOf(Line{})
 	recFields, recReq := fieldsOf(Record{})
+	fileFields, fileReq := fieldsOf(FileLine{})
+	delFields, delReq := fieldsOf(DeliveryLine{})
+	rowFields, rowReq := fieldsOf(RowLine{})
+	if !reflect.DeepEqual(schema.Else.If.Required, []string{"file_op"}) {
+		t.Errorf("a line is a file change exactly when it has a file_op field; else.if = %v", schema.Else.If.Required)
+	}
+	if !reflect.DeepEqual(schema.Else.Else.If.Required, []string{"delivery_op"}) {
+		t.Errorf("a line is a delivery exactly when it has a delivery_op field; else.else.if = %v", schema.Else.Else.If.Required)
+	}
+	if !reflect.DeepEqual(schema.Else.Else.Else.If.Required, []string{"event"}) {
+		t.Errorf("a line is a row exactly when it has an event field; else.else.else.if = %v", schema.Else.Else.Else.If.Required)
+	}
 	all := map[string]bool{}
-	for _, f := range append(lineFields, recFields...) {
+	for _, f := range slices.Concat(lineFields, recFields, fileFields, delFields, rowFields) {
 		all[f] = true
 	}
 	var fields, props []string
@@ -169,12 +196,24 @@ func TestLineMatchesTheSchema(t *testing.T) {
 	sort.Strings(fields)
 	sort.Strings(props)
 	sort.Strings(schema.Then.Required)
-	sort.Strings(schema.Else.Required)
+	sort.Strings(schema.Else.Then.Required)
+	sort.Strings(schema.Else.Else.Then.Required)
+	sort.Strings(schema.Else.Else.Else.Then.Required)
+	sort.Strings(schema.Else.Else.Else.Else.Required)
 	if !reflect.DeepEqual(fields, props) {
-		t.Errorf("fields:\n Line+Record %v\n schema      %v", fields, props)
+		t.Errorf("fields:\n Line+Record+RowLine %v\n schema              %v", fields, props)
 	}
-	if !reflect.DeepEqual(lineReq, schema.Else.Required) {
-		t.Errorf("exec line required:\n Line   %v\n schema %v", lineReq, schema.Else.Required)
+	if !reflect.DeepEqual(lineReq, schema.Else.Else.Else.Else.Required) {
+		t.Errorf("exec line required:\n Line   %v\n schema %v", lineReq, schema.Else.Else.Else.Else.Required)
+	}
+	if !reflect.DeepEqual(fileReq, schema.Else.Then.Required) {
+		t.Errorf("file line required:\n FileLine %v\n schema   %v", fileReq, schema.Else.Then.Required)
+	}
+	if !reflect.DeepEqual(delReq, schema.Else.Else.Then.Required) {
+		t.Errorf("delivery line required:\n DeliveryLine %v\n schema       %v", delReq, schema.Else.Else.Then.Required)
+	}
+	if !reflect.DeepEqual(rowReq, schema.Else.Else.Else.Then.Required) {
+		t.Errorf("row line required:\n RowLine %v\n schema  %v", rowReq, schema.Else.Else.Else.Then.Required)
 	}
 	if !reflect.DeepEqual(recReq, schema.Then.Required) {
 		t.Errorf("record required:\n Record %v\n schema %v", recReq, schema.Then.Required)
@@ -240,5 +279,20 @@ func TestLogHealthComesFromRecords(t *testing.T) {
 		if (tc.want == "") != (h == nil) || (h != nil && !strings.Contains(h.Error(), tc.want)) {
 			t.Errorf("%s: health %v, want %q", tc.name, h, tc.want)
 		}
+	}
+}
+
+// A route the socket held is a broadcast route whatever its address looks like, and
+// whatever the option says now.
+func TestFanoutTrustsAHeldBroadcastRoute(t *testing.T) {
+	peer := netip.MustParseAddrPort("10.99.0.77:41912")
+	if (DeliveryEvent{Peer: peer}).Fanout() {
+		t.Fatal("a host with no route must not be Fanout")
+	}
+	if (DeliveryEvent{Peer: peer, Broadcast: true}).Fanout() {
+		t.Fatal("the option alone cannot make this address a broadcast one")
+	}
+	if !(DeliveryEvent{Peer: peer, BroadcastRoute: true}).Fanout() {
+		t.Fatal("a held broadcast route must be Fanout")
 	}
 }

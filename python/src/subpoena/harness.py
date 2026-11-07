@@ -25,6 +25,7 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanLimits, SpanProcesso
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
 from . import traceql, witness
+from ._evidence import WitnessFailure
 
 DEFAULT_CAPACITY = 10000
 
@@ -292,6 +293,10 @@ def _report(kind: str, check, q: str, allow_inconclusive: bool) -> None:
 
 _NO_HEALTH = "witness does not report capture health"
 
+# Starts the message of a check that could not see: Inconclusive, or bad capture
+# health. It fails the test, and is never witness evidence.
+_INCONCLUSIVE = "inconclusive"
+
 
 def _capture_health(w: Any) -> Optional[str]:
     health = getattr(w, "health", None)
@@ -300,26 +305,70 @@ def _capture_health(w: Any) -> Optional[str]:
     return health()
 
 
+_NO_EXEC_CAPTURE = ("the witness file's start record names no exec capture, so a process could not have "
+                    "been seen (read the file subpoena-witness's exec witness wrote)")
+_NO_FILE_CAPTURE = ("the witness file's start record names no file capture, so a write could not have "
+                    "been seen (run subpoena-witness with -file-root)")
+_NO_ROW_CAPTURE = ("the witness file's start record names no row capture, so a write could not have "
+                   "been seen (read the file subpoena-witness db wrote)")
+
+
+def _no_capture(w: Any, method: str, message: str) -> Optional[str]:
+    """message, for a witness file whose start record does not name the capture
+    a claim needs. A witness that is no file has no such method, and has its hook
+    by being what it is."""
+    captured = getattr(w, method, None)
+    if captured is not None and not captured():
+        return message
+    return None
+
+
 def no_spawn(w: Any, trace_id: str) -> "tuple[Verdict, Optional[str]]":
     """Fail if the witness saw any process for trace_id, even from an
-    unhealthy capture. With none, missing or bad capture health is
-    Inconclusive; Pass needs a healthy witness. Stop the witness first."""
+    unhealthy capture. With none, a witness file with no exec capture in it, or
+    missing or bad capture health, is Inconclusive; Pass needs a healthy witness.
+    Stop the witness first."""
     spawned = w.spawned(trace_id)
     if spawned:
         return Verdict.FAIL, f"witness saw processes for {trace_id}: {spawned}"
-    err = _capture_health(w)
+    err = _no_capture(w, "captured_execs", _NO_EXEC_CAPTURE) or _capture_health(w)
     if err is not None:
         return Verdict.INCONCLUSIVE, err
     return Verdict.PASS, None
+
+
+def witness_fail(message: str) -> None:
+    """Fail the test with a message tagged "witness:". A test that asks a witness
+    itself reports what it saw through this, as the check_ functions' messages
+    go through it too: subpoena-cross counts only this failure as witness
+    evidence, whatever a message's text says, since the text can come from the
+    code under test. Called from the code under test it is a crash. The Go
+    harness's WitnessErrorf is its twin."""
+    __tracebackhide__ = True
+    _raise(message if message.startswith(("witness:", _INCONCLUSIVE + ":")) else f"witness: {message}")
+
+
+def _tag(v: Verdict) -> str:
+    return _INCONCLUSIVE if v is Verdict.INCONCLUSIVE else "witness"
+
+
+def _raise(message: Optional[str]) -> None:
+    """Fail the test with a check's message, if it has one. Its first line says
+    what failed first, and a witness that could not see is a failure the test
+    must have, but no evidence: the code under test can cause it."""
+    __tracebackhide__ = True
+    if message is None:
+        return
+    if message.startswith(_INCONCLUSIVE + ":"):
+        raise AssertionError(message)
+    raise WitnessFailure(message)
 
 
 def require_no_spawn(w: Any, trace_id: str) -> None:
     """Fail the test (AssertionError) unless a healthy witness saw no process
     for trace_id. Inconclusive fails too."""
     __tracebackhide__ = True
-    v, err = no_spawn(w, trace_id)
-    if v is not Verdict.PASS:
-        raise AssertionError(f"witness: no spawn for {trace_id}: {v}: {err}")
+    _raise(check_no_spawn(w, trace_id))
 
 
 @dataclass
@@ -401,9 +450,13 @@ def check_spawns(w: Any, trace_id: str, rule: SpawnRule) -> List[str]:
             errs.append(f"witness: refused command ran for {trace_id}: pid {p.pid} {p.command!r} ({p.attribution})")
         elif rule.allowed is not None and p.command not in rule.allowed:
             errs.append(f"witness: command not allowed for {trace_id}: pid {p.pid} {p.command!r} ({p.attribution})")
+    err = _no_capture(w, "captured_execs", _NO_EXEC_CAPTURE)
+    if err is not None:
+        errs.append(f"{_INCONCLUSIVE}: {trace_id}: {err}")
+        return errs
     err = _capture_health(w)
     if err is not None:
-        errs.append(f"witness: {trace_id}: capture unhealthy, absence of refused commands is not proven: {err}")
+        errs.append(f"{_INCONCLUSIVE}: {trace_id}: capture unhealthy, absence of refused commands is not proven: {err}")
     return errs
 
 
@@ -415,7 +468,7 @@ def watch_spawns(addfinalizer, w: Any, trace_id: str, rule: SpawnRule) -> None:
         __tracebackhide__ = True
         errs = check_spawns(w, trace_id, rule)
         if errs:
-            raise AssertionError("\n".join(errs))
+            _raise("\n".join(errs))
     addfinalizer(finalize)
 
 
@@ -424,7 +477,7 @@ def check_no_spawn(w: Any, trace_id: str) -> Optional[str]:
     if the check passed, so one failing run can show every kind of evidence."""
     v, err = no_spawn(w, trace_id)
     if v is not Verdict.PASS:
-        return f"witness: no spawn for {trace_id}: {v}: {err}"
+        return f"{_tag(v)}: no spawn for {trace_id}: {v}: {err}"
     return None
 
 
@@ -454,9 +507,7 @@ def require_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) ->
     """Fail the test (AssertionError) unless a healthy witness saw no matching
     connection attempt for trace_id. Inconclusive fails too."""
     __tracebackhide__ = True
-    err = check_no_dial(w, trace_id, match)
-    if err is not None:
-        raise AssertionError(err)
+    _raise(check_no_dial(w, trace_id, match))
 
 
 def check_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) -> Optional[str]:
@@ -464,7 +515,80 @@ def check_no_dial(w: Any, trace_id: str, match: Optional[DialMatch] = None) -> O
     if the check passed."""
     v, err = no_dial(w, trace_id, match)
     if v is not Verdict.PASS:
-        return f"witness: no dial for {trace_id}: {v}: {err}"
+        return f"{_tag(v)}: no dial for {trace_id}: {v}: {err}"
+    return None
+
+
+def no_write(w: Any, trace_id: str, *paths: str) -> "tuple[Verdict, Optional[str]]":
+    """Fail if the witness saw a change touching paths, each with everything
+    below it (none: anything), even from an unhealthy capture. With none, a
+    witness file with no file capture in it, a witness with no roots, a path it does not cover, a claimed file closed
+    with no write seen, or missing or bad capture health, is Inconclusive; Pass
+    needs a healthy witness (docs/ports.md W7)."""
+    hits = [e for e in w.wrote(trace_id) if not paths or any(e.touches(p) for p in paths)]
+    if hits:
+        return Verdict.FAIL, f"witness saw file changes for {trace_id}: {hits}"
+    err = _no_capture(w, "captured_files", _NO_FILE_CAPTURE)
+    if err is not None:
+        return Verdict.INCONCLUSIVE, err
+    if not w.roots():
+        return Verdict.INCONCLUSIVE, "witness watches no directories, so it could not have seen a write"
+    for p in paths:
+        if not w.covers(p):
+            return Verdict.INCONCLUSIVE, f"witness does not watch {p}, so it could not have seen a write there"
+    for s in w.silent_closes():
+        if not paths or any(witness._path_within(s, p) for p in paths):
+            return Verdict.INCONCLUSIVE, (f"{s} was opened for writing and closed with no write seen: a read, "
+                                          "or a change by mmap or native AIO, which inotify cannot see")
+    err = _capture_health(w)
+    if err is not None:
+        return Verdict.INCONCLUSIVE, err
+    return Verdict.PASS, None
+
+
+def require_no_write(w: Any, trace_id: str, *paths: str) -> None:
+    """Fail the test (AssertionError) unless a healthy witness saw no change
+    to paths. Inconclusive fails too."""
+    __tracebackhide__ = True
+    _raise(check_no_write(w, trace_id, *paths))
+
+
+def check_no_write(w: Any, trace_id: str, *paths: str) -> Optional[str]:
+    """require_no_write without failing the test: the failure message, or None
+    if the check passed."""
+    v, err = no_write(w, trace_id, *paths)
+    if v is not Verdict.PASS:
+        return f"{_tag(v)}: no write for {trace_id}: {v}: {err}"
+    return None
+
+
+def no_row(w: Any, trace_id: str, table: str = "") -> "tuple[Verdict, Optional[str]]":
+    """Fail if the witness saw a committed write that changed rows and counts
+    against table (empty: any), even from an unhealthy capture. With none, a
+    witness file with no row capture in it, or missing or bad capture health, is
+    Inconclusive; Pass needs a healthy witness."""
+    hits = [e for e in w.committed(trace_id) if e.effect and e.touches(table)]
+    if hits:
+        return Verdict.FAIL, f"witness saw committed writes for {trace_id}: {hits}"
+    err = _no_capture(w, "captured_rows", _NO_ROW_CAPTURE) or _capture_health(w)
+    if err is not None:
+        return Verdict.INCONCLUSIVE, err
+    return Verdict.PASS, None
+
+
+def require_no_row(w: Any, trace_id: str, table: str = "") -> None:
+    """Fail the test (AssertionError) unless a healthy witness saw no committed
+    row in table (empty: any). Inconclusive fails too."""
+    __tracebackhide__ = True
+    _raise(check_no_row(w, trace_id, table))
+
+
+def check_no_row(w: Any, trace_id: str, table: str = "") -> Optional[str]:
+    """require_no_row without failing the test: the failure message, or None if
+    the check passed."""
+    v, err = no_row(w, trace_id, table)
+    if v is not Verdict.PASS:
+        return f"{_tag(v)}: no row for {trace_id}: {v}: {err}"
     return None
 
 
@@ -477,4 +601,78 @@ def dial_to(*addrs: "witness.AddrPort | str | tuple[str, int]") -> DialMatch:
     def match(e: witness.NetworkEvent) -> bool:
         d = witness.AddrPort.of(e.dest)
         return any(d.addr == a.addr and (a.port == 0 or a.port == d.port) for a in want)
+    return match
+
+
+# Delivery checks: absence of a send to a peer, over the witness file that
+# subpoena-witness -deliveries writes (subpoena.witness.Log, or anything with
+# delivered(trace_id) and health()). A port of pkg/harness's NoDelivery,
+# RequireNoDelivery, CheckNoDelivery and DeliveryTo. There is no tier-1 delivery
+# witness in any language, and running this one stays Go-only.
+
+DeliveryMatch = Callable[[witness.DeliveryEvent], bool]
+
+
+def no_delivery(w: Any, trace_id: str, match: Optional[DeliveryMatch] = None) -> "tuple[Verdict, Optional[str]]":
+    """Fail if the witness saw a send for trace_id that match selects (None:
+    any send, which on a broker includes its acks; delivery_to names a peer),
+    even from an unhealthy capture. With none, a witness file with no delivery
+    capture in it, or missing or bad capture health, is Inconclusive, and so is a
+    broadcast or multicast send on the claim's port: it may have reached the peer,
+    and nothing says so either way. A claim that names that very address still
+    Fails. Pass needs a healthy witness."""
+    sends = w.delivered(trace_id)
+    hits = [e for e in sends if match is None or match(e)]
+    if hits:
+        return Verdict.FAIL, f"witness saw sends for {trace_id}: {hits}"
+    fanout = [e for e in sends if e.fanout and match(e.any_member())]
+    if fanout:
+        e = fanout[0]
+        return Verdict.INCONCLUSIVE, (f"a broadcast or multicast send for {trace_id} may have reached the peer: "
+                                      f"pid {e.pid} {e.comm!r} {e.protocol} to {e.peer}, {e.bytes} bytes")
+    captured = getattr(w, "captured_deliveries", None)
+    if captured is not None and not captured():
+        return Verdict.INCONCLUSIVE, ("the witness file's start record names no delivery capture, so a send "
+                                      "could not have been seen (run subpoena-witness with -deliveries)")
+    err = _capture_health(w)
+    if err is not None:
+        return Verdict.INCONCLUSIVE, err
+    return Verdict.PASS, None
+
+
+def require_no_delivery(w: Any, trace_id: str, match: Optional[DeliveryMatch] = None) -> None:
+    """Fail the test (AssertionError) unless a healthy witness saw no matching
+    send for trace_id. Inconclusive fails too."""
+    __tracebackhide__ = True
+    _raise(check_no_delivery(w, trace_id, match))
+
+
+def check_no_delivery(w: Any, trace_id: str, match: Optional[DeliveryMatch] = None) -> Optional[str]:
+    """require_no_delivery without failing the test: the failure message, or
+    None if the check passed."""
+    v, err = no_delivery(w, trace_id, match)
+    if v is not Verdict.PASS:
+        return f"{_tag(v)}: no delivery for {trace_id}: {v}: {err}"
+    return None
+
+
+def delivery_to(*peers: "witness.AddrPort | str | tuple[str, int]") -> DeliveryMatch:
+    """Match sends that may have gone to any of the given peers ("host:port",
+    a (host, port) pair, or an AddrPort). A peer is the far end as the sender
+    sees it: for a subscriber, its own socket's address and port, not the
+    broker's listener. Port 0 matches every port of the address, and an
+    unspecified address ("0.0.0.0:40001") the port on any address. A send whose
+    peer the witness could not read matches, because it may have gone there. A
+    broadcast or multicast send does not match as such, but no_delivery is then
+    Inconclusive if the port fits. With no peers it matches every send: a rule naming no one must not pass for
+    lack of a name."""
+    want = [witness.AddrPort.of(p) for p in peers]
+
+    def match(e: witness.DeliveryEvent) -> bool:
+        if not want or e.peer_unknown:
+            return True
+        if e.any_peer:
+            return any(a.port == 0 or e.peer.port == 0 or a.port == e.peer.port for a in want)
+        return any((a.addr.is_unspecified or e.peer.addr == a.addr)
+                   and (a.port == 0 or e.peer.port == 0 or a.port == e.peer.port) for a in want)
     return match

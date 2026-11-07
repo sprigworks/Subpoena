@@ -5,9 +5,13 @@ passes, through subpoena.witness.read_log."""
 import io
 import json
 
+from unittest import mock
+
 import pytest
 
 from conftest import ROOT
+from subpoena import harness
+from subpoena.harness import Verdict, no_spawn
 from subpoena.witness import WitnessError, read_log
 
 A = "c0de00000000000000000000000000a1"
@@ -76,7 +80,179 @@ def test_the_schema_names_the_fields_the_reader_checks():
     schema = json.loads((ROOT / "docs" / "witness-event.schema.json").read_text())
     from subpoena import witness
     exec_fields = set(witness._INT_FIELDS) | set(witness._STR_FIELDS) | {"time", "args"}
-    record_fields = {"time", "record", "healthy", "error"}
-    assert exec_fields | record_fields == set(schema["properties"])
+    record_fields = {"time", "record", "healthy", "error", "roots", "captures", "coverage", "silent_closes", "symlinks"}
+    file_fields = set(witness._FILE_STR_FIELDS) | {"time", "is_dir", "cookie"}
+    delivery_fields = set(witness._DELIVERY_STR_FIELDS) | set(witness._INT_FIELDS) | {"time", "bytes", "broadcast", "broadcast_route"}
+    row_fields = set(witness._ROW_STR_FIELDS) | {"time", "event", "conn", "tables", "opaque", "rows", "outcome"}
+    assert exec_fields | record_fields | file_fields | delivery_fields | row_fields == set(schema["properties"])
+    assert set(witness._KNOWN) == set(schema["properties"])
     assert schema["if"] == {"required": ["record"]}
+    assert schema["else"]["if"] == {"required": ["file_op"]}
+    assert schema["else"]["else"]["if"] == {"required": ["delivery_op"]}
+    assert schema["else"]["else"]["else"]["if"] == {"required": ["event"]}
+    assert tuple(schema["properties"]["outcome"]["enum"]) == witness.OUTCOMES
     assert schema["additionalProperties"] is True
+
+
+def file_line(**over):
+    l = {"time": "2026-10-28T12:00:01Z", "file_op": "rename", "path": "/r/dir", "root": "/r", "is_dir": True,
+         "source": "inotify", "rename": "from", "cookie": 7, "attribution": "root"}
+    l.update(over)
+    return json.dumps(l)
+
+
+START = '{"time":"2026-10-28T12:00:00Z","record":"start","healthy":false,"roots":["/r"]}'
+STOP = '{"time":"2026-10-28T12:00:09Z","record":"stop","healthy":true,"coverage":"gaps=0"}'
+
+
+def test_a_file_line_reads_back_whole():
+    log = read_log(io.StringIO("\n".join([START, file_line(), STOP]) + "\n"))
+    assert log.health() is None and log.coverage() == "gaps=0" and len(log) == 0
+    (e,) = log.wrote(A)
+    assert (e.op, e.path, e.root, e.is_dir, e.source, e.rename, e.cookie, e.trace_id, e.attribution) == (
+        "rename", "/r/dir", "/r", True, "inotify", "from", 7, "", "root")
+    assert e.seen_at.isoformat() == "2026-10-28T12:00:01+00:00"
+
+
+def test_touches_and_covers():
+    log = read_log(io.StringIO("\n".join([START, file_line(), STOP]) + "\n"))
+    (e,) = log.wrote(A)
+    assert e.touches("/r/dir") and e.touches("/r") and e.touches("/r/dir/secret")
+    assert not e.touches("/r/dirt")
+    assert log.covers("/r/x") and log.covers("/r")
+    assert not log.covers("/rx") and not log.covers("r/x") and not log.covers("/")
+
+
+@pytest.mark.parametrize("over", [{"cookie": -1}, {"cookie": 2**32}, {"cookie": True}, {"root": 7}, {"rename": 7}])
+def test_a_file_line_of_the_wrong_shape_is_an_error(over):
+    with pytest.raises(WitnessError, match="line 2"):
+        read_log(io.StringIO("\n".join([START, file_line(**over), STOP]) + "\n"))
+
+
+ROW = {"time": "2026-11-06T12:00:01Z", "event": "row", "engine": "postgres", "conn": 1, "dest": "127.0.0.1:5432",
+       "statement": "INSERT INTO users VALUES (1)", "verb": "INSERT", "tables": ["users"], "opaque": False,
+       "rows": 1, "outcome": "committed", "attribution": "destination"}
+ROW_START = '{"time":"2026-11-06T12:00:00Z","record":"start","healthy":false}'
+ROW_STOP = '{"time":"2026-11-06T12:00:09Z","record":"stop","healthy":true}'
+
+
+def row_file(*rows):
+    return io.StringIO("\n".join([ROW_START, *[json.dumps(r) for r in rows], ROW_STOP]) + "\n")
+
+
+def test_rows_are_read_and_filtered_by_outcome():
+    log = read_log(row_file(ROW, {**ROW, "outcome": "rolled_back"}, {**ROW, "outcome": "read"}))
+    assert log.health() is None
+    assert len(log.rows()) == 3 and len(log) == 0
+    for trace in (A, B, ""):
+        got = log.committed(trace)
+        assert [e.tables for e in got] == [["users"]] and got[0].attribution == "destination"
+
+
+@pytest.mark.parametrize("rows,effect", [(1, True), (-1, True), (0, False)])
+def test_row_effect(rows, effect):
+    assert read_log(row_file({**ROW, "rows": rows})).committed()[0].effect is effect
+
+
+def test_only_committed_is_an_effect():
+    assert not read_log(row_file({**ROW, "outcome": "rolled_back"})).rows()[0].effect
+
+
+@pytest.mark.parametrize("event,table,want", [
+    (ROW, "users", True),
+    (ROW, "USERS", True),
+    (ROW, "orders", False),
+    (ROW, "public.users", True),
+    (ROW, "", True),
+    ({**ROW, "tables": ["public.users"]}, "users", True),
+    ({**ROW, "tables": ["public.users"]}, "other.users", False),
+    ({**ROW, "tables": ["superusers"]}, "users", False),
+    ({**ROW, "opaque": True}, "orders", True),
+    ({**ROW, "tables": []}, "orders", True),
+])
+def test_row_touches(event, table, want):
+    assert read_log(row_file(event)).rows()[0].touches(table) is want
+
+
+@pytest.mark.parametrize("bad", [
+    {"event": "file"},
+    {"outcome": "maybe"},
+    {"rows": None},
+    {"rows": -2},
+    {"rows": "1"},
+    {"rows": True},
+    {"conn": "1"},
+    {"tables": "users"},
+    {"tables": [1]},
+    {"opaque": "no"},
+    {"statement": 1},
+    {"time": None},
+])
+def test_rows_it_cannot_read_are_errors(bad):
+    with pytest.raises(WitnessError):
+        read_log(row_file({**ROW, **bad}))
+
+
+def test_row_with_no_count_is_an_error():
+    r = dict(ROW)
+    del r["rows"]
+    with pytest.raises(WitnessError, match="no usable rows field"):
+        read_log(row_file(r))
+
+
+def _file(start_extra, *lines, stop_extra=None):
+    start = {"time": "2026-11-06T12:00:00Z", "record": "start", "healthy": False, **start_extra}
+    stop = {"time": "2026-11-06T12:00:09Z", "record": "stop", "healthy": True, **(stop_extra or {})}
+    log = read_log(io.StringIO("\n".join(json.dumps(l) for l in [start, *lines, stop]) + "\n"))
+    assert log.health() is None
+    return log
+
+
+T = "c0de00000000000000000000000000a1"
+
+
+@pytest.mark.parametrize("extra,passes", [
+    ({"captures": ["exec"]}, True), ({"captures": ["exec", "delivery"]}, True),
+    ({}, False), ({"captures": ["file"], "roots": ["/r"]}, False), ({"captures": ["row"]}, False),
+])
+def test_no_spawn_needs_the_exec_capture(extra, passes):
+    log = _file(extra)
+    assert no_spawn(log, T)[0] is (Verdict.PASS if passes else Verdict.INCONCLUSIVE)
+    assert harness.check_spawns(log, T, harness.SpawnRule()) == ([] if passes else [mock.ANY])
+
+
+@pytest.mark.parametrize("extra,passes", [
+    ({"captures": ["file"], "roots": ["/r"]}, True),
+    ({"roots": ["/r"]}, False), ({"captures": ["exec"], "roots": ["/r"]}, False),
+])
+def test_no_write_needs_the_file_capture(extra, passes):
+    v, err = harness.no_write(_file(extra), T, "/r/x")
+    assert v is (Verdict.PASS if passes else Verdict.INCONCLUSIVE), err
+    if not passes:
+        assert "no file capture" in err
+
+
+def test_roots_on_a_stop_record_do_not_count():
+    log = _file({"captures": ["file"]}, stop_extra={"roots": ["/r"]})
+    assert log.roots() == [] and not log.covers("/r/x")
+    assert harness.no_write(log, T, "/r/x")[0] is Verdict.INCONCLUSIVE
+
+
+@pytest.mark.parametrize("extra,want", [
+    ({"captures": ["row"]}, Verdict.PASS), ({}, Verdict.INCONCLUSIVE), ({"captures": ["exec"]}, Verdict.INCONCLUSIVE),
+])
+def test_no_row_needs_the_row_capture(extra, want):
+    log = _file(extra)
+    assert harness.no_row(log, T, "users")[0] is want
+    assert (harness.check_no_row(log, T, "users") is None) is (want is Verdict.PASS)
+
+
+def test_no_row_sees_a_commit_whatever_the_file_names():
+    row = {"time": "2026-11-06T12:00:01Z", "event": "row", "engine": "postgres", "conn": 1, "dest": "127.0.0.1:5432",
+           "statement": "INSERT INTO a VALUES (1)", "verb": "INSERT", "tables": ["a"], "opaque": False, "rows": 1,
+           "outcome": "committed", "attribution": "destination"}
+    log = _file({}, row)
+    assert harness.no_row(log, T, "a")[0] is Verdict.FAIL
+    assert harness.no_row(log, T, "b")[0] is Verdict.INCONCLUSIVE
+    with pytest.raises(AssertionError):
+        harness.require_no_row(log, T, "a")

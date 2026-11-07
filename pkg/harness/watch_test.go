@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sprigworks/subpoena/internal/crossmark"
 	"github.com/sprigworks/subpoena/pkg/witness"
 )
 
@@ -133,10 +134,10 @@ func TestWatchSpawnsRule(t *testing.T) {
 		{"never entry that is only a path", &stoppableWitness{events: procs("rm -rf /tmp/x")}, SpawnRule{Never: []string{"/tmp/x"}},
 			[]string{"witness: refused command ran"}},
 		{"arguments still match exactly", &stoppableWitness{events: procs("/usr/bin/sleep 2")}, SpawnRule{Never: []string{"sleep 1"}}, nil},
-		{"unhealthy", &stoppableWitness{health: gap}, SpawnRule{}, []string{"witness: trace: capture unhealthy"}},
+		{"unhealthy", &stoppableWitness{health: gap}, SpawnRule{}, []string{"inconclusive: trace: capture unhealthy"}},
 		{"unhealthy and refused", &stoppableWitness{events: procs("sleep 1"), health: gap}, SpawnRule{Never: []string{"sleep 1"}},
-			[]string{"witness: refused command ran", "witness: trace: capture unhealthy"}},
-		{"no health", unknownWitness{}, SpawnRule{}, []string{"witness: trace: witness does not report capture health"}},
+			[]string{"witness: refused command ran", "inconclusive: trace: capture unhealthy"}},
+		{"no health", unknownWitness{}, SpawnRule{}, []string{"inconclusive: trace: witness does not report capture health"}},
 		{"name only, refused program", &stoppableWitness{events: named("sleep")}, SpawnRule{Never: []string{"sleep 1.1"}},
 			[]string{"witness: refused program seen by name only"}},
 		{"name only, program from path and cut to 15 bytes", &stoppableWitness{events: named("averyveryverylo")},
@@ -231,12 +232,101 @@ func TestCheckNoDialDoesNotStopTheTest(t *testing.T) {
 func TestRequireMessagesAreTagged(t *testing.T) {
 	tb := &cleanupTB{}
 	tb.run(func(tb testing.TB) { RequireNoSpawn(tb, unknownWitness{}, "trace") })
-	if len(tb.errs) != 1 || !strings.HasPrefix(tb.errs[0], "witness: no spawn for trace: Inconclusive") {
+	if len(tb.errs) != 1 || !strings.HasPrefix(tb.errs[0], "inconclusive: no spawn for trace: Inconclusive") {
 		t.Fatalf("RequireNoSpawn: %q", tb.errs)
 	}
 	tb = &cleanupTB{}
 	tb.run(func(tb testing.TB) { RequireAbsent(tb, &Trace{}, `{ name = "x" }`) })
 	if len(tb.errs) != 1 || !strings.HasPrefix(tb.errs[0], "testimony: absent ") {
 		t.Fatalf("RequireAbsent: %q", tb.errs)
+	}
+}
+
+// Under cross every witness failure carries the mark that says the harness wrote
+// it, on the line cross reads, and elsewhere the message is the plain text.
+func TestWitnessFailuresAreSignedForCross(t *testing.T) {
+	check := func(tb testing.TB) {
+		WitnessErrorf(tb, "saw %s", "a dial")
+		CheckNoSpawn(tb, healthWitness{unknownWitness: unknownWitness{procs("sleep 1")}}, "trace")
+		checkSpawns(tb, unknownWitness{procs("sleep 1")}, "trace", SpawnRule{Never: []string{"sleep 1"}})
+	}
+	key := crossKey // set when cross itself runs this test
+	defer func() { crossKey = key }()
+	crossKey = ""
+	tb := &cleanupTB{}
+	tb.run(check)
+	if len(tb.errs) < 3 || tb.errs[0] != "witness: saw a dial" {
+		t.Fatalf("outside cross: %q", tb.errs)
+	}
+	crossKey = "k"
+	real := signable
+	defer func() { signable = real }()
+	signable = func(testing.TB) bool { return true }
+	tb = &cleanupTB{}
+	tb.run(check)
+	if len(tb.errs) < 3 {
+		t.Fatalf("errors = %q", tb.errs)
+	}
+	for _, e := range tb.errs {
+		if strings.HasPrefix(e, "inconclusive: ") {
+			continue // the health line after a sighting; see below
+		}
+		if !strings.HasPrefix(e, "witness: ") || !crossmark.Verify("k", strings.SplitN(e, "\n", 2)[0]) {
+			t.Errorf("not signed: %q", e)
+		}
+	}
+}
+
+// Inconclusive means the witness could not see, and the code under test can
+// cause that: it fails the test, and it is no witness evidence (repro g11).
+func TestAnInconclusiveIsNeverSigned(t *testing.T) {
+	key := crossKey
+	defer func() { crossKey = key }()
+	crossKey = "k"
+	real := signable
+	defer func() { signable = real }()
+	signable = func(testing.TB) bool { return true }
+	gap := errors.New("too many open files")
+	for name, check := range map[string]func(tb testing.TB){
+		"no spawn":      func(tb testing.TB) { CheckNoSpawn(tb, healthWitness{err: gap}, "trace") },
+		"no dial":       func(tb testing.TB) { CheckNoDial(tb, healthNet{err: gap}, "trace", nil) },
+		"spawns health": func(tb testing.TB) { checkSpawns(tb, healthWitness{err: gap}, "trace", SpawnRule{}) },
+		"spawns none":   func(tb testing.TB) { checkSpawns(tb, unknownWitness{}, "trace", SpawnRule{}) },
+	} {
+		tb := &cleanupTB{}
+		tb.run(check)
+		if len(tb.errs) != 1 || !strings.HasPrefix(tb.errs[0], "inconclusive: ") || strings.Contains(tb.errs[0], "subpoena-cross:") {
+			t.Errorf("%s: %q", name, tb.errs)
+		}
+	}
+}
+
+// The harness is public, so production code can call it with a testing.TB of its
+// own and read the message. A stand-in gets no mark (repros g06 oracle, g12).
+func TestAStandInTBGetsNoMark(t *testing.T) {
+	key := crossKey
+	defer func() { crossKey = key }()
+	crossKey = "k"
+	tb := &cleanupTB{}
+	tb.run(func(tb testing.TB) {
+		WitnessErrorf(tb, "forged")
+		CheckNoSpawn(tb, unknownWitness{procs("sleep 1")}, "trace")
+	})
+	if len(tb.errs) != 2 {
+		t.Fatalf("errors = %q", tb.errs)
+	}
+	for _, e := range tb.errs {
+		if strings.Contains(e, "subpoena-cross:") {
+			t.Errorf("signed for a stand-in: %q", e)
+		}
+	}
+}
+
+func TestOnlyTestingsOwnTypesAreSignable(t *testing.T) {
+	if !signable(t) || !signable(&testing.B{}) || !signable(&testing.F{}) {
+		t.Fatal("a real testing type must sign")
+	}
+	if signable(&cleanupTB{}) {
+		t.Fatal("a stand-in must not sign")
 	}
 }

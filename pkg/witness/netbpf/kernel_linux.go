@@ -26,6 +26,23 @@ type kernel struct {
 	rd    eventReader
 	done  chan struct{}
 	lost  func() (uint64, error) // read after detaching, before unloading
+	other func() (uint64, error) // the same, for sends on sockets that are not inet
+	left  func() (uint64, error) // the same, for tasks that left a session
+	deep  func() (uint64, error) // the same, for cgroup paths too long to walk
+	// misses is the invocations the kernel skipped, every program together. It
+	// reads the programs, so it too must run before they are unloaded.
+	misses func() (uint64, error)
+}
+
+// hook is one program to attach.
+type hook struct {
+	name string
+	prog *ebpf.Program
+}
+
+// attach attaches one program. A variable so a test can make it fail.
+var attach = func(p *ebpf.Program) (link.Link, error) {
+	return link.AttachTracing(link.TracingOptions{Program: p})
 }
 
 type eventReader interface {
@@ -37,12 +54,22 @@ type eventReader interface {
 const (
 	opConnect = 1
 	opSendmsg = 2
+	opDeliver = 3
+
+	broadcastOption = 1 // the event's broadcast bits, as bpf/net.c sets them
+	broadcastRoute  = 2
 
 	afInet  = 2
 	afInet6 = 10
+
+	nameLen = 64 // NAME_LEN in bpf/net.c
 )
 
 // Start loads and attaches the programs. Attempts after Start returns are seen.
+// A failure stays in Health until the next Start: a witness that never attached
+// has seen nothing.
+//
+//subpoena:enforcement_point
 func (w *Witness) Start() error {
 	w.lifecycle.Lock()
 	defer w.lifecycle.Unlock()
@@ -50,61 +77,146 @@ func (w *Witness) Start() error {
 		return errors.New("netbpf: already started")
 	}
 	w.mu.Lock()
-	w.events, w.healthErr, w.finished = nil, nil, false
+	w.events, w.deliveries, w.healthErr, w.finished, w.coverage = nil, nil, nil, false, witness.DeliveryCoverage{}
+	w.unattributed = 0
 	w.mu.Unlock()
+	k, err := w.load()
+	if err != nil {
+		w.recordError(err) //subpoena:enforcement
+		return err
+	}
+	w.k = k
+	go w.read(k)
+	return nil
+}
+
+// load loads the programs and attaches every hook, or none.
+func (w *Witness) load() (*kernel, error) {
+	base, err := sessionBase(w.base)
+	if err != nil {
+		return nil, err
+	}
 	// Kernels before 5.11 charge eBPF memory to RLIMIT_MEMLOCK.
 	if err := rlimit.RemoveMemlock(); err != nil {
-		return fmt.Errorf("netbpf: %w", err)
+		return nil, fmt.Errorf("netbpf: %w", err)
 	}
 	spec, err := loadNet()
 	if err != nil {
-		return fmt.Errorf("netbpf: %w", err)
+		return nil, fmt.Errorf("netbpf: %w", err)
 	}
 	var st syscall.Stat_t
 	if err := syscall.Stat("/proc/self/ns/pid", &st); err != nil {
-		return fmt.Errorf("netbpf: own PID namespace: %w", err)
+		return nil, fmt.Errorf("netbpf: own PID namespace: %w", err)
 	}
-	v, ok := spec.Variables["pidns_inum"]
-	if !ok {
-		return errors.New("netbpf: object has no pidns_inum variable")
-	}
-	if err := v.Set(uint32(st.Ino)); err != nil {
-		return fmt.Errorf("netbpf: set pidns_inum: %w", err)
+	for name, value := range map[string]any{"pidns_inum": uint32(st.Ino), "session_base": base} {
+		v, ok := spec.Variables[name]
+		if !ok {
+			return nil, fmt.Errorf("netbpf: object has no %s variable", name)
+		}
+		if err := v.Set(value); err != nil {
+			return nil, fmt.Errorf("netbpf: set %s: %w", name, err)
+		}
 	}
 	k := &kernel{done: make(chan struct{})}
 	if err := spec.LoadAndAssign(&k.objs, nil); err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
-			return fmt.Errorf("netbpf: verifier: %+v", ve)
+			return nil, fmt.Errorf("netbpf: verifier: %+v", ve)
 		}
-		return fmt.Errorf("netbpf: load: %w", err)
+		return nil, fmt.Errorf("netbpf: load: %w", err)
 	}
-	for _, p := range []*ebpf.Program{k.objs.HandleConnect, k.objs.HandleSendmsg} {
-		l, err := link.AttachTracing(link.TracingOptions{Program: p})
-		if err != nil {
-			k.close()
-			return fmt.Errorf("netbpf: attach %s: %w", p, err)
-		}
-		k.links = append(k.links, l)
+	if err := k.attachAll(k.hooks()); err != nil {
+		k.close()
+		return nil, err
 	}
 	if k.rd, err = ringbuf.NewReader(k.objs.Events); err != nil {
 		k.close()
-		return fmt.Errorf("netbpf: %w", err)
+		return nil, fmt.Errorf("netbpf: %w", err)
 	}
-	k.lost = func() (uint64, error) {
-		var perCPU []uint64
-		if err := k.objs.Lost.Lookup(uint32(0), &perCPU); err != nil {
-			return 0, fmt.Errorf("netbpf: read loss counter: %w", err)
-		}
-		var total uint64
-		for _, n := range perCPU {
-			total += n
-		}
-		return total, nil
+	k.lost = func() (uint64, error) { return sum(k.objs.Lost, "loss") }
+	k.other = func() (uint64, error) { return sum(k.objs.OtherSends, "other-sends") }
+	k.left = func() (uint64, error) { return sum(k.objs.LeftSession, "left-session") }
+	k.deep = func() (uint64, error) { return sum(k.objs.TooDeep, "too-deep") }
+	k.misses = k.recursionMisses
+	return k, nil
+}
+
+func (k *kernel) hooks() []hook {
+	return []hook{
+		{"handle_connect", k.objs.HandleConnect},
+		{"handle_sendmsg", k.objs.HandleSendmsg},
+		{"handle_deliver", k.objs.HandleDeliver},
+		{"handle_attach", k.objs.HandleAttach},
+		{"handle_fork", k.objs.HandleFork},
 	}
-	w.k = k
-	go w.read(k)
+}
+
+// recursionMisses adds up what the kernel counts for every program: invocations
+// it skipped because the program was already active on that CPU. On a preempt=full
+// kernel a task preempted inside a program holds that CPU's count up, so every send
+// there goes unreported until it runs again, with no event and no ring-buffer loss.
+// Linux before 5.12 has neither the guard nor the count, and reads as zero.
+func (k *kernel) recursionMisses() (uint64, error) {
+	var total uint64
+	for _, h := range k.hooks() {
+		st, err := h.prog.Stats()
+		if err != nil {
+			return 0, fmt.Errorf("netbpf: read recursion misses of %s: %w", h.name, err)
+		}
+		total += st.RecursionMisses
+	}
+	return total, nil
+}
+
+// attachAll attaches hooks in order and stops at the first failure, keeping
+// what attached in k.links for k.close.
+func (k *kernel) attachAll(hooks []hook) error {
+	for _, h := range hooks {
+		l, err := attach(h.prog)
+		if err != nil {
+			return fmt.Errorf("netbpf: attach %s: %w", h.name, err)
+		}
+		k.links = append(k.links, l)
+	}
 	return nil
+}
+
+// sum adds up a per-CPU counter.
+func sum(m *ebpf.Map, what string) (uint64, error) {
+	var perCPU []uint64
+	if err := m.Lookup(uint32(0), &perCPU); err != nil {
+		return 0, fmt.Errorf("netbpf: read %s counter: %w", what, err)
+	}
+	var total uint64
+	for _, n := range perCPU {
+		total += n
+	}
+	return total, nil
+}
+
+// cgroupID is the kernel's ID of the cgroup at path: its inode on cgroup v2.
+func cgroupID(path string) (uint64, bool) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0, false
+	}
+	return st.Ino, true
+}
+
+// sessionBase is the kernel filter's copy of the session root's last element.
+// The kernel reads path elements up to nameLen-1 bytes long, so a longer name
+// could never compare equal, and a session's sends would vanish as if none were
+// made. Refused here, like a root with no last element, or one no cgroup can
+// have for a name.
+//
+//subpoena:enforcement_point
+func sessionBase(base string) ([nameLen]byte, error) {
+	var out [nameLen]byte
+	if base == "" || base == "/" || base == "." || base == ".." || len(base) >= nameLen {
+		return out, fmt.Errorf("netbpf: cgroup root element %q cannot be matched in the kernel", base) //subpoena:enforcement
+	}
+	copy(out[:], base)
+	return out, nil
 }
 
 func (w *Witness) read(k *kernel) {
@@ -126,8 +238,9 @@ func (w *Witness) read(k *kernel) {
 	}
 }
 
-// Stop detaches the programs, drains buffered events and reads the loss
-// counter. Capture errors persist in Health, including after repeated Stop calls.
+// Stop detaches the programs, drains buffered events and reads the kernel's
+// counters of what it could not report. Capture errors persist in Health,
+// including after repeated Stop calls.
 //
 //subpoena:enforcement_point
 func (w *Witness) Stop() error {
@@ -164,8 +277,39 @@ func (w *Witness) Stop() error {
 	if lost != 0 {
 		stopErr = errors.Join(stopErr, fmt.Errorf("netbpf: lost %d kernel event(s)", lost)) //subpoena:enforcement
 	}
+	other, err := k.other()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
+	}
+	misses, err := k.misses()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
+	}
+	if misses != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("netbpf: the kernel skipped the programs %d time(s) (recursion misses): sends and dials may have gone unseen", misses)) //subpoena:enforcement
+	}
+	left, err := k.left()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
+	}
+	if left != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("netbpf: %d task(s) left a session cgroup during the capture, and what they did after is no session's", left)) //subpoena:enforcement
+	}
+	deep, err := k.deep()
+	if err != nil {
+		stopErr = errors.Join(stopErr, err) //subpoena:enforcement
+	}
+	if deep != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("netbpf: %d attempt(s) or move(s) in a cgroup path too long to walk, so nothing says whose they were", deep)) //subpoena:enforcement
+	}
 	k.close()
 	w.mu.Lock()
+	if w.unattributed != 0 {
+		stopErr = errors.Join(stopErr, fmt.Errorf("netbpf: %d attempt(s) from under the session root but in no session", w.unattributed)) //subpoena:enforcement
+	}
+	w.coverage.Lost, w.coverage.OtherFamilySends = lost, other
+	w.coverage.RecursionMisses, w.coverage.LeftSession, w.coverage.TooDeep = misses, left, deep
+	w.coverage.Unattributed = w.unattributed
 	w.healthErr = errors.Join(w.healthErr, stopErr)
 	w.finished = true
 	err = w.healthErr
@@ -193,19 +337,25 @@ func decode(raw []byte, at time.Time) (Event, error) {
 		return Event{}, fmt.Errorf("netbpf: decode: %w", err)
 	}
 	e := Event{
-		PID:      int(r.Pid),
-		HostPID:  int(r.HostPid),
-		Comm:     cstr(r.Comm[:]),
-		SockType: int(r.SockType),
-		Protocol: protocolName(r.Protocol),
-		CgroupID: r.CgroupId,
-		Time:     at,
+		PID:            int(r.Pid),
+		HostPID:        int(r.HostPid),
+		Comm:           cstr(r.Comm[:]),
+		Bytes:          r.Bytes,
+		Broadcast:      r.Broadcast&broadcastOption != 0,
+		BroadcastRoute: r.Broadcast&broadcastRoute != 0,
+		RootID:         r.RootId,
+		SockType:       int(r.SockType),
+		Protocol:       protocolName(r.Protocol),
+		CgroupID:       r.CgroupId,
+		Time:           at,
 	}
 	switch r.Op {
 	case opConnect:
 		e.Op = witness.OpConnect
 	case opSendmsg:
 		e.Op = witness.OpSendmsg
+	case opDeliver:
+		e.Op = witness.OpDeliver
 	default:
 		return Event{}, fmt.Errorf("netbpf: unknown op %d", r.Op)
 	}
@@ -223,6 +373,14 @@ func decode(raw []byte, at time.Time) (Event, error) {
 		return Event{}, fmt.Errorf("netbpf: unknown address family %d", r.Family)
 	}
 	e.Dest = netip.AddrPortFrom(addr, port)
+	// A connected send on a socket with no peer leaves zeros: unknown, not a
+	// peer at 0.0.0.0 port 0.
+	if r.Op == opDeliver && addr.IsUnspecified() && port == 0 {
+		e.Dest = netip.AddrPort{}
+	}
+	if r.LocalAddr != [16]uint8{} || r.LocalPort != 0 {
+		e.Local = netip.AddrPortFrom(netip.AddrFrom16(r.LocalAddr).Unmap(), r.LocalPort)
+	}
 	depth := int(r.Depth)
 	if depth > len(r.Cgroup) {
 		depth = len(r.Cgroup)

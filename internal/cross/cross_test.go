@@ -298,7 +298,7 @@ func TestRunCaseRefusesACanceledRun(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	res, err := runCase(ctx, Options{Log: io.Discard}, sandbox{dir: dir}, "./...", ms)
+	res, err := runCase(ctx, Options{Log: io.Discard, run: &runner{dir: t.TempDir()}}, sandbox{dir: t.TempDir(), template: dir}, "./...", ms)
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("want a canceled error, got %v %+v", err, res)
 	}

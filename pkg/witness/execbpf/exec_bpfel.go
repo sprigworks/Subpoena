@@ -31,6 +31,23 @@ type execEvent struct {
 	_        [4]byte
 }
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	execMapEvents        = "events"
+	execMapLeftSession   = "left_session"
+	execMapLost          = "lost"
+	execMapTooDeep       = "too_deep"
+	execProgHandleAttach = "handle_attach"
+	execProgHandleExec   = "handle_exec"
+	execProgHandleFork   = "handle_fork"
+	execVarPidnsInum     = "pidns_inum"
+	execVarSessionBase   = "session_base"
+	execVarTrackForks    = "track_forks"
+	execVarUnusedEvent   = "unused_event"
+)
+
 // loadExec returns the embedded CollectionSpec for exec.
 func loadExec() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_ExecBytes)
@@ -51,7 +68,7 @@ func loadExec() (*ebpf.CollectionSpec, error) {
 //	*execMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadExecObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadExecObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadExec()
 	if err != nil {
 		return err
@@ -73,16 +90,19 @@ type execSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type execProgramSpecs struct {
-	HandleExec *ebpf.ProgramSpec `ebpf:"handle_exec"`
-	HandleFork *ebpf.ProgramSpec `ebpf:"handle_fork"`
+	HandleAttach *ebpf.ProgramSpec `ebpf:"handle_attach"`
+	HandleExec   *ebpf.ProgramSpec `ebpf:"handle_exec"`
+	HandleFork   *ebpf.ProgramSpec `ebpf:"handle_fork"`
 }
 
 // execMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type execMapSpecs struct {
-	Events *ebpf.MapSpec `ebpf:"events"`
-	Lost   *ebpf.MapSpec `ebpf:"lost"`
+	Events      *ebpf.MapSpec `ebpf:"events"`
+	LeftSession *ebpf.MapSpec `ebpf:"left_session"`
+	Lost        *ebpf.MapSpec `ebpf:"lost"`
+	TooDeep     *ebpf.MapSpec `ebpf:"too_deep"`
 }
 
 // execVariableSpecs contains global variables before they are loaded into the kernel.
@@ -90,6 +110,7 @@ type execMapSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type execVariableSpecs struct {
 	PidnsInum   *ebpf.VariableSpec `ebpf:"pidns_inum"`
+	SessionBase *ebpf.VariableSpec `ebpf:"session_base"`
 	TrackForks  *ebpf.VariableSpec `ebpf:"track_forks"`
 	UnusedEvent *ebpf.VariableSpec `ebpf:"unused_event"`
 }
@@ -114,14 +135,18 @@ func (o *execObjects) Close() error {
 //
 // It can be passed to loadExecObjects or ebpf.CollectionSpec.LoadAndAssign.
 type execMaps struct {
-	Events *ebpf.Map `ebpf:"events"`
-	Lost   *ebpf.Map `ebpf:"lost"`
+	Events      *ebpf.Map `ebpf:"events"`
+	LeftSession *ebpf.Map `ebpf:"left_session"`
+	Lost        *ebpf.Map `ebpf:"lost"`
+	TooDeep     *ebpf.Map `ebpf:"too_deep"`
 }
 
 func (m *execMaps) Close() error {
 	return _ExecClose(
 		m.Events,
+		m.LeftSession,
 		m.Lost,
+		m.TooDeep,
 	)
 }
 
@@ -130,6 +155,7 @@ func (m *execMaps) Close() error {
 // It can be passed to loadExecObjects or ebpf.CollectionSpec.LoadAndAssign.
 type execVariables struct {
 	PidnsInum   *ebpf.Variable `ebpf:"pidns_inum"`
+	SessionBase *ebpf.Variable `ebpf:"session_base"`
 	TrackForks  *ebpf.Variable `ebpf:"track_forks"`
 	UnusedEvent *ebpf.Variable `ebpf:"unused_event"`
 }
@@ -138,12 +164,14 @@ type execVariables struct {
 //
 // It can be passed to loadExecObjects or ebpf.CollectionSpec.LoadAndAssign.
 type execPrograms struct {
-	HandleExec *ebpf.Program `ebpf:"handle_exec"`
-	HandleFork *ebpf.Program `ebpf:"handle_fork"`
+	HandleAttach *ebpf.Program `ebpf:"handle_attach"`
+	HandleExec   *ebpf.Program `ebpf:"handle_exec"`
+	HandleFork   *ebpf.Program `ebpf:"handle_fork"`
 }
 
 func (p *execPrograms) Close() error {
 	return _ExecClose(
+		p.HandleAttach,
 		p.HandleExec,
 		p.HandleFork,
 	)

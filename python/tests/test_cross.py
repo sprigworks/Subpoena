@@ -70,12 +70,13 @@ def test_weak_suite_survives_and_fails_the_run(tmp_path):
     assert r.outcome == SURVIVED and rep.failed()
 
 
-def test_tagged_assertion_is_witness_evidence(tmp_path):
+def test_witness_fail_is_witness_evidence(tmp_path):
     _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
         from auth import DENIED, allow
+        from subpoena.harness import witness_fail
         def test_denied():
             if allow(False) != DENIED:
-                raise AssertionError("witness: refused command ran for t: pid 7 'rm -rf /'")
+                witness_fail("refused command ran for t: pid 7 'rm -rf /'")
     """})
     assert r.outcome == KILLED and r.evidence == "witness"
     assert r.first_failure.startswith("witness: refused command ran")
@@ -86,12 +87,13 @@ def test_teardown_assertion_kills(tmp_path):
     _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
         import pytest
         from auth import DENIED, allow
+        from subpoena.harness import witness_fail
         seen = []
         @pytest.fixture
         def watch(request):
             def check():
                 if seen and seen[0] != DENIED:
-                    raise AssertionError("witness: refused command ran for t")
+                    witness_fail("refused command ran for t")
             request.addfinalizer(check)
         def test_denied(watch):
             seen.append(allow(False))
@@ -221,7 +223,7 @@ def test_command_line_exit_codes(tmp_path, capsys):
     """})
     assert cross.main([root]) == 0
     out = capsys.readouterr().out
-    assert "1 enforcement point(s), 1 mutant(s)" in out and "enforcement-mutant-killed allow" in out
+    assert "1 enforcement point(s), 1 marker(s), 1 mutant(s)" in out and "enforcement-mutant-killed allow" in out
     os.remove(os.path.join(root, "test_auth.py"))
     with open(os.path.join(root, "test_auth.py"), "w") as f:
         f.write("from auth import allow\ndef test_admin():\n    assert allow(True) is None\n")
@@ -512,7 +514,7 @@ def test_forged_report_is_not_a_kill(tmp_path):
                 f.write(json.dumps({"kind": "failure", "test": "test_auth.py::test_denied", "when": "call",
                                     "verdict": "assertion", "assertion": True, "type": "AssertionError",
                                     "message": "forged"}) + "\\n")
-                f.write(json.dumps({"kind": "finished", "exitstatus": 1, "mutated_loaded": True}) + "\\n")
+                f.write(json.dumps({"kind": "finished", "exitstatus": 1, "missing": []}) + "\\n")
     """})
     assert r.outcome == CRASHED and rep.failed()
 
@@ -520,13 +522,17 @@ def test_forged_report_is_not_a_kill(tmp_path):
 @pytest.mark.parametrize("message,evidence", [
     ("wrong return value", "other"),
     ("testimony: deny span missing", "testimony"),
-    ("witness: denied side effect occurred", "witness"),
+    ("witness: a hand-written tag", "other"),
+    (None, "witness"),
 ])
 def test_require_witness_gate(tmp_path, message, evidence):
+    check = f"assert allow(False) == DENIED, {message!r}" if message else (
+        "if allow(False) != DENIED: witness_fail('denied side effect occurred')")
     files = {"auth.py": AUTH, "test_auth.py": f'''
         from auth import DENIED, allow
+        from subpoena.harness import witness_fail
         def test_denied():
-            assert allow(False) == DENIED, {message!r}
+            {check}
     '''}
     rep, r = outcome(tmp_path, files, require_witness=True)
     expected = KILLED if evidence == "witness" else cross.KILLED_BY_SELF_REPORT
@@ -550,12 +556,13 @@ def test_require_witness_rejects_testimony_before_teardown_witness(tmp_path):
     rep, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": '''
         import pytest
         from auth import DENIED, allow
+        from subpoena.harness import witness_fail
         seen = []
         @pytest.fixture
         def observer(request):
             def check():
                 if seen and seen[0] != DENIED:
-                    pytest.fail("witness: denied side effect occurred")
+                    witness_fail("denied side effect occurred")
             request.addfinalizer(check)
         def test_denied(observer):
             result = allow(False)
@@ -577,3 +584,469 @@ def test_tooling_directories_are_not_source(tmp_path):
     (tmp_path / "build" / "m.py").write_text("x = 1\n")
     found = sorted(os.path.relpath(p, tmp_path) for p in cross._python_files(str(tmp_path)))
     assert found == ["app.py", os.path.join("build", "m.py")]
+
+
+WSGI = '''
+# subpoena:enforcement_point
+def app(environ, start_response):
+    status = "200 OK"
+    if environ["PATH_INFO"] == "/secret":
+        status = "403 Forbidden"  # subpoena:enforcement
+    start_response(status, [("Content-Type", "text/plain")])
+    return [b"ok"]
+'''
+
+
+def test_webtest_status_check_is_an_assertion(tmp_path):
+    _, r = outcome(tmp_path, {"wsgisite.py": WSGI, "test_wsgisite.py": """
+        from webtest import TestApp
+        from wsgisite import app
+        def test_secret():
+            TestApp(app).get("/secret", status=403)
+    """})
+    assert r.outcome == KILLED and r.evidence == "other"
+    assert r.first_failure.startswith("Bad response: 200 OK (not 403)")
+
+
+def test_webtest_default_status_check_is_no_assertion(tmp_path):
+    # With no status= the test stated no expectation: webtest's own default
+    # raised, so nothing the test asked for failed.
+    _, r = outcome(tmp_path, {"wsgisite.py": WSGI.replace(
+        '"200 OK"', '"404 Not Found"').replace('"403 Forbidden"', '"200 OK"'), "test_wsgisite.py": """
+        from webtest import TestApp
+        from wsgisite import app
+        def test_secret():
+            TestApp(app).get("/secret")
+    """})
+    assert r.outcome == CRASHED
+
+
+# The mutant makes a handler raise, and a catch-all answers 500, as web
+# frameworks do. Nothing here is a refusal the test saw: the app fell over.
+CATCH_ALL = '''
+TOKENS = {"ann": "tok"}
+
+
+# subpoena:enforcement_point
+def token_for(user):
+    token = None
+    if user:
+        token = TOKENS.get(user, "anon")  # subpoena:enforcement
+    return token
+
+
+def app(environ, start_response):
+    try:
+        body = token_for("ann").upper().encode()
+        start_response("200 OK", [("Content-Type", "text/plain")])
+        return [body]
+    except Exception:
+        start_response("500 Internal Server Error", [("Content-Type", "text/plain")])
+        return [b"x"]
+'''
+
+
+@pytest.mark.parametrize("call", ['get("/")', 'get("/", status=200)', 'get("/", status=[200, 204])'],
+                         ids=["no status", "explicit status", "status list"])
+def test_webtest_500_from_an_app_that_fell_over_is_a_crash(tmp_path, call):
+    _, r = outcome(tmp_path, {"wsgisite.py": CATCH_ALL, "test_wsgisite.py": f"""
+        from webtest import TestApp
+        from wsgisite import app
+        def test_home():
+            TestApp(app).{call}
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_webtest_a_propagated_exception_stays_a_crash(tmp_path):
+    _, r = outcome(tmp_path, {"wsgisite.py": CATCH_ALL.replace("except Exception:", "except KeyError:"),
+                              "test_wsgisite.py": """
+        from webtest import TestApp
+        from wsgisite import app
+        def test_home():
+            TestApp(app).get("/")
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_webtest_a_stated_5xx_the_app_did_not_give_is_an_assertion(tmp_path):
+    _, r = outcome(tmp_path, {"wsgisite.py": WSGI.replace("403 Forbidden", "503 Busy"), "test_wsgisite.py": """
+        from webtest import TestApp
+        from wsgisite import app
+        def test_secret():
+            TestApp(app).get("/secret", status=503)
+    """})
+    assert r.outcome == KILLED and r.first_failure.startswith("Bad response: 200 OK (not 503)")
+
+
+def test_webtest_logged_app_error_stays_a_crash(tmp_path):
+    # The status is what the test expected: only the app's own log line fails it.
+    _, r = outcome(tmp_path, {"wsgisite.py": '''
+        # subpoena:enforcement_point
+        def app(environ, start_response):
+            quiet = False
+            if environ["PATH_INFO"] == "/secret":
+                quiet = True  # subpoena:enforcement
+            if not quiet:
+                environ["wsgi.errors"].write("broken")
+            start_response("200 OK", [("Content-Type", "text/plain")])
+            return [b"ok"]
+    ''', "test_wsgisite.py": """
+        from webtest import TestApp
+        from wsgisite import app
+        def test_secret():
+            TestApp(app).get("/secret", status=200)
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_webtest_status_check_inside_the_code_under_test_is_a_crash(tmp_path):
+    _, r = outcome(tmp_path, {"wsgisite.py": WSGI + '''
+
+def probe():
+    from webtest import TestApp
+    TestApp(app).get("/secret", status=403)
+''', "test_wsgisite.py": """
+        from wsgisite import probe
+        def test_secret():
+            probe()
+    """})
+    assert r.outcome == CRASHED
+
+
+def test_another_exception_named_apperror_is_a_crash(tmp_path):
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        from auth import DENIED, allow
+        class AppError(Exception):
+            pass
+        def test_denied():
+            if allow(False) != DENIED:
+                raise AppError("Bad response: 200 OK (not 403)")
+    """})
+    assert r.outcome == CRASHED
+
+
+# Removing a return that ends the function leaves None in its place, a value
+# nobody reviewed. Where the function never gives None, None is not "enforcement
+# gone": the return can carry the allow decision, and a test of the allowed path
+# would "kill" the mutant with no test ever asking about a denied user.
+ALLOWED_PATH_TEST = """
+    from gate import allowed
+    def test_admin():
+        assert allowed("ann")
+"""
+
+
+@pytest.mark.parametrize("gate", [
+    '''
+        ADMINS = {"ann"}
+
+        # subpoena:enforcement_point
+        def allowed(user):
+            return user in ADMINS  # subpoena:enforcement
+    ''',
+    '''
+        ADMINS = {"ann"}
+
+        # subpoena:enforcement_point
+        def allowed(user):
+            if user == "root":
+                return True
+            else:
+                return user in ADMINS  # subpoena:enforcement
+    ''',
+    '''
+        ADMINS = {"ann"}
+
+        # subpoena:enforcement_point
+        def allowed(user):
+            try:
+                return user in ADMINS  # subpoena:enforcement
+            except TypeError:
+                return False
+    ''',
+], ids=["last statement", "else branch", "try body"])
+def test_a_return_that_carries_the_decision_is_invalid(tmp_path, gate):
+    rep, r = outcome(tmp_path, {"gate.py": gate, "test_gate.py": ALLOWED_PATH_TEST})
+    assert r.outcome == INVALID and rep.failed()
+    assert "enforcement_guard" in r.output
+
+
+def test_a_group_with_such_a_return_is_invalid(tmp_path):
+    rep = cross.run(project(tmp_path, {"gate.py": '''
+        ADMINS = {"ann"}
+
+        # subpoena:enforcement_point
+        def allowed(user):
+            if user == "":
+                return False  # subpoena:enforcement group=a
+            return user in ADMINS  # subpoena:enforcement group=a
+    ''', "test_gate.py": ALLOWED_PATH_TEST}))
+    assert rep.results[-1].group == "a" and rep.results[-1].outcome == INVALID
+
+
+@pytest.mark.parametrize("gate", [
+    '''
+        # subpoena:enforcement_point
+        def denied(user):
+            if user == "ann":
+                return None
+            return "denied"  # subpoena:enforcement
+    ''',
+    '''
+        # subpoena:enforcement_point
+        def denied(user):
+            if user == "ann":
+                return
+            else:
+                return "denied"  # subpoena:enforcement
+    ''',
+    '''
+        # subpoena:enforcement_point
+        def denied(user):
+            if user != "ann":
+                return "denied"  # subpoena:enforcement
+    ''',
+], ids=["None elsewhere", "bare return elsewhere", "the if falls off the end anyway"])
+def test_a_return_where_none_means_allowed_can_be_removed(tmp_path, gate):
+    _, r = outcome(tmp_path, {"gate.py": gate, "test_gate.py": """
+        from gate import denied
+        def test_denied():
+            assert denied("bob") == "denied"
+    """})
+    assert r.outcome == KILLED
+
+
+# A condition with no parentheses of its own can still span lines inside a
+# call's brackets. Its line breaks must stay in brackets once it is forced.
+MULTILINE_GUARDS = {
+    "call": '''
+        def denied(admin, role):
+            return not admin
+
+        # subpoena:enforcement_point
+        def allow(admin):
+            if denied(  # subpoena:enforcement_guard false
+                admin,
+                "role",
+            ):
+                return "denied"
+            return None
+    ''',
+    "parenthesised": '''
+        # subpoena:enforcement_point
+        def allow(admin):
+            if (not admin  # subpoena:enforcement_guard false
+                    and admin is not None):
+                return "denied"
+            return None
+    ''',
+    "elif": '''
+        def denied(admin, role):
+            return not admin
+
+        # subpoena:enforcement_point
+        def allow(admin):
+            if admin is None:
+                return "none"
+            elif denied(  # subpoena:enforcement_guard false
+                admin,
+                "role",
+            ):
+                return "denied"
+            return None
+    ''',
+}
+
+
+@pytest.mark.parametrize("shape", sorted(MULTILINE_GUARDS))
+def test_multi_line_guard_is_forced(tmp_path, shape):
+    _, r = outcome(tmp_path, {"auth.py": MULTILINE_GUARDS[shape], "test_auth.py": """
+        from auth import allow
+        def test_denied():
+            assert allow(False) == "denied"
+    """})
+    assert r.outcome == KILLED, r.output
+
+
+def test_forcing_a_multi_line_guard_keeps_every_line_where_it_was():
+    data = b"if f(\n    a,\n    b,\n):\n    pass\n"
+    m = cross.Mutant("x.py", "f", 1, "f(\n    a,\n    b,\n)", "False", (3, data.index(b":")), 3)
+    mutated = cross.apply(data, m)
+    compile(mutated, "x.py", "exec")
+    assert mutated.count(b"\n") == data.count(b"\n")
+
+
+# pytest-xdist runs the tests in workers: another process, started after the
+# plugin took its settings out of the environment.
+XDIST = ["-n", "2"]
+
+
+def test_xdist_assertion_is_a_kill(tmp_path):
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        from auth import DENIED, allow
+        def test_denied():
+            assert allow(False) == DENIED
+        def test_allowed():
+            assert allow(True) is None
+    """}, pytest_args=XDIST)
+    assert r.outcome == KILLED and r.evidence == "other", r.output
+    assert r.first_failure.startswith("assert None ==")
+
+
+def test_xdist_keeps_witness_evidence(tmp_path):
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        from auth import DENIED, allow
+        from subpoena.harness import witness_fail
+        def test_denied():
+            if allow(False) != DENIED:
+                witness_fail("it ran")
+    """}, pytest_args=XDIST)
+    assert r.outcome == KILLED and r.evidence == "witness", r.output
+
+
+def test_xdist_survivor_stays_a_survivor(tmp_path):
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        from auth import allow
+        def test_allowed():
+            assert allow(True) is None
+    """}, pytest_args=XDIST)
+    assert r.outcome == SURVIVED, r.output
+
+
+def test_xdist_exception_in_a_worker_is_a_crash(tmp_path):
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        from auth import DENIED, allow
+        def test_denied():
+            if allow(False) != DENIED:
+                raise RuntimeError("boom")
+    """}, pytest_args=XDIST)
+    assert r.outcome == CRASHED, r.output
+
+
+def test_xdist_dead_worker_is_a_crash_beside_a_kill(tmp_path):
+    # One worker fails cleanly, the other dies: the process that died proves
+    # nothing, and in a single process it would have been a crash.
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        import os, time
+        from auth import DENIED, allow
+        def test_dies():
+            if allow(False) != DENIED:
+                os._exit(3)
+        def test_denied():
+            time.sleep(1)
+            assert allow(False) == DENIED
+    """}, pytest_args=XDIST + ["--maxfail=2"])
+    assert r.outcome == CRASHED, r.output
+
+
+def test_xdist_never_imported_is_invalid(tmp_path):
+    # No worker imports the mutated file, so the suite proved nothing about it.
+    _, r = outcome(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+        def test_nothing():
+            assert False is False
+    """}, pytest_args=XDIST)
+    assert r.outcome == INVALID, r.output
+
+
+def test_xdist_files_loaded_in_different_workers_count(tmp_path):
+    # A group across two files: neither worker need import both.
+    rep = cross.run(project(tmp_path, {
+        "a.py": AUTH.replace("subpoena:enforcement\n", "subpoena:enforcement group=g\n"),
+        "b.py": AUTH.replace("subpoena:enforcement\n", "subpoena:enforcement group=g\n"),
+        "test_a.py": """
+            import time
+            def test_a():
+                from a import DENIED, allow
+                time.sleep(0.5)
+                assert allow(False) == DENIED
+        """,
+        "test_b.py": """
+            import time
+            def test_b():
+                from b import DENIED, allow
+                time.sleep(0.5)
+                assert allow(False) == DENIED
+        """}), pytest_args=XDIST + ["--dist=loadfile"])
+    assert [r.outcome for r in rep.results] == [KILLED, KILLED, KILLED], [r.output for r in rep.results]
+
+
+def test_xdist_report_is_kept_in_the_evidence(tmp_path):
+    evidence = tmp_path / "ev"
+    src = tmp_path / "src"
+    src.mkdir()
+    rep = cross.run(project(src, {"auth.py": AUTH, "test_auth.py": """
+        from auth import DENIED, allow
+        def test_denied():
+            assert allow(False) == DENIED
+    """}), pytest_args=XDIST, evidence_dir=str(evidence))
+    assert rep.results[0].outcome == KILLED
+    records = (evidence / os.path.basename(rep.results[0].evidence_file)).with_suffix(".jsonl").read_text()
+    assert '"kind": "failure"' in records
+
+
+def test_xdist_with_selection_says_why_it_stops(tmp_path):
+    with pytest.raises(CrossError, match="drop pytest-xdist"):
+        cross.run(project(tmp_path, {"auth.py": AUTH, "test_auth.py": """
+            from auth import DENIED, allow
+            def test_denied():
+                assert allow(False) == DENIED
+        """}), pytest_args=XDIST, select=True)
+
+
+def test_interrupted_run_is_a_crash():
+    # Cross stops no run early, so exit 2 means pytest was interrupted, xdist or not.
+    records = [{"kind": "failure", "test": "t", "verdict": "assertion", "message": "m"},
+               {"kind": "finished", "exitstatus": 2, "missing": []}]
+    assert cross.classify(2, records, "")[0] == CRASHED
+    assert cross.classify(2, records + [{"kind": "worker_finished", "missing": []}], "")[0] == CRASHED
+
+
+def test_a_file_one_process_loaded_is_loaded():
+    fail = {"kind": "failure", "test": "t", "verdict": "assertion", "message": "m"}
+    done = {"kind": "finished", "exitstatus": 1, "missing": ["a.py", "b.py"]}
+    w1 = {"kind": "worker_finished", "missing": ["b.py"]}
+    w2 = {"kind": "worker_finished", "missing": ["a.py"]}
+    w3 = {"kind": "worker_finished", "missing": ["a.py", "b.py"]}
+    assert cross.classify(1, [fail, w1, w2, done], "")[0] == KILLED
+    assert cross.classify(1, [fail, w1, w3, done], "")[0] == INVALID
+
+
+def test_baseline_timeout_says_so(tmp_path):
+    files = {"auth.py": AUTH, "test_auth.py": """
+        import time
+        def test_hang():
+            time.sleep(60)
+    """}
+    with pytest.raises(CrossError, match=r"(?s)baseline suite is not green.*did not finish within.*--timeout"):
+        cross.run(project(tmp_path, files), timeout=8)
+
+
+def test_baseline_red_test_is_named(tmp_path):
+    files = {"auth.py": AUTH, "test_auth.py": """
+        def test_broken():
+            assert 1 == 2, "the reason"
+    """}
+    with pytest.raises(CrossError, match=r"(?s)test_auth.py::test_broken.*the reason"):
+        cross.run(project(tmp_path, files))
+
+
+def test_baseline_with_no_tests_says_so(tmp_path):
+    with pytest.raises(CrossError, match="collected no tests"):
+        cross.run(project(tmp_path, {"auth.py": AUTH}))
+
+
+def test_baseline_collection_error_is_named(tmp_path):
+    files = {"auth.py": AUTH, "test_auth.py": "import no_such_module\n"}
+    with pytest.raises(CrossError, match=r"could not collect.*test_auth.py"):
+        cross.run(project(tmp_path, files))
+
+
+@pytest.mark.parametrize("code,records,want", [
+    (None, [], "did not finish within"),
+    (1, [{"kind": "tampered"}], "not this run's"),
+    (-9, [], "exited -9"),
+    (0, [], "exited 0 without finishing"),
+])
+def test_baseline_reason(code, records, want):
+    assert want in cross._baseline_reason(code, records, 300)

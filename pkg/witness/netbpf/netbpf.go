@@ -6,9 +6,30 @@
 // the call. An attempt is attributed to a session's trace by its session
 // cgroup (pkg/cgroup), without trusting the application.
 //
+// A second program on security_socket_sendmsg reports sends on connected inet
+// sockets from session cgroups, with the peer read from the socket. That is
+// witness.DeliveryWitness: a broker writing to a subscriber on a socket it
+// accepted, which involves no connect at all. The sender must be in the session
+// cgroup and stay there; a broker running inside the test binary, outside it, is
+// not seen.
+// It sees that bytes went to a peer, not what they were, and it reports the
+// attempt, before the send can fail. There is no tier-1 form of this: the
+// kernel is the only outside observer of a write on someone else's socket.
+//
 // It is the network sibling of execbpf, with the same loss accounting: a full
-// ring buffer, a failed drain or a reader error makes Health fail, so an empty
-// Dialed cannot certify absence by accident.
+// ring buffer, a failed drain or a reader error makes Health fail. So do the ways
+// a send can go unseen without any of those. The kernel skips a program that is
+// already active on a CPU, which a preempt=full kernel makes common, and counts it
+// only as a recursion miss. A task can leave its session, by a move or with
+// CLONE_INTO_CGROUP, and two more programs count that; attribution alone could
+// not, since it reads the cgroup at the moment of the send. A cgroup path too long
+// to walk, and a send from under the session root but in no session, count too.
+// An empty Dialed or Delivered means nothing until Health says so.
+//
+// A send with an IP source route, set on the socket or with the send, leaves for
+// its first hop, not its peer, so Delivered has that hop as well, on port 0. A send
+// on a socket with SO_BROADCAST, or on a broadcast route the socket holds, may reach
+// a subnet, which no address can show, so the event says so. Dialed has neither: it reports the destination named.
 //
 // What it does not see: packet sockets (AF_PACKET); raw sockets that write
 // their own IP header (the reported destination is the one passed to the
@@ -16,20 +37,26 @@
 // destinations reached through another process (a proxy, a resolver, a
 // sidecar) outside the session cgroup; and SCTP's connectx, which goes
 // through setsockopt. Those are the application's or the deployment's to rule
-// out.
+// out. Delivered also misses sends on sockets that are not inet (counted in
+// DeliveryCoverage) and, before Linux 6.5, sendfile and splice to a socket,
+// which then took a path without this hook.
 //
 // Loading the programs needs root (or CAP_BPF plus CAP_PERFMON), cgroup v2 and
 // a kernel with BTF and fentry (5.8 or later on amd64, 6.0 or later on arm64).
-// It observes only; it does not block.
+// It observes only; it does not block. Health is host-wide: a miss on any CPU, or
+// a task leaving any session, makes every trace in this capture Inconclusive.
 //
 // Every inet connect and named send on the host is reported to user space,
 // not only those in session cgroups. On a busy host a full ring buffer fails
-// Health for every capture: Inconclusive, never a false Pass.
+// Health for every capture: Inconclusive, never a false Pass. Connected sends
+// are filtered in the kernel to cgroups under the session root, since on any
+// host those would be far too many.
 package netbpf
 
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,8 +76,9 @@ type Config struct {
 	// OnEvent, if set, is called for every event the kernel reports, attributed
 	// or not, from the reader goroutine. DNS and other UDP on a busy host are many.
 	OnEvent func(Event)
-	// NoRetain stops the Witness keeping attributed events in memory (Events
-	// and Dialed then return nothing). For long-running use with OnEvent.
+	// NoRetain stops the Witness keeping attributed events in memory (Events,
+	// Dialed and Delivered then return nothing). For long-running use with
+	// OnEvent.
 	NoRetain bool
 }
 
@@ -63,27 +91,64 @@ type Event struct {
 	Comm         string
 	SockType     int    // SOCK_STREAM (1), SOCK_DGRAM (2), SOCK_RAW (3), ...
 	Protocol     string // "tcp", "udp", "icmp", "icmpv6", or the IP protocol number
-	Dest         netip.AddrPort
-	CgroupID     uint64 // bpf_get_current_cgroup_id: equals pkg/cgroup Group.ID()
-	// Cgroup is the cgroup path as far up as the kernel walked (up to 8
-	// elements), root-most first, without the hierarchy root: "subpoena/<trace id>".
+	// Dest is the destination, and for OpDeliver the peer the socket holds: the
+	// zero AddrPort if it holds none.
+	Dest     netip.AddrPort
+	Local    netip.AddrPort // this end of the socket, on a send
+	Bytes    uint64         // on a send, the bytes the caller asked to send
+	CgroupID uint64         // bpf_get_current_cgroup_id: equals pkg/cgroup Group.ID()
+	// Cgroup is the cgroup path, up to 8 elements, root-most first, without the
+	// hierarchy root: "subpoena/<trace id>". Longer paths lose elements above the
+	// session root, then the ones nearest the leaf, so the session root stays.
+	// It is empty if the kernel could not walk the path to the top.
 	Cgroup string
-	Time   time.Time
+	// RootID is the kernel's ID of the cgroup that Cgroup's session root element
+	// names, 0 if it names none. A cgroup anywhere can share that name.
+	RootID uint64
+	// Broadcast says a datagram or raw socket had SO_BROADCAST set.
+	Broadcast bool
+	// BroadcastRoute says the send went out on a route the socket holds that is a
+	// broadcast route, whatever the option says now.
+	BroadcastRoute bool
+	Time           time.Time
 
 	// Set by the Witness: how the event was attributed to a trace, if at all.
 	TraceID     string
 	Attribution witness.Attribution
 }
 
+// DeliveryLine is e as a line of the witness file, for an event that is a send.
+func (e Event) DeliveryLine() witness.DeliveryLine {
+	l := witness.DeliveryLine{
+		Time: e.Time.UTC(), DeliveryOp: string(e.Op), PID: e.PID, HostPID: e.HostPID, Comm: e.Comm,
+		Protocol: e.Protocol, Bytes: e.Bytes, Broadcast: e.Broadcast, BroadcastRoute: e.BroadcastRoute, CgroupID: e.CgroupID, Cgroup: e.Cgroup,
+		TraceID: e.TraceID, Attribution: string(e.Attribution),
+	}
+	if e.Dest.IsValid() {
+		l.Peer = e.Dest.String()
+	}
+	if e.Local.IsValid() {
+		l.Local = e.Local.String()
+	}
+	return l
+}
+
 // Witness implements witness.NetworkWitness with the eBPF programs in this
 // package.
 type Witness struct {
 	cfg  Config
+	root string
 	base string
 
 	lifecycle sync.Mutex // serializes Start and Stop
 	mu        sync.Mutex
 	events    []witness.NetworkEvent
+	// deliveries are sends: OpDeliver events, and the OpSendmsg ones also in
+	// events, since a named send is delivery to the peer it names.
+	deliveries []witness.DeliveryEvent
+	coverage   witness.DeliveryCoverage
+	// unattributed counts events under the session root that name no session.
+	unattributed uint64
 
 	k         *kernel // loaded programs; guarded by lifecycle
 	healthErr error
@@ -91,8 +156,9 @@ type Witness struct {
 }
 
 var (
-	_ witness.NetworkWitness = (*Witness)(nil)
-	_ witness.HealthReporter = (*Witness)(nil)
+	_ witness.NetworkWitness  = (*Witness)(nil)
+	_ witness.DeliveryWitness = (*Witness)(nil)
+	_ witness.HealthReporter  = (*Witness)(nil)
 )
 
 // New returns a Witness. Call Start to load the programs.
@@ -101,7 +167,7 @@ func New(cfg Config) *Witness {
 	if root == "" {
 		root = cgroup.FromEnv().Root
 	}
-	return &Witness{cfg: cfg, base: cgroup.RootBase(root)}
+	return &Witness{cfg: cfg, root: root, base: cgroup.RootBase(root)}
 }
 
 // handle attributes one event and records it. It is the whole of the
@@ -109,13 +175,69 @@ func New(cfg Config) *Witness {
 //
 // Attribution is by session cgroup only. execbpf's lineage fallback follows
 // fork events to a root PID; a connection carries no parent, so an attempt
-// from outside a session cgroup is not attributed to any trace.
+// from outside a session cgroup is not attributed to any trace. One from under
+// the session root that names no session is counted, and fails Health at Stop: a
+// task that left its session for the root looks like that. A cgroup elsewhere on
+// the machine that shares the root's name is not under it.
 func (w *Witness) handle(e Event) {
 	if tid, ok := cgroup.SessionTrace("0::/"+e.Cgroup, w.base); ok {
 		e.TraceID, e.Attribution = tid, witness.ByCgroup
-	}
-	if e.Attribution != "" && !w.cfg.NoRetain {
+	} else if slices.Contains(strings.Split(e.Cgroup, "/"), w.base) && !w.elsewhere(e) {
 		w.mu.Lock()
+		w.unattributed++
+		w.mu.Unlock()
+	}
+	if e.Attribution != "" {
+		w.record(e)
+	}
+	if w.cfg.OnEvent != nil {
+		w.cfg.OnEvent(e)
+	}
+}
+
+// elsewhere reports whether e's cgroup path only shares the session root's name:
+// the kernel found a cgroup with that name, and it is known not to be the root. The
+// root is read now, not at Start, as it may come and go during a capture. If it
+// cannot be read, the name is all there is, and it counts.
+func (w *Witness) elsewhere(e Event) bool {
+	id, ok := cgroupID(w.root)
+	return ok && e.RootID != 0 && e.RootID != id
+}
+
+// record keeps one attributed event: a connection attempt, a send, or both.
+func (w *Witness) record(e Event) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	send := e.Op == witness.OpDeliver || e.Op == witness.OpSendmsg
+	d := witness.DeliveryEvent{
+		PID:            e.PID,
+		Comm:           e.Comm,
+		Op:             e.Op,
+		Protocol:       e.Protocol,
+		Peer:           e.Dest,
+		Local:          e.Local,
+		Bytes:          e.Bytes,
+		Broadcast:      e.Broadcast,
+		BroadcastRoute: e.BroadcastRoute,
+		Cgroup:         e.Cgroup,
+		CgroupID:       e.CgroupID,
+		TraceID:        e.TraceID,
+		Attribution:    e.Attribution,
+		SeenAt:         e.Time,
+	}
+	if send {
+		w.coverage.Sends++
+		if d.PeerUnknown() {
+			w.coverage.UnknownPeers++
+		}
+	}
+	if w.cfg.NoRetain {
+		return
+	}
+	if send {
+		w.deliveries = append(w.deliveries, d)
+	}
+	if e.Op != witness.OpDeliver {
 		w.events = append(w.events, witness.NetworkEvent{
 			PID:         e.PID,
 			Comm:        e.Comm,
@@ -128,10 +250,6 @@ func (w *Witness) handle(e Event) {
 			Attribution: e.Attribution,
 			SeenAt:      e.Time,
 		})
-		w.mu.Unlock()
-	}
-	if w.cfg.OnEvent != nil {
-		w.cfg.OnEvent(e)
 	}
 }
 
@@ -153,6 +271,31 @@ func (w *Witness) Dialed(traceID string) []witness.NetworkEvent {
 		}
 	}
 	return out
+}
+
+// Delivered returns the sends attributed to traceID by its session cgroup: to
+// the peer a connected socket holds, or to the destination a send named. Call
+// Stop first so no event is still in the ring buffer.
+func (w *Witness) Delivered(traceID string) []witness.DeliveryEvent {
+	traceID = strings.ToLower(traceID)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []witness.DeliveryEvent
+	for _, e := range w.deliveries {
+		if e.TraceID == traceID {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// DeliveryCoverage reports what this capture might have missed even when
+// healthy, and what failed Health. Everything but Sends and UnknownPeers is
+// final only after Stop.
+func (w *Witness) DeliveryCoverage() witness.DeliveryCoverage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.coverage
 }
 
 // Health reports known loss or reader failures from this capture. Stop must

@@ -41,8 +41,8 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   implementation. Read the code only after the test exists, and say so with the
   marker if you did not.
 - A function marked `//subpoena:enforcement_point` needs a test that asks a
-  Witness (`Spawned`, or `Dialed` for network effects) what actually happened. Before trusting zero processes,
-  stop the witness and check capture health. Prefer `harness.RequireNoSpawn` (`RequireNoDial`):
+  Witness (`Spawned`, `Dialed` for network effects, `Wrote` for file changes, `Delivered` for sends on an open socket, or `Committed` for database rows) what actually happened. Before trusting zero processes,
+  stop the witness and check capture health. Prefer `harness.RequireNoSpawn` (`RequireNoDial`, `RequireNoWrite`, `RequireNoDelivery`, `RequireNoRow`):
   missing or failed `HealthReporter` health is Inconclusive and fails the test. Register
   `harness.WatchSpawns` when the witness starts, so the witness is read even when the test
   fails before its witness assertion. The system's own spans are testimony, not proof.
@@ -72,5 +72,8 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   passed. After editing `pkg/witness/execbpf/bpf/exec.c` or
   `pkg/witness/netbpf/bpf/net.c`, run `make generate-bpf` (clang) and commit
   the regenerated objects.
+- `make test-db` (the database witness against real servers) needs Docker. Plain
+  `go test` runs those tests only if Docker and both images are there, and skips
+  them otherwise, so do not claim they passed without seeing them run.
 - Weaver is a Rust binary, not installed by default. See the Makefile header.
 - Never commit to main. Work on a branch; do not open PRs unless asked.
