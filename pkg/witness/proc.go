@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -597,7 +598,13 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 // (an exec such as bash -c's last command, or a process rewriting its argv)
 // likewise keeps the earlier line as an event of its own. Only a forked
 // child's first line, when it equals its parent's, is replaced: that line
-// was never the child's. w.mu must be held.
+// was never the child's.
+//
+// An exec sets the task name before the new arguments exist, so a poll can
+// land on a forked child with its new name and no line. That name is kept as
+// above, because the child may exit there. If the child's first own line then
+// runs that same program, the name said nothing the line does not, and its
+// event goes. A line that runs any other program leaves it. w.mu must be held.
 //
 //subpoena:enforcement_point
 func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
@@ -607,6 +614,8 @@ func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 		if ev.CommandSource == CommandLine && ev.Command != s.cmdline && w.inherited != nil {
 			if !w.inherited[k] {
 				oldLine = ev.Command //subpoena:enforcement
+			} else if s.comm == lineProgram(s.cmdline) {
+				w.dropKept(k, "/name:"+s.comm) //subpoena:enforcement
 			}
 			delete(w.inherited, k)
 		}
@@ -656,6 +665,31 @@ func (w *ProcWitness) keepAs(k procKey, ev *ProcessEvent, tag, command string, s
 	if seen {
 		kept.SeenAt = seenAt
 	}
+}
+
+// dropKept removes an event keepAs recorded for k under tag, if there is one.
+// w.mu must be held.
+func (w *ProcWitness) dropKept(k procKey, tag string) {
+	nk := procKey{pid: k.pid, start: k.start + tag}
+	if _, seen := w.tracked[nk]; !seen {
+		return
+	}
+	delete(w.tracked, nk)
+	w.order = slices.DeleteFunc(w.order, func(o procKey) bool { return o == nk })
+}
+
+// lineProgram is the task name the kernel gives the program of a command
+// line: its first word without the directory, cut to 15 bytes.
+func lineProgram(line string) string {
+	f := strings.Fields(line)
+	if len(f) == 0 {
+		return ""
+	}
+	name := filepath.Base(f[0])
+	if len(name) > 15 {
+		name = name[:15]
+	}
+	return name
 }
 
 // cmdlineOf reads pid's command line now, or "" if it cannot.

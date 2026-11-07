@@ -611,6 +611,93 @@ func TestForkedChildsInheritedLineIsReplaced(t *testing.T) {
 	}
 }
 
+// execWindow plays a forked child through an exec a poll landed in: first its
+// parent's line, then the new task name with no line yet.
+func execWindow(t *testing.T, pid int, name string) (*ProcWitness, string) {
+	t.Helper()
+	w, root := freshFake(t, nil)
+	dir := filepath.Join(root, strconv.Itoa(pid))
+	fakeProc(t, root, pid, 100, "240", "gateway", "0::/")
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
+	fakeChildren(t, root, 100, pid)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte(name+"\n"), 0o644))
+	w.pollChildren()
+	return w, dir
+}
+
+// The first real line runs the program the window showed, so the process is
+// one event. Counted as two, an Allowed rule failed a process that did nothing
+// wrong: 5 of 240 batches of the gateway suite, and one CI run.
+func TestAPollInsideAnExecLeavesOneEvent(t *testing.T) {
+	for _, tc := range []struct{ name, comm, line, want string }{
+		{"bare", "sleep", "sleep\x000.15\x00", "sleep 0.15"},
+		{"directory", "sleep", "/usr/bin/sleep\x000.15\x00", "/usr/bin/sleep 0.15"},
+		{"cut name", "a-sixteen-byte-p", "/bin/a-sixteen-byte-program\x00x\x00", "/bin/a-sixteen-byte-program x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			comm := tc.comm
+			if len(comm) > 15 {
+				comm = comm[:15]
+			}
+			w, dir := execWindow(t, 941, comm)
+			must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte(tc.line), 0o644))
+			w.pollChildren()
+			evs := w.Events()
+			if len(evs) != 1 || evs[0].Command != tc.want || evs[0].NameOnly() {
+				t.Fatalf("got %s", brief(evs))
+			}
+		})
+	}
+}
+
+// A line that runs another program does not explain the name: rm was seen and
+// never read, whether the line came from a second exec or a rewritten argv.
+func TestALineForAnotherProgramKeepsTheName(t *testing.T) {
+	for _, comm := range []string{"rm", "benign"} {
+		t.Run(comm, func(t *testing.T) {
+			w, dir := execWindow(t, 942, "rm")
+			must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte(comm+"\n"), 0o644))
+			must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("benign\x00x\x00"), 0o644))
+			w.pollChildren()
+			got := byCmd(w.Events())
+			if len(got) != 2 || !got["rm"].NameOnly() || got["benign x"].PID != 942 {
+				t.Fatalf("got %s", brief(w.Events()))
+			}
+		})
+	}
+}
+
+// A child that exits inside the window was never read: its name stays.
+func TestAnExitInsideAnExecKeepsTheName(t *testing.T) {
+	w, _ := execWindow(t, 943, "rm")
+	w.pollChildren()
+	if got := byCmd(w.Events()); !got["rm"].NameOnly() {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
+// A line that was the child's own is not the window: a name seen after it
+// stays when the same program's line follows.
+func TestANameAfterAnOwnLineStays(t *testing.T) {
+	w, root := freshFake(t, nil)
+	dir := filepath.Join(root, "944")
+	fakeProc(t, root, 944, 100, "244", "myservice\x00--serve\x00", "0::/")
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("myservice\n"), 0o644))
+	fakeChildren(t, root, 100, 944)
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("rm\n"), 0o644))
+	w.pollChildren()
+	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("rm\x00x\x00"), 0o644))
+	w.pollChildren()
+	got := byCmd(w.Events())
+	if len(got) != 3 || !got["rm"].NameOnly() || got["myservice --serve"].PID != 944 || got["rm x"].PID != 944 {
+		t.Fatalf("got %s", brief(w.Events()))
+	}
+}
+
 // Coverage counts both pollers and reports the longest gap between full
 // scans: the window in which a process outside the children tree can slip by.
 func TestCoverageReportsFullScanGap(t *testing.T) {
