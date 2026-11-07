@@ -715,9 +715,9 @@ func TestAWaitThatRunsOutKeepsTheName(t *testing.T) {
 	wantNameKept(t, w, "other")
 }
 
-// One poll's waits share one budget: children made to stall the pollers cost
-// it once, and the rest keep their names.
-func TestAPollSpendsOneBudgetOnWaits(t *testing.T) {
+// Waits run from the read, so children made to stall a poll cost it one wait
+// between them, and all keep their names.
+func TestAPollsWaitsEndTogether(t *testing.T) {
 	w, root := freshFake(t, nil)
 	pids := []int{960, 961, 962}
 	for i, pid := range pids {
