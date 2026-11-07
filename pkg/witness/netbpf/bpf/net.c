@@ -169,6 +169,7 @@ struct ipv6_pinfo {
 struct inet_sock {
 	struct ipv6_pinfo *pinet6; // only with CONFIG_IPV6
 	struct ip_options_rcu *inet_opt;
+	struct ipv6_fl_socklist *ipv6_fl_list; // 7.0 on; ipv6_pinfo before
 } __attribute__((preserve_access_index));
 
 #define AF_UNSPEC 0
@@ -599,10 +600,17 @@ static __always_inline int control_reroutes(struct socket *sock, struct msghdr *
 // A send can name such a label three ways: sin6_flowinfo, a control message, or the
 // label connect kept, and the kernel merges its options into the send. A label is
 // looked up only among those the socket holds, so holding one is what can be read,
-// whichever way a send names it. A list too long to walk counts.
-static __always_inline int label_reroutes(struct ipv6_pinfo *np)
+// whichever way a send names it. A list too long to walk counts, and so does a
+// kernel that keeps the list in neither place this knows.
+static __always_inline int label_reroutes(struct inet_sock *inet, struct ipv6_pinfo *np)
 {
-	struct ipv6_fl_socklist *at = BPF_CORE_READ(np, ipv6_fl_list);
+	struct ipv6_fl_socklist *at;
+	if (bpf_core_field_exists(inet->ipv6_fl_list))
+		at = BPF_CORE_READ(inet, ipv6_fl_list);
+	else if (bpf_core_field_exists(np->ipv6_fl_list))
+		at = BPF_CORE_READ(np, ipv6_fl_list);
+	else
+		return 1;
 	for (int i = 0; i < LABEL_WALK; i++) {
 		if (!at)
 			return 0;
@@ -638,7 +646,7 @@ static __always_inline void detour_of(struct socket *sock, struct msghdr *msg, s
 	if (bpf_core_field_exists(inet->pinet6)) {
 		struct ipv6_pinfo *np = BPF_CORE_READ(inet, pinet6);
 		struct ipv6_txoptions *o6 = np ? BPF_CORE_READ(np, opt) : 0;
-		if ((o6 && BPF_CORE_READ(o6, srcrt)) || (np && label_reroutes(np)))
+		if ((o6 && BPF_CORE_READ(o6, srcrt)) || (np && label_reroutes(inet, np)))
 			d->taken = 1;
 	}
 }
