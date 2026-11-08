@@ -318,7 +318,9 @@ func TestAForgedWALFrameIsRefused(t *testing.T) {
 	binary.BigEndian.PutUint32(hdr[24:], s0)
 	binary.BigEndian.PutUint32(hdr[28:], s1)
 	frame := make([]byte, walFrameHdr)
-	binary.BigEndian.PutUint32(frame[0:], 0xfffffff0)
+	// Far past the limit, but small enough that a build without the check
+	// fails this test cleanly instead of running out of memory.
+	binary.BigEndian.PutUint32(frame[0:], 4*walPageSlack)
 	binary.BigEndian.PutUint32(frame[4:], 1)
 	binary.BigEndian.PutUint32(frame[8:], 1)
 	binary.BigEndian.PutUint32(frame[12:], 2)
