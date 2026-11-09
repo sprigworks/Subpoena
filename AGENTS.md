@@ -54,6 +54,8 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   refusing Pass on a truncated capture, lost kernel events, cross's own
   refusals) are enforcement points too. `make cross-self` cross-examines
   them; a new guard gets the markers and a test that kills its mutant.
+  CI's `tier1` leaves `./internal/cross` out (it takes hours), so run
+  `make cross-self` locally on any change under `internal/cross` and before a tag.
 
 ## Environment
 
