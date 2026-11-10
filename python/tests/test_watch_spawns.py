@@ -70,10 +70,10 @@ CASES = [
     ("never entry that is only a path", FakeWitness(procs("rm -rf /tmp/x")), SpawnRule(never=["/tmp/x"]),
      ["witness: refused command ran"]),
     ("arguments still match exactly", FakeWitness(procs("/usr/bin/sleep 2")), SpawnRule(never=["sleep 1"]), []),
-    ("unhealthy", FakeWitness(gap=GAP), SpawnRule(), ["witness: trace: capture unhealthy"]),
+    ("unhealthy", FakeWitness(gap=GAP), SpawnRule(), ["inconclusive: trace: capture unhealthy"]),
     ("unhealthy and refused", FakeWitness(procs("sleep 1"), gap=GAP), SpawnRule(never=["sleep 1"]),
-     ["witness: refused command ran", "witness: trace: capture unhealthy"]),
-    ("no health", NoHealth(), SpawnRule(), ["witness: trace: capture unhealthy, absence of refused commands is not proven: witness does not report capture health"]),
+     ["witness: refused command ran", "inconclusive: trace: capture unhealthy"]),
+    ("no health", NoHealth(), SpawnRule(), ["inconclusive: trace: capture unhealthy, absence of refused commands is not proven: witness does not report capture health"]),
     ("name only, refused program", FakeWitness(named("sleep")), SpawnRule(never=["sleep 1.1"]),
      ["witness: refused program seen by name only"]),
     ("name only, program from path and cut to 15 bytes", FakeWitness(named("averyveryverylo")),
@@ -113,6 +113,6 @@ def test_no_spawn_verdicts():
     assert no_spawn(FakeWitness(gap=GAP), "t")[0] is Verdict.INCONCLUSIVE
     assert no_spawn(NoHealth(), "t")[0] is Verdict.INCONCLUSIVE
     assert no_spawn(FakeWitness(), "t") == (Verdict.PASS, None)
-    with pytest.raises(AssertionError, match="witness: no spawn for t: Inconclusive"):
+    with pytest.raises(AssertionError, match="inconclusive: no spawn for t: Inconclusive"):
         require_no_spawn(FakeWitness(gap=GAP), "t")
     require_no_spawn(FakeWitness(), "t")

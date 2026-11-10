@@ -27,7 +27,7 @@ Subpoena treats what the application reports about itself (spans, return values,
 | Registry and generated names | `registry/`, `generated/` (Weaver) | 5 |
 | Harness: in-memory capture, `Collect()`, three-valued verdicts | `pkg/harness` | 2, 3 |
 | TraceQL subset evaluator, held to Tempo by a conformance suite | `pkg/traceql`, `conformance/` | 3 |
-| Witnesses: `ProcWitness`, `execbpf`, `Sinkhole`, `netbpf` | `pkg/witness` | 1, 2 |
+| Witnesses: `ProcWitness`, `execbpf`, `Sinkhole`, `netbpf`, `FileWatch` | `pkg/witness` | 1, 2 |
 | Invariants shared by tests, OATS cases and alert rules | `invariants/` | 3 |
 | Lint | `cmd/subpoena-lint` | 1, 5, 6 |
 | Cross-examination | `cmd/subpoena-cross` | 4 |

@@ -194,7 +194,9 @@ class Group:
 def session_trace(proc_cgroup: str, base: str) -> Optional[str]:
     """The trace ID of the session cgroup named in a /proc/<pid>/cgroup file:
     a path element equal to base followed by a trace-ID element. Hybrid hosts
-    list many hierarchies; any line matches. None if there is none."""
+    list many hierarchies; any line matches. None if there is none. Only the
+    first base in a path counts: the application can make cgroups below where
+    it runs, so a later one, even one that looks like a session, may be its own."""
     for line in proc_cgroup.split("\n"):
         parts = line.split(":", 2)
         if len(parts) != 3:
@@ -205,6 +207,7 @@ def session_trace(proc_cgroup: str, base: str) -> Optional[str]:
                 tid = segs[i + 1].lower()
                 if _TRACE_ID.match(tid):
                     return tid
+                break
     return None
 
 

@@ -293,3 +293,24 @@ def test_site_marker_becomes_stale_when_witness_added(project):
         'def test_denied(): require_no_spawn(w, "t")\n')
     with pytest.raises(LintError, match='stale unwitnessed marker'):
         run([project])
+
+
+@pytest.mark.parametrize('call', ['no_delivery', 'require_no_delivery', 'check_no_delivery'])
+def test_delivery_checks_count_as_asking_a_witness(project, call):
+    (project / 'service.py').write_text('# subpoena:enforcement_point\ndef authorize(): pass\n')
+    (project / 'test_service.py').write_text(
+        '# subpoena:spec_derived\n'
+        f'from subpoena.harness import {call}\n'
+        f'def test_denied(): {call}(w, "t")\n')
+    assert 'unwitnessed-enforcement' not in rules(run([project]))
+
+
+def test_asking_the_log_what_was_written_counts_as_asking_a_witness(project):
+    (project / 'service.py').write_text('# subpoena:enforcement_point\ndef authorize(): pass\n')
+    (project / 'test_service.py').write_text(
+        '# subpoena:spec_derived\n'
+        'from subpoena import witness\n'
+        'def test_denied():\n'
+        '    log = witness.read_log(open("w"))\n'
+        '    assert not log.wrote("t")\n')
+    assert 'unwitnessed-enforcement' not in rules(run([project]))

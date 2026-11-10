@@ -12,19 +12,30 @@ Markers, as comments:
                                           is forced to that value
 
 A mutant replaces the marked statement with `pass`, or the guarded
-condition with True or False. Verdicts:
+condition with True or False. A return that ends the function, in a function
+that never gives None otherwise, has no mutant: None would stand in for a value
+that can carry the allow decision, so it is invalid. Mark the guard. Verdicts:
 
 - killed: a test failed on an assertion raised from test code: an
   AssertionError, pytest.fail or a failed pytest.raises whose innermost frame
-  (past pytest's and subpoena's own helpers) is in a test module (pytest's
-  python_files, conftest.py, or the failing test's own file), or a subpoena
-  teardown check such as watch_spawns. An assert in the code under test is a
-  crash, as a panic is in Go.
+  (past pytest's and subpoena's own helpers) is in test code (a file pytest
+  collected a test from, or a conftest.py), or a subpoena
+  teardown check such as watch_spawns, or webtest's check of the status a test
+  expected. An assert in the code under test is a crash, as a panic is in Go.
+  A kill says a test noticed, not that it examined the refusal: a removal that
+  stops the allowed path too is killed by an allowed-path test alone
+  (docs/architecture.md, "What a kill does not prove").
+- unconfirmed: a kill, but one of _REPEATS runs with the mutant was no clean
+  failure of a test that failed the first time, or the suite failed in one of
+  _RERUNS reruns without it, each on a fresh copy: state outside the copy, or a
+  flake. A flake can still pass them all, and state
+  that clears itself is gone by the first rerun. -select does not retry it. The
+  run fails.
 - survived: the suite stayed green. The run fails.
 - crashed: the suite went red only by another exception, or the test process
   died. A crash is not evidence that the enforcement is tested; the run fails.
-- invalid: the mutant does not import (a SyntaxError, or any collection
-  error), or the suite never imported the mutated module from the copy (an
+- invalid: the mutant has no honest stand-in (above), does not import (a
+  SyntaxError, or any collection error), or the suite never imported the mutated module from the copy (an
   installed copy of the package shadowed it). It proves nothing; the run
   fails.
 - timeout: the suite ran past the timeout, or a test failed by
@@ -48,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import io
 import math
@@ -65,21 +77,44 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 import tokenize
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 KILLED = "enforcement-mutant-killed"
 KILLED_BY_SELF_REPORT = "enforcement-mutant-killed-by-self-report"
 SURVIVED = "enforcement-mutant-survived"
 CRASHED = "enforcement-mutant-crashed"
+UNCONFIRMED = "enforcement-mutant-unconfirmed"
 INVALID = "enforcement-mutant-invalid"
 TIMED_OUT = "enforcement-mutant-timeout"
 MASKED = "enforcement-layer-masked"
 
+# How many times a kill's test run repeats with the mutant in place. A red run
+# the mutant caused is red again; a rare flake is not, and runs without the
+# mutant pass one nearly every time.
+_REPEATS = 1
+
+# How many times a kill's test run happens again without the mutant. One rerun
+# catches a test that fails half the time only half the time.
+_RERUNS = 3
+
 _ANY_MARKER = re.compile(r"#\s*subpoena\s*:\s*enforc")  # cross's markers, misspelt ones too
+# _ANY_MARKER for a comment on a line of its own, where a space by the colon says
+# prose: subpoena: enforcement points are listed in docs.
+_OWN_MARKER = re.compile(r"#\s*subpoena:enforc")
+# A comment in a marker's shape: two words about a colon, and arguments that
+# _near_marker checks. A comment that goes on is prose.
+_NEAR_MARKER = re.compile(r"#\s*([A-Za-z]+)\s*:\s*([A-Za-z_]+)((?:\s+\S+)*)\s*$")
+# A marker after an upstream comment on the same line, as loosely as _ANY_MARKER,
+# so a misspelt one there is an error too: return x  # why  # subpoena:enforcement
+_TRAILING = re.compile(r"#\s*(?=subpoena\s*:\s*enforc)")
+_POINT_NAME = re.compile(r"subpoena:enforcement_point(\s|$)")
+_COUNTED = re.compile(r"subpoena:enforcement(_guard)?(\s|$)")
+_ONLY_MARKER = re.compile(r"^\s*#\s*subpoena\s*:\s*enforc")
 _POINT = "subpoena:enforcement_point"
 _STATEMENT = "subpoena:enforcement"
 _SIMPLE = (ast.Return, ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Raise, ast.Pass,
            ast.Break, ast.Continue, ast.Delete, ast.Assert)
+_PROSE_HINT = "a comment that starts with a marker, or names one on a line of code, reads as one, so if this is prose, reword it"
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", ".tox", ".nox", ".pytest_cache", "node_modules", ".mypy_cache", ".ruff_cache"}
 
 
@@ -106,6 +141,8 @@ class Mutant:
     breaks: int = 0                 # line breaks inside the span, kept by apply
     digest: str = ""                # sha256 of the file at discovery
     group: str = ""
+    no_stand_in: bool = False       # see _no_stand_in
+    upstream: int = 0               # line with the marker-only lines above it taken out
 
     def name(self) -> str:
         return f"{self.func} ({self.file}:{self.line})"
@@ -125,11 +162,14 @@ class Result:
     accepted: str = ""
     selected: List[str] = field(default_factory=list)
     evidence_file: str = ""
+    why: str = ""             # why a kill is unconfirmed, or a witness kill came back self-report
 
 
 @dataclass
 class Report:
     enforcement_points: int = 0
+    markers: int = 0  # statement and guard markers in the source of the mutated files
+    unplaced: List[str] = field(default_factory=list)  # those that made no mutant, as file:line
     results: List[Result] = field(default_factory=list)
 
     stale_accepted: List[str] = field(default_factory=list)
@@ -150,7 +190,9 @@ def _comments(text: str) -> Dict[int, Tuple[str, bool]]:
     out = {}
     for tok in tokenize.generate_tokens(io.StringIO(text, newline=None).readline):
         if tok.type == tokenize.COMMENT:
-            out[tok.start[0]] = (tok.string[1:].strip(), not tok.line[:tok.start[1]].strip())
+            own = not tok.line[:tok.start[1]].strip()
+            text = tok.string[1:].strip()
+            out[tok.start[0]] = (text if own else _marker_text(text), own)
     return out
 
 
@@ -212,7 +254,7 @@ def _marker(comment: str):
     for arg in parts:
         match = re.fullmatch(r"group=([A-Za-z0-9_.-]+)", arg)
         if not match or group:
-            raise CrossError(f"cross: not a marker cross applies: marker argument {arg!r}: want at most one group=<name>")
+            raise CrossError(f"cross: not a marker cross applies: marker argument {arg!r}: want at most one group=<name>; {_PROSE_HINT}")
         group = match.group(1)
     return bypass, group
 
@@ -230,6 +272,120 @@ def _groups(mutants):
     return groups
 
 
+def _marker_text(comment: str) -> str:
+    """On a line of code, a comment's marker: all of it, or the end of it when
+    the marker follows upstream's text, so marking a line removes none of it.
+    Arguments stay, so a bad one is an error. A comment that names the point
+    marker is prose: no line of code can carry it."""
+    for m in _TRAILING.finditer(comment):
+        if not _POINT_NAME.match(comment[m.end():]):
+            return comment[m.end():]
+    for i, c in enumerate(comment):
+        if c == "#" and _near_marker(comment[i:]) and not _POINT_NAME.match(comment[i + 1:].strip()):
+            return comment[i + 1:].strip()
+    return comment
+
+
+def _swapped(s: str, ok: Callable[[str], bool]) -> bool:
+    """Whether s, or s with two neighbouring letters swapped, is ok."""
+    return ok(s) or any(ok(s[:i] + s[i + 1] + s[i] + s[i + 2:]) for i in range(len(s) - 1))
+
+
+def _near_marker(comment: str) -> bool:
+    """Whether a comment, its # included, is a marker with its words in the wrong
+    case or with two letters swapped, in a marker's shape and with nothing but a
+    marker's arguments after them, so a sentence that opens with those words is no
+    match."""
+    m = _NEAR_MARKER.match(comment)
+    if not m or any(a not in ("true", "false") and not a.startswith("group=") for a in m.group(3).split()):
+        return False
+    return (_swapped(m.group(1).lower(), lambda s: s == "subpoena") and
+            _swapped(m.group(2).lower(), lambda s: s.startswith("enforc")))
+
+
+def _stray_marker(comment: str, own: bool) -> bool:
+    """Whether a comment without its # reads as a marker. One that took no effect
+    is an error, so this must not catch prose where it can tell: on a line of its
+    own a comment is one only if it is written as a marker is, or _near_marker says
+    it is. On a line of code the words alone are enough, since a mark goes after
+    upstream's text there."""
+    text = "#" + comment
+    return _near_marker(text) or bool((_OWN_MARKER if own else _ANY_MARKER).match(text))
+
+
+def _may_hold_marker(data: bytes) -> bool:
+    """Whether a file can hold a marker, right or misspelt. A file that cannot is
+    not read, so it need not be UTF-8 or parse."""
+    return b"subpoena" in data or any(_near_marker(m.group().decode("latin-1"))
+                                      for m in re.finditer(rb"#[^#\r\n]*", data))
+
+
+def _upstream_line(text: str, line: int) -> int:
+    """line with the marker-only lines above it taken out."""
+    return line - sum(1 for l in text.split("\n")[:line - 1] if _ONLY_MARKER.match(l))
+
+
+def marker_count(root: str, mutants: List[Mutant]) -> Tuple[int, List[str]]:
+    """The statement and guard markers in the comments of the mutated files,
+    and, as file:line, those that made no mutant. The tokenizer says what a
+    comment is: a string that shows a marker holds none."""
+    n, unplaced = 0, []
+    for file in sorted({m.file for m in mutants}):
+        lines = {m.line for m in mutants if m.file == file}
+        text = _decode(_read_source(os.path.join(root, file), file), file)
+        for i, (comment, _) in sorted(_comments(text).items()):
+            if _COUNTED.match(comment):
+                n += 1
+                if i not in lines:
+                    unplaced.append(f"{file}:{i}")
+    return n, unplaced
+
+
+def _test_id(test: str) -> str:
+    """A test's id without its parameters, since they can hold the copy's path.
+    The file part stays whole: a directory's name can hold a [ too."""
+    path, sep, name = test.partition("::")
+    return path + sep + name.split("[")[0]
+
+
+def _repeat_evidence(code, records, out, first: List[str]) -> Tuple[str, str]:
+    """The kind and message of a repeat's evidence from the tests of first: witness
+    if any of them gave it, read as each test's own first failure, and otherwise the
+    first of them. Another test was never what the first run's evidence came from."""
+    wanted = {_test_id(t) for t in first}
+    fails = [r for r in records if r.get("kind") == "failure" and _test_id(r["test"]) in wanted]
+    rest = [r for r in records if r.get("kind") != "failure"]
+    seen = set()
+    for r in fails:
+        if _test_id(r["test"]) not in seen:
+            seen.add(_test_id(r["test"]))
+            _, _, evidence, message = classify(code, rest + [r], out)
+            if evidence == "witness":
+                return evidence, message
+    _, _, evidence, message = classify(code, rest + fails, out)
+    return evidence, message
+
+
+def _not_a_kill(code, records, out, first: List[str]) -> str:
+    """Why a repeat with the mutant is not the kill the first run was, or "" if
+    it is: red on a clean failure, in a test that failed the first time."""
+    if _clean(code, records):
+        return "the suite passed when run again with the mutant"
+    outcome, failing, _, _ = classify(code, records, out)
+    if outcome != KILLED:
+        return f"the run with the mutant came back {outcome} the second time"
+    if not {_test_id(t) for t in failing} & {_test_id(t) for t in first}:
+        return "a different test failed when run again with the mutant"
+    return ""
+
+
+def _where(m: Mutant) -> str:
+    """A mutant's file and line, with the unmarked line when markers moved it."""
+    if m.upstream and m.upstream != m.line:
+        return f"{m.file}:{m.line} (upstream line {m.upstream})"
+    return f"{m.file}:{m.line}"
+
+
 def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
     """Every marked mutant under root, and the number of enforcement points.
     Raises CrossError for any marker that would take no effect."""
@@ -237,7 +393,7 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
     for path in sorted(_python_files(root)):
         rel = os.path.relpath(path, root).replace(os.sep, "/")
         data = _read_source(path, rel)
-        if b"subpoena" not in data:
+        if not _may_hold_marker(data):
             continue
         text = _decode(data, rel)
         try:
@@ -252,7 +408,7 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
             a = starts[node.lineno - 1] + node.col_offset
             b = starts[node.end_lineno - 1] + node.end_col_offset
             return Mutant(rel, func, line, data[a:b].decode("utf-8"), bypass, (a, b),
-                          node.end_lineno - node.lineno, digest)
+                          node.end_lineno - node.lineno, digest, upstream=_upstream_line(text, line))
 
         placed = set()
         missing = []  # points with nothing to mutate; reported after stray markers, which explain them
@@ -278,6 +434,7 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
                     if not isinstance(st, _SIMPLE):
                         continue  # an if or a loop starting here: not this marker's line
                     m = mutant(node.name, st.lineno, st, "")
+                    m.no_stand_in = _no_stand_in(node, st)
                 else:
                     if not isinstance(st, ast.If):
                         continue
@@ -289,16 +446,51 @@ def find_mutants(root: str) -> Tuple[int, List[Mutant]]:
             if found == 0:
                 missing.append(f"cross: {rel}: {node.name} is marked {_POINT} but has no "
                                f"{_STATEMENT} statement, so it cannot be cross-examined")
-        for line, (c, _) in sorted(comments.items()):
-            if _ANY_MARKER.match("#" + c) and line not in placed:
+        for line, (c, own) in sorted(comments.items()):
+            if _stray_marker(c, own) and line not in placed:
                 raise CrossError(
                     f"cross: {rel}:{line}: {'#' + c!r} is not a marker cross applies: statement and guard "
                     f"markers go on a simple statement or an if inside a function marked {_POINT}, the "
                     f"point marker on a full-line comment directly above the def, and markers take no "
-                    f"other text")
+                    f"other text; {_PROSE_HINT}")
         if missing:
             raise CrossError(missing[0])
     return points, mutants
+
+
+def _gives_none(st: ast.Return) -> bool:
+    return st.value is None or (isinstance(st.value, ast.Constant) and st.value.value is None)
+
+
+def _ends(body: List[ast.stmt], st: ast.stmt) -> bool:
+    """Removing st from body runs off body's end with nothing left to decide.
+    An if with no else does not count: it could run off the end already."""
+    if not body:
+        return False
+    last = body[-1]
+    if last is st:
+        return True
+    blocks = []
+    if isinstance(last, ast.If) and last.orelse:
+        blocks = [last.body, last.orelse]
+    elif isinstance(last, (ast.With, ast.AsyncWith)):
+        blocks = [last.body]
+    elif isinstance(last, ast.Try):
+        blocks = [last.body, last.orelse] + [h.body for h in last.handlers]
+    elif hasattr(ast, "Match") and isinstance(last, ast.Match):
+        blocks = [c.body for c in last.cases]
+    return any(_ends(b, st) for b in blocks)
+
+
+def _no_stand_in(fn: ast.AST, st: ast.stmt) -> bool:
+    """Removing a return that ends fn leaves None in its place, as Go's stand-in
+    leaves zero values. None means "enforcement gone" only where fn gives None
+    on another path. Otherwise the return can carry the allow decision (return
+    user in ADMINS), and None forces enforcement on: only an allowed-path test
+    notices, and the refusal goes unexamined."""
+    if not isinstance(st, ast.Return) or _gives_none(st) or not _ends(fn.body, st):
+        return False
+    return not any(isinstance(r, ast.Return) and _gives_none(r) for r in _statements(fn))
 
 
 def _statements(fn: ast.AST):
@@ -330,6 +522,9 @@ def apply(data: bytes, m: Mutant) -> bytes:
     a, b = m.span
     repl = (m.bypass or "pass").encode()
     # Keep every later line where it was, so tracebacks and markers line up.
+    # A condition's line breaks need brackets: outside them they end the if.
+    if m.bypass and m.breaks:
+        return data[:a] + b"(" + repl + b"\n" * m.breaks + b")" + data[b:]
     return data[:a] + repl + b"\n" * m.breaks + data[b:]
 
 
@@ -337,10 +532,13 @@ def apply(data: bytes, m: Mutant) -> bytes:
 
 _PLUGIN = "subpoena._cross_plugin"
 
+# How long a pipe may stay open once pytest has gone, in seconds.
+_PIPE_GRACE = 5.0
+
 
 def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report: str,
                nonce: str = "", *, selected=None, coverage=None, cancel=None,
-               mutated_files=None) -> Tuple[Optional[int], str]:
+               mutated_files=None, test_helpers=()) -> Tuple[Optional[int], str]:
     # The report is created fresh, by cross, before every run: nothing left
     # from an earlier run (or planted) is read as this one's.
     if os.path.lexists(report):
@@ -355,9 +553,14 @@ def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report:
     env["SUBPOENA_CROSS_SELECTED"] = json.dumps(selected) if selected is not None else ""
     env["SUBPOENA_CROSS_COVERAGE"] = json.dumps([os.path.join(copy, f) for f in (coverage or [])])
     env["SUBPOENA_CROSS_ROOT"] = copy
+    env["SUBPOENA_CROSS_TEST_HELPERS"] = json.dumps([os.path.join(copy, f) for f in test_helpers])
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = copy + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    cmd = [sys.executable, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "-p", _PLUGIN] + args
+    # Every test runs, whatever the arguments say: pytest stopped at the first
+    # failure would never see a crash behind it, so order would decide. And a
+    # plugin that shuffles would decide it again, or trip the baseline.
+    cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "no:randomly",
+           "-p", _PLUGIN] + args + ["--maxfail=0"]
     p = subprocess.Popen(cmd, cwd=copy, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          text=True, start_new_session=True)
     try:
@@ -372,18 +575,33 @@ def _run_suite(copy: str, args: List[str], timeout: float, mutated: str, report:
                 out, _ = p.communicate(timeout=min(remaining, 0.2))
                 return p.returncode, out
             except subprocess.TimeoutExpired:
-                continue
+                # pytest is gone and a child it left holds the pipe. Its exit
+                # code and report stand, as with Go's WaitDelay.
+                if p.poll() is not None:
+                    return p.returncode, _drain(p)
     except subprocess.TimeoutExpired:
-        # The whole session: pytest and anything the tests started.
+        # The whole session: pytest and anything the tests started. A child
+        # that left the session is out of reach and can hold the pipe.
         _kill_group(p)
-        out, _ = p.communicate()
-        return None, out
+        return None, _drain(p)
     except BaseException:
         # Ctrl-C (or any other way out): the suite is in its own session, so
         # it did not get the SIGINT; never leave it running.
         _kill_group(p)
         p.wait()
         raise
+
+
+def _drain(p: subprocess.Popen) -> str:
+    """What p printed, waiting at most _PIPE_GRACE for the pipe to close, and
+    then closing it: a detached child can hold it for as long as it lives."""
+    try:
+        return p.communicate(timeout=_PIPE_GRACE)[0]
+    except subprocess.TimeoutExpired as e:
+        p.stdout.close()
+        p.wait()
+        out = e.output or b""
+        return out.decode("utf-8", "replace") if isinstance(out, bytes) else out
 
 
 def _kill_group(p: subprocess.Popen) -> None:
@@ -427,12 +645,14 @@ def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, L
     fails = [r for r in records if r.get("kind") == "failure"]
     if any(r.get("verdict") == "timeout" for r in fails):
         return TIMED_OUT, [r["test"] for r in fails], "", ""
-    if any(r.get("kind") == "collect_error" for r in records) or code in (2, 4, 5) and not finished:
-        return INVALID, [], "", ""
+    started = any(r.get("kind") == "collected" for r in records)
+    if any(r.get("kind") == "collect_error" for r in records) or code in (2, 4, 5) and not finished and not started:
+        return INVALID, [], "", ""  # pytest never reached a test; past that, those codes are a death
     if any(r.get("verdict") == "invalid" for r in fails):
         return INVALID, [r["test"] for r in fails], "", ""
-    if finished and not finished[-1].get("mutated_loaded", True):
-        return INVALID, [], "", ""
+    workers = [r for r in records if r.get("kind") == "worker_finished"]
+    if finished and set.intersection(*(set(r.get("missing", [])) for r in finished[-1:] + workers)):
+        return INVALID, [], "", ""  # no process of the run imported it
     if code == 0 and finished:
         return SURVIVED, [], "", ""
     if code != 1 or not finished:
@@ -441,13 +661,43 @@ def classify(code: Optional[int], records: List[dict], out: str) -> Tuple[str, L
     crashed = [r for r in fails if r.get("verdict") != "assertion"]
     if crashed or not assertion:
         return CRASHED, [r["test"] for r in fails], "", ""
-    msg = assertion[0].get("message", "")
-    first = msg.strip().splitlines()[0] if msg.strip() else ""
-    for prefix, ev in (("witness:", "witness"), ("testimony:", "testimony")):
-        if prefix in msg:
-            line = next((l for l in msg.splitlines() if prefix in l), first)
-            return KILLED, [r["test"] for r in fails], ev, line.strip()
-    return KILLED, [r["test"] for r in fails], "other", first
+    # The first test collected, not the first to finish: under xdist the
+    # order of the records is timing. Records of one test keep their order.
+    collected = next((r.get("tests") or [] for r in records if r.get("kind") == "collected"), [])
+    rank = {test: i for i, test in enumerate(collected)}
+    head = min(assertion, key=lambda r: rank.get(r["test"], len(rank)))
+    msg = head.get("message", "").strip()
+    first = msg.splitlines()[0].strip() if msg else ""
+    # Witness evidence is the failure's type, which the plugin read: the text can
+    # be the code under test's own (assert r.ok, r.body; an object's repr under
+    # assertEqual). Testimony claims no independence, so its tag is enough, at
+    # the start only: past it comes pytest's diff of the app's values.
+    ev = "witness" if head.get("witness") else "testimony" if first.startswith("testimony:") else "other"
+    return KILLED, [r["test"] for r in fails], ev, first
+
+
+def _baseline_reason(code, records, timeout) -> str:
+    """Why a baseline run was not clean. Pytest's output can be empty (a
+    timeout kills it mid-run), so this never rests on it."""
+    if code is None:
+        return (f"pytest did not finish within the timeout ({timeout:g}s); raise --timeout. "
+                "A timeout on a busy host is not a red test")
+    if any(r.get("kind") == "tampered" for r in records):
+        return "the report holds a line that is not this run's"
+    errors = [r for r in records if r.get("kind") == "collect_error"]
+    if errors:
+        return f"pytest could not collect {errors[0].get('node') or 'the tests'}"
+    fails = [r for r in records if r.get("kind") == "failure"]
+    if fails:
+        first = fails[0]
+        lines = str(first.get("message", "")).strip().splitlines()
+        text = f"{first.get('type', 'failure')}: {lines[0]}" if lines else first.get("type", "failure")
+        return f"{first.get('test')} failed: {text}"
+    if code == 5:
+        return "pytest collected no tests"
+    if any(r.get("kind") == "finished" for r in records):
+        return f"pytest exited {code}"
+    return f"pytest exited {code} without finishing"
 
 
 def _clean(code, records):
@@ -493,8 +743,8 @@ def _accept_masked(rep, path):
 def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 300.0, log=None,
         _before_mutate: Optional[Callable[[str], None]] = None, *, jobs: int = 1,
         select: bool = False, evidence_dir: Optional[str] = None,
-        require_witness: bool = False) -> Report:
-    """Cross-examine immutable copies. Selection confirms every non-kill on the full suite.
+        require_witness: bool = False, test_helpers: Sequence[str] = ()) -> Report:
+    """Cross-examine immutable copies. Selection confirms every non-kill but an unconfirmed on the full suite.
     Parallel workers share no mutable files. Group runs always use the whole suite.
     """
     if not isinstance(jobs, int) or jobs < 1 or not math.isfinite(timeout) or timeout <= 0:
@@ -514,7 +764,7 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
             raise CrossError("cross: evidence directory must differ from the target tree root")
         os.makedirs(evidence_dir, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="subpoena-cross-") as tmp:
+    with _run_directory(log) as tmp:
         template = os.path.join(tmp, "snapshot")
         def ignore(directory, names):
             ignored = {name for name in names if _skipped(directory, name)}
@@ -530,7 +780,14 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
         if not mutants:
             raise CrossError(f"cross: no {_POINT} with a {_STATEMENT} statement under {target}")
         groups = _groups(mutants)
-        rep = Report(enforcement_points=points,
+        test_helpers = [os.path.normpath(f).replace(os.sep, "/") for f in test_helpers]
+        for f in test_helpers:
+            if not os.path.isfile(os.path.join(template, f)):
+                raise CrossError(f"cross: --test-helper {f}: no such file under {target}")
+            if any(m.file == f for m in mutants):
+                raise CrossError(f"cross: --test-helper {f}: it holds enforcement markers, so it is code under test")
+        markers, unplaced = marker_count(template, mutants)
+        rep = Report(enforcement_points=points, markers=markers, unplaced=unplaced,
                      snapshot={m.file: m.digest for m in mutants})
         for file, digest in sorted(rep.snapshot.items()):
             log(f"snapshot {digest} {file}")
@@ -544,7 +801,8 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
             nonce = secrets.token_hex(16)
             code, out = _run_suite(copy, args, timeout, members[0].file if members else "",
                                    report, nonce, selected=selected, coverage=coverage,
-                                   cancel=cancel, mutated_files=sorted({m.file for m in members}))
+                                   cancel=cancel, mutated_files=sorted({m.file for m in members}),
+                                   test_helpers=test_helpers)
             records = _read_report(report, nonce)
             evidence_file = ""
             if evidence_dir:
@@ -577,14 +835,21 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
             try:
                 return suite(copy, selected, coverage, label=label)
             finally:
-                shutil.rmtree(directory)
+                _remove_tree(directory)
 
         log(f"baseline: pytest {' '.join(args)}")
         code, out, records, _ = baseline()
         if not _clean(code, records):
-            raise CrossError("cross: baseline suite is not green, cannot judge mutants:\n" + _tail(out, 40))
+            hint = ""
+            if "--randomly" in out and "unrecognized arguments" in out:
+                hint = ("cross turns pytest-randomly off, so a --randomly option in addopts is unknown; "
+                        "pass -- -o addopts= with the options you still want\n")
+            raise CrossError("cross: baseline suite is not green, cannot judge mutants: "
+                             + _baseline_reason(code, records, timeout) + "\n" + hint + _tail(out, 40))
         selected_tests = {}
         if select:
+            if any(r.get("kind") == "worker_finished" for r in records):
+                raise CrossError("cross: select: per-test coverage needs one process; drop pytest-xdist's -n")
             collected = [r for r in records if r.get("kind") == "collected"]
             if len(collected) != 1 or not isinstance(collected[0].get("tests"), list):
                 raise CrossError("cross: select: missing test collection report")
@@ -614,10 +879,9 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                     raise CrossError("cross: select: selected subset fails without the mutant:\n" + _tail(out, 20))
 
         def case(members, selected=None):
-            directory, copy = fresh()
-            try:
-                if _before_mutate is not None:
-                    _before_mutate(copy)
+            if any(m.no_stand_in for m in members):
+                return Result(members[0], INVALID, output=_NO_STAND_IN, with_mutants=list(members[1:]))
+            def mutate(copy):
                 by_file = {}
                 for m in members:
                     by_file.setdefault(m.file, []).append(m)
@@ -634,24 +898,66 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
                         data = apply(data, m)
                     with open(path, "wb") as f:
                         f.write(data)
+
+            directory, copy = fresh()
+            try:
+                if _before_mutate is not None:
+                    _before_mutate(copy)
+                mutate(copy)
                 with lock:
                     log("mutant: " + ", ".join(m.name() for m in members))
                 code, out, records, evidence_file = suite(copy, selected=selected, members=members, label="mutant")
                 outcome, failing, evidence, first = classify(code, records, out)
+                why = ""
                 if require_witness and outcome == KILLED and evidence != "witness":
                     outcome = KILLED_BY_SELF_REPORT
-                return Result(members[0], outcome, failing, evidence, first,
-                              "" if outcome == KILLED else _tail(out, 20),
+                if outcome in {KILLED, KILLED_BY_SELF_REPORT}:
+                    # It must hold. With the mutant on a fresh copy, since a
+                    # flake that left a file would otherwise confirm itself:
+                    # a clean kill, in a test of the first run, and under
+                    # require_witness with witness evidence again, or only one of
+                    # the two runs had any. Without it: a run that is red was red
+                    # for another reason, or may be.
+                    for _ in range(_REPEATS):
+                        again, again_copy = fresh()
+                        try:
+                            mutate(again_copy)
+                            code, out, records, _ = suite(again_copy, selected=selected, members=members, label="repeat")
+                        finally:
+                            _remove_tree(again)
+                        why = _not_a_kill(code, records, out, failing)
+                        if why:
+                            outcome = UNCONFIRMED
+                            break
+                        if require_witness and outcome == KILLED:
+                            again_evidence, again_first = _repeat_evidence(code, records, out, failing)
+                            if again_evidence != "witness":
+                                outcome = KILLED_BY_SELF_REPORT
+                                evidence, first = again_evidence, again_first
+                                why = "the first run's first evidence was witness, and no test of that run gave any on the repeat"
+                    else:
+                        for _ in range(_RERUNS):
+                            code, out, records, _ = baseline(selected, label="confirm")
+                            if not _clean(code, records):
+                                outcome = UNCONFIRMED
+                                why = "the suite failed without the mutant"
+                                break
+                # The reason goes ahead of the tail: a long report would push it out.
+                output = "" if outcome == KILLED else "\n".join(s for s in (why, _tail(out, 20)) if s)
+                return Result(members[0], outcome, failing, evidence, first, output,
                               with_mutants=list(members[1:]), selected=list(selected or []),
-                              evidence_file=evidence_file)
+                              evidence_file=evidence_file, why=why)
             finally:
-                shutil.rmtree(directory)
+                _remove_tree(directory)
 
         def single(item):
             i, m = item
             tests = selected_tests.get(i)
             result = case([m], tests)
-            if tests and result.outcome != KILLED:
+            # An unconfirmed is a red run that did not hold, and no later run
+            # takes that back: a retry would give a flake a second way
+            # to a kill.
+            if tests and result.outcome not in {KILLED, UNCONFIRMED}:
                 result = case([m])
             return result
 
@@ -704,19 +1010,67 @@ def run(target: str, pytest_args: Optional[List[str]] = None, timeout: float = 3
         return rep
 
 
+def _remove_tree(path: str) -> None:
+    """Remove a case's directory. A test can leave a read-only directory there,
+    as a Go module cache is, which rmtree cannot empty. No verdict hangs on this."""
+    for parent, dirs, _ in os.walk(path):
+        for name in dirs:
+            child = os.path.join(parent, name)
+            if not os.path.islink(child):
+                try:
+                    os.chmod(child, 0o700)
+                except OSError:
+                    pass
+    shutil.rmtree(path, ignore_errors=True)
+
+
+# Bound _remove_leftovers, as Go's removeLeftovers is bounded.
+_REMOVE_TRIES = 50
+_REMOVE_WAIT = 0.1
+
+
+def _remove_leftovers(log, path: str) -> None:
+    """Remove a tree of the run as it ends. A detached child can be writing there,
+    and each try can lose to it, but a tree that goes once is gone: the child's
+    directory went with it. The tree holds mutated source, so one that will not go
+    is named. No verdict hangs on this, so it raises nothing."""
+    for _ in range(_REMOVE_TRIES):
+        _remove_tree(path)
+        if not os.path.lexists(path):
+            return
+        time.sleep(_REMOVE_WAIT)
+    log(f"cross: could not remove {path}, which holds mutated source: a process a test started may still be writing there")
+
+
+@contextlib.contextmanager
+def _run_directory(log):
+    """The run's own directory, gone or named as the run ends."""
+    tmp = tempfile.mkdtemp(prefix="subpoena-cross-")
+    try:
+        yield tmp
+    finally:
+        _remove_leftovers(log, tmp)
+
+
 def _tail(s: str, n: int) -> str:
     return "\n".join(s.rstrip("\n").splitlines()[-n:])
 
 
 # --- command line -----------------------------------------------------------
 
+_NO_STAND_IN = ("the function ends with this return and gives None on no other path, so None cannot stand in "
+                "for it: it may carry the allow decision. Mark the if that reaches it with # subpoena:enforcement_guard "
+                "true or false, or move the decision into an if that can carry the marker")
+
 _EXPLAIN = {
     KILLED_BY_SELF_REPORT: "require-witness: first failure was not independent witness evidence",
     MASKED: "layer is masked by other surviving layers; requires a reviewed cross-masked.txt entry",
     SURVIVED: "suite stayed green with enforcement removed: the tests cannot tell enforced from unenforced",
+    UNCONFIRMED: "suite went red, but the kill did not hold: leftover state outside "
+                 "the copy, or a flake. The red run proves nothing; fix the test:",
     CRASHED: "suite went red only by a crash (an exception other than an assertion, or the process died); "
              "a crash is not a kill:",
-    INVALID: "mutant did not import, or the suite never imported it from the copy (an installed copy of "
+    INVALID: "mutant has no stand-in, did not import, or the suite never imported it from the copy (an installed copy of "
              "the package shadows it); it proves nothing:",
     TIMED_OUT: "suite did not finish within the timeout (or pytest-timeout stopped a test); a hang is not a "
                "kill. Make the test fail fast instead:",
@@ -728,6 +1082,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                                  description="Remove each marked enforcement statement and require pytest to fail.")
     ap.add_argument("--require-witness", action="store_true",
                     help="accept a kill only when its first failure is independent witness evidence")
+    ap.add_argument("--test-helper", action="append", default=[], metavar="FILE",
+                    help="a file relative to the target that holds test code but no tests, "
+                         "so an assertion there counts as a test's; repeatable")
     ap.add_argument("target", help="project directory; pytest runs there")
     ap.add_argument("-j", "--jobs", type=int, default=1, help="isolated parallel single-mutant workers")
     ap.add_argument("-select", "--select", action="store_true", help="select tests by per-test line coverage")
@@ -738,12 +1095,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         rep = run(a.target, a.pytest_args, a.timeout, log=lambda s: print(s, file=sys.stderr),
                   jobs=a.jobs, select=a.select, evidence_dir=a.evidence_dir,
-                  require_witness=a.require_witness)
+                  require_witness=a.require_witness, test_helpers=a.test_helper)
     except (CrossError, OSError) as e:
         # Exit 1 means a mutant was not killed; a setup fault must never read as that.
         print(f"subpoena-cross: {e}", file=sys.stderr)
         return 2
-    print(f"{rep.enforcement_points} enforcement point(s), {len(rep.results)} mutant(s)")
+    print(f"{rep.enforcement_points} enforcement point(s), {rep.markers} marker(s), {len(rep.results)} mutant(s)")
+    for at in rep.unplaced:
+        print(f"marker made no mutant: {at}")
     for r in rep.results:
         m = r.mutant
         print(f"{r.outcome} {m.func}" + (f" group={r.group}" if r.group else ""))
@@ -756,14 +1115,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         if r.accepted:
             print("  accepted: " + r.accepted)
         if m.bypass:
-            print(f"  at {m.file}:{m.line}, forced to {m.bypass}: {' '.join(m.removed.split())}")
+            print(f"  at {_where(m)}, forced to {m.bypass}: {' '.join(m.removed.split())}")
         else:
-            print(f"  at {m.file}:{m.line}, removed: {' '.join(m.removed.split())}")
+            print(f"  at {_where(m)}, removed: {' '.join(m.removed.split())}")
         if r.outcome in {KILLED, KILLED_BY_SELF_REPORT}:
             print(f"  suite went red; failing: {', '.join(r.failing)}")
             print(f"  first evidence ({r.evidence}): {r.first_failure}")
             if r.outcome == KILLED_BY_SELF_REPORT:
                 print("  " + _EXPLAIN[r.outcome])
+                if r.why:
+                    print("  " + r.why)
         else:
             print("  " + _EXPLAIN[r.outcome])
             if r.output and r.outcome != SURVIVED:

@@ -35,8 +35,12 @@ jobs:
         run: go run ./cmd/subpoena-cross --require-witness ./examples/saidno
       - name: the demo comes out as its README says
         run: make demo
+      # internal/cross is left out here: each of its mutants reruns a
+      # 5-minute suite four times, about 19 hours at -j 1, past GitHub's
+      # 6-hour job limit. It stays in CROSS_SELF, so `make cross-self` and
+      # `make check` still run it, and the release gate runs it before a tag.
       - name: cross-examination over Subpoena's own guards
-        run: make cross-self
+        run: make cross-self CROSS_SELF="./pkg/harness ./pkg/witness ./conformance/oatscapture"
       # Evidence, not a pass bar: the runner's process count, full-scan and
       # children-walk cost, and how many short processes ProcWitness caught.
       - name: ProcWitness benchmarks (report only)

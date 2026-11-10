@@ -6,8 +6,11 @@
 package netbpf
 
 import (
+	"encoding/json"
 	"net/netip"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sprigworks/subpoena/pkg/witness"
 )
@@ -61,6 +64,99 @@ func TestOnEventSeesEverythingAndNoRetainKeepsNothing(t *testing.T) {
 	}
 	if len(w.Events()) != 0 || len(w.Dialed(tidA)) != 0 {
 		t.Fatal("NoRetain kept events")
+	}
+}
+
+func deliverEv(pid int, cg string, peer netip.AddrPort) Event {
+	return Event{Op: witness.OpDeliver, PID: pid, Comm: "broker", Protocol: "tcp", Dest: peer,
+		Local: netip.MustParseAddrPort("127.0.0.1:1883"), Bytes: 12, Cgroup: cg, CgroupID: 42}
+}
+
+// A send on a connected socket is a delivery and not a dial; a send that names
+// its destination is both.
+func TestDeliveriesAreAttributedApartFromDials(t *testing.T) {
+	sub := netip.MustParseAddrPort("127.0.0.1:40001")
+	w := New(Config{CgroupRoot: "/sys/fs/cgroup/subpoena"})
+	w.handle(deliverEv(10, "subpoena/"+tidA, sub))
+	w.handle(deliverEv(11, "subpoena/"+tidB, sub))
+	w.handle(deliverEv(12, "user.slice/session-1.scope", sub)) // not a session: not kept
+	named := dialEv(13, "subpoena/"+tidA)
+	named.Op, named.Bytes = witness.OpSendmsg, 3
+	w.handle(named)
+	w.handle(dialEv(14, "subpoena/"+tidA)) // a connect sends nothing
+
+	got := w.Delivered(tidA)
+	if len(got) != 2 || got[0].PID != 10 || got[1].PID != 13 {
+		t.Fatalf("Delivered(A) = %+v", got)
+	}
+	e := got[0]
+	if e.Attribution != witness.ByCgroup || e.TraceID != tidA || e.Op != witness.OpDeliver || e.Protocol != "tcp" ||
+		e.Peer != sub || e.Local.Port() != 1883 || e.Bytes != 12 || e.Comm != "broker" || e.CgroupID != 42 {
+		t.Fatalf("event fields not carried over: %+v", e)
+	}
+	if got[1].Op != witness.OpSendmsg || got[1].Peer != dest || got[1].Bytes != 3 {
+		t.Fatalf("a named send is delivery to its destination: %+v", got[1])
+	}
+	if got := w.Delivered(strings.ToUpper(tidB)); len(got) != 1 || got[0].PID != 11 {
+		t.Fatalf("Delivered(B) = %+v", got)
+	}
+	dials := w.Dialed(tidA)
+	if len(dials) != 2 || dials[0].PID != 13 || dials[1].PID != 14 {
+		t.Fatalf("Dialed(A) = %+v: a connected send is not a connection attempt", dials)
+	}
+}
+
+func TestDeliveryCoverageCountsEvenWithoutRetaining(t *testing.T) {
+	w := New(Config{CgroupRoot: "/x/subpoena", NoRetain: true})
+	w.handle(deliverEv(10, "subpoena/"+tidA, netip.MustParseAddrPort("127.0.0.1:40001")))
+	w.handle(deliverEv(11, "subpoena/"+tidA, netip.AddrPort{}))
+	w.handle(deliverEv(12, "user.slice", netip.AddrPort{}))
+	w.handle(dialEv(13, "subpoena/"+tidA))
+	if c := w.DeliveryCoverage(); c.Sends != 2 || c.UnknownPeers != 1 {
+		t.Fatalf("coverage = %+v", c)
+	}
+	if len(w.Delivered(tidA)) != 0 {
+		t.Fatal("NoRetain kept deliveries")
+	}
+}
+
+// A send written as a line reads back as the same event; an unknown peer stays
+// unknown rather than becoming a peer at 0.0.0.0.
+func TestDeliveryLineRoundTrips(t *testing.T) {
+	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	known := deliverEv(10, "subpoena/"+tidA, netip.MustParseAddrPort("[2001:db8::1]:40001"))
+	unknown := deliverEv(11, "subpoena/"+tidA, netip.AddrPort{})
+	unknown.Local = netip.AddrPort{}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.Encode(witness.Record{Time: at, Record: witness.RecordStart})
+	for _, e := range []Event{known, unknown} {
+		e.Time, e.TraceID, e.Attribution, e.HostPID = at, tidA, witness.ByCgroup, 4000
+		enc.Encode(e.DeliveryLine())
+	}
+	cover := witness.DeliveryCoverage{Sends: 2, UnknownPeers: 1, OtherFamilySends: 4}
+	enc.Encode(witness.Record{Time: at, Record: witness.RecordStop, Healthy: true, Coverage: cover.String()})
+	l, err := witness.ReadLog(strings.NewReader(b.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Health(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(l.Coverage(), "4 send(s) on sockets that are not inet") {
+		t.Fatalf("coverage = %q", l.Coverage())
+	}
+	got := l.Delivered(tidA)
+	if len(got) != 2 || got[0].Peer != known.Dest || got[0].Local != known.Local || got[0].PID != 10 ||
+		got[0].Bytes != 12 || got[0].Op != witness.OpDeliver || got[0].Attribution != witness.ByCgroup ||
+		got[0].Cgroup != known.Cgroup || got[0].CgroupID != 42 || !got[0].SeenAt.Equal(at) {
+		t.Fatalf("Delivered = %+v", got)
+	}
+	if !got[1].PeerUnknown() || got[1].Peer.IsValid() {
+		t.Fatalf("unknown peer read back as %+v", got[1])
+	}
+	if len(l.Delivered("")) != 0 || len(l.Delivered(tidB)) != 0 {
+		t.Fatal("another trace, or none, must match nothing")
 	}
 }
 

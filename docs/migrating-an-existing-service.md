@@ -204,6 +204,21 @@ the enforcing. Cross-examination (step 6) deletes that statement and requires th
 to fail. A function with the first marker but not the second makes
 cross-examination exit with an error naming it.
 
+A marked `return` can be the one a Go function cannot end without: the last
+statement, or a denial in a `switch` case. Deleting it would not compile. If
+the refusal is carried by an error, and every other result is already plainly
+zero, cross replaces the return with zero values, so `return nil, ErrDenied`
+becomes `return nil, nil`. That is the mutant to catch: the caller is told
+nothing went wrong. Any other return gets no replacement and the mutant is
+`invalid`. That covers `return false`, which would change nothing, and also
+`return p.Check(u)` or `return check(u), nil`, because there zero can be the
+refusal itself: the mutant would force enforcement on, and only a test of the
+allowed path would notice. Mark the guard that leads to the return instead, or
+give the decision an `if` to carry the marker: a guard's bypass value is a
+reviewed claim, and cross has no such claim for a return. An error variable
+that happens to be nil, which cross cannot see, gets the replacement anyway,
+and that mutant survives.
+
 Two more shapes are common in real services. A guard such as
 `if ctx.Err() == nil { runner.Run(cmd) }` gets
 `//subpoena:enforcement_guard true` on the `if` line: cross forces the
@@ -258,12 +273,32 @@ a control where the destination is allowed and the connection arrives (see
 connect and named send on the host, attributed by session cgroup; like `execbpf`
 it needs root and BTF. `witnesses/README.md` lists what each does not see.
 
-Other side effects (file or database changes) need another observer, for
-example an audit log. There is no interface for them; that is future work. The
-`unwitnessed-enforcement` lint rule only checks that some test asks a witness
-(`Spawned`, `Dialed`, or a harness check: `NoSpawn`, `RequireNoSpawn`,
-`CheckNoSpawn`, `WatchSpawns`, `NoDial`, `RequireNoDial` or `CheckNoDial`),
-so for other enforcement points review has to carry it.
+A row in Postgres or MySQL has an experimental witness: point the application's DSN
+at `dbproxy` and assert with `harness.RequireNoRow(t, w, traceID, table)`. A Pass from
+it can be false, so do not rely on it as proof. Its open problems are in
+[witnesses/README.md](../witnesses/README.md).
+
+For files the sibling is `witness.FileWitness`, with `Wrote(traceID)`:
+`witness.NewFileWatch(root)` is inotify on a directory, with no privilege, and
+`harness.RequireNoWrite(t, w, traceID, path...)` asserts absence. For a SQLite
+database, where a denied request may still write an audit row to the same
+file, `harness.RequireNoCommit(t, w, db, traceID, table...)` asks about commits
+and tables instead. `witnesses/README.md` has what each can and cannot see.
+
+A broker or fan-out delivers on sockets it accepted, with no dial to see.
+`witness.DeliveryWitness` (`Delivered(traceID)`) covers that. `netbpf` implements
+it and nothing at tier 1 can: it needs root, and the sender in the session cgroup.
+Assert with `harness.RequireNoDelivery(t, w, traceID, harness.DeliveryTo(peer))`,
+where `peer` is the subscriber's end of its connection, or register
+`harness.WatchDeliveries` with a `DeliveryRule`.
+
+Other side effects (a store that is neither of those two) need another
+observer, for example an audit log. There is no interface for them; that is
+future work. The `unwitnessed-enforcement` lint rule only checks that some test
+asks a witness (`Spawned`, `Dialed`, `Wrote`, `Delivered`, `Committed`, or a
+harness check such as `RequireNoSpawn`, `RequireNoDial`, `RequireNoWrite`,
+`RequireNoDelivery` or `RequireNoRow`; `lint/README.md` has the list), so for
+other enforcement points review has to carry it.
 
 ## 5. Add provenance markers
 
@@ -304,25 +339,37 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 | `no-trace-assertion` | The file defines tests but never calls `Collect()`. If it holds only pure-logic tests, mark it `//subpoena:pure_logic` (see "What to delete"). A helper that wraps `Collect` counts only if every return hands back the trace from its own harness `Collect` call (`lint/README.md`) |
 | `unguarded-absence` | Call `Collect()`, or a verified wrapper, earlier in the same function |
 | `missing-provenance` | Add the marker (step 5) |
-| `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`, `Dialed`) what happened |
+| `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`, `Dialed`, `Wrote`, `Delivered`, `Committed`) what happened |
 | `orphan-invariant` | Load the query by name, or add `invariants/<name>.traceql` and regenerate |
 | `provider-override` | Legacy tests often build their own `TracerProvider` with an in-memory exporter. Use the harness's tracer instead; mark a real need with `//subpoena:own_provider <reason>` |
 | `dead-telemetry` | A registry entry nothing emits. Emit it, or remove it from the registry (reviewed). Pass `-dead-telemetry` only when the targets cover the whole service |
 | `registry-drift` | A registry change and a test that uses it are in one change set; a human confirms the test was not bent to fit |
 
 Cross-examination is the check that matters most. It requires a green baseline, removes
-each marked enforcement statement in a temporary copy, and runs the tests. A red
-suite is `enforcement-mutant-killed`. A green suite is
-`enforcement-mutant-survived`: your tests cannot tell enforced from unenforced.
-Strengthen them. Never remove the marker to make it pass. A suite that runs
+each marked enforcement statement in a temporary copy, and runs the tests. A
+suite red on an assertion is `enforcement-mutant-killed`, once that holds: red
+again with the mutant and green without it. If not, it is
+`enforcement-mutant-unconfirmed`, which fails the run: fix the flake or the state
+it left. A kill means a test noticed, not that a test examined the refusal: an
+allowed-path test can kill a removal that stops the allowed path too, so read the
+first evidence (`docs/architecture.md`, "What a kill does not prove"). A green
+suite is `enforcement-mutant-survived`: your tests cannot tell enforced from
+unenforced. Strengthen them. Never remove the marker to make it pass. A suite that runs
 past `-timeout` is `enforcement-mutant-timeout`, which fails the run too: make
 the test that should catch the mutant fail fast instead of hanging. A suite
 that goes red only by a crash (a panic, a runtime fatal error, `os.Exit`, or a
 failure with no message) is `enforcement-mutant-crashed` and fails the run: assert on the denial before anything can dereference what the mutant
-broke. Each kill prints its first evidence (`witness`, `testimony` or
+broke. A failure ahead of the panic does not save it, from `t.Error`, testify or
+Ginkgo v2: in the output they are text anything could print. Each kill prints its first evidence (`witness`, `testimony` or
 `other`). Where an enforcement point has a witness test, aim for `witness`; an
 `other` kill means an exit code or error check ended the test before the
-witness was read (`harness.WatchSpawns` reads it at cleanup anyway). A layer
+witness was read (`harness.WatchSpawns` reads it at cleanup anyway). A
+`witness:` tag counts only from the harness, since the code under test can print
+the same text: a test that asks a witness itself fails through
+`harness.WitnessErrorf`. Go test
+prints `t.Log` and `t.Error` alike, so a log line ahead of the witness check
+counts as the first evidence; cross names the witness failure that came later,
+and the fix is to log after the check. A layer
 reported as `enforcement-layer-masked` is caught only with another layer of its
 group removed too. It fails the run. Prefer a test that catches it alone; if
 the layer cannot be isolated, list it in `cross-masked.txt` with the reason, for

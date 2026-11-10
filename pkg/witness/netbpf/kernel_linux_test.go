@@ -9,18 +9,27 @@
 package netbpf
 
 import (
+	"bufio"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 
 	"github.com/sprigworks/subpoena/pkg/cgroup"
+	"github.com/sprigworks/subpoena/pkg/harness"
 	"github.com/sprigworks/subpoena/pkg/witness"
 )
 
@@ -99,10 +108,182 @@ func helper(spec string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
+	case "udpsend": // a connected UDP socket: udpsend <addr> <count>
+		c, err := net.Dial("udp4", f[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer c.Close()
+		n, _ := strconv.Atoi(f[2])
+		for i := 0; i < n; i++ {
+			c.Write([]byte("x")) // a refused datagram still left
+		}
+	case "unixsend":
+		c, err := net.Dial("unixgram", f[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer c.Close()
+		if _, err := c.Write([]byte("x")); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "raw6": // a raw IPv6 send: raw6 <family> <connect to, or -> <name>
+		if err := raw6(f[1], f[2], f[3]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "udp6unspec": // connected UDP, naming somewhere else with family 0: udp6unspec <connect to> <name>
+		if err := udp6Unspec(f[1], f[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "emptyname": // a name of length zero on an unconnected socket
+		if err := emptyName(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "leave": // leave <cgroup dir> <udp addr>: move out, then send
+		if err := os.WriteFile(f[1]+"/cgroup.procs", []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		c, err := net.Dial("udp4", f[2])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer c.Close()
+		c.Write([]byte("x"))
+	case "forkout": // forkout <cgroup dir> <udp addr>: a child made outside, which sends
+		dir, err := os.Open(f[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer dir.Close()
+		c := exec.Command(os.Args[0], "-test.run=^$")
+		c.Env = append(os.Environ(), "NETBPF_HELPER=udpsend "+f[2]+" 1")
+		c.Stderr = os.Stderr
+		c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(dir.Fd())}
+		if err := c.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "rthdr":
+		if err := rthdrSend(f[1]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "flowlabel": // see route_linux_test.go
+		if err := flowLabel(f[1], f[2], f[3]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "route", "bcast": // see route_linux_test.go
+		if err := routedSend(f); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	case "broker":
+		if err := broker(f[1], f[2], f[3], f[4] == "leak"); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 	default:
 		return 2
 	}
 	return 0
+}
+
+const message = "publish:topic:payload"
+
+// broker is a broker's shape in a process of its own: subscribers A and B
+// connect, then a publisher. A byte from the publisher is a publish: the broker
+// acks the publisher, writes the message to A (and with leak, to B) on the
+// sockets it accepted, and hangs up. It writes the listener's port to stdout.
+func broker(network, addr, how string, leak bool) error {
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+	fmt.Println(ln.Addr().(*net.TCPAddr).Port)
+	var conns [3]*net.TCPConn
+	for i := range conns {
+		c, err := ln.Accept()
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		conns[i] = c.(*net.TCPConn)
+	}
+	a, b, pub := conns[0], conns[1], conns[2]
+	if _, err := pub.Read(make([]byte, 1)); err != nil {
+		return err
+	}
+	if _, err := pub.Write([]byte("ack")); err != nil {
+		return err
+	}
+	if err := deliver(a, how); err != nil {
+		return err
+	}
+	if leak {
+		return deliver(b, how)
+	}
+	return nil
+}
+
+// sendOn runs send on c's descriptor, waiting out EAGAIN.
+func sendOn(c *net.TCPConn, send func(fd int) error) error {
+	rc, err := c.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var sendErr error
+	if err := rc.Write(func(fd uintptr) bool {
+		sendErr = send(int(fd))
+		return sendErr != syscall.EAGAIN
+	}); err != nil {
+		return err
+	}
+	return sendErr
+}
+
+// deliver writes message by one of the kernel's ways onto a socket.
+func deliver(c *net.TCPConn, how string) error {
+	switch how {
+	case "write":
+		_, err := c.Write([]byte(message))
+		return err
+	case "writev":
+		b := net.Buffers{[]byte(message[:7]), []byte(message[7:])}
+		_, err := b.WriteTo(c)
+		return err
+	case "sendmsg":
+		return sendOn(c, func(fd int) error {
+			_, err := syscall.SendmsgN(fd, []byte(message), nil, nil, 0)
+			return err
+		})
+	case "sendfile":
+		f, err := os.CreateTemp("", "netbpf-sendfile")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(f.Name())
+		defer f.Close()
+		if _, err := f.WriteString(message); err != nil {
+			return err
+		}
+		off := int64(0) // the syscall itself: Go's ReadFrom may fall back to write
+		return sendOn(c, func(fd int) error {
+			_, err := syscall.Sendfile(fd, int(f.Fd()), &off, len(message))
+			return err
+		})
+	}
+	return fmt.Errorf("no way %q", how)
 }
 
 func dial(t *testing.T, g *cgroup.Group, spec string) int {
@@ -269,4 +450,691 @@ func TestKernelLossCounterInvalidatesCapture(t *testing.T) {
 	if err := w.Health(); err == nil {
 		t.Fatal("kernel loss must persist in Health")
 	}
+}
+
+// startBroker runs the broker helper in the session cgroup and connects two
+// subscribers, from outside it, and returns once both are in.
+type brokerRun struct {
+	cmd          *exec.Cmd
+	port         int
+	host         string
+	subA, subB   net.Conn
+	peerA, peerB netip.AddrPort
+}
+
+func startBroker(t *testing.T, g *cgroup.Group, network, listen, host, how, leak string) *brokerRun {
+	t.Helper()
+	var out io.ReadCloser
+	cmd, placeErr, err := g.Start(func() *exec.Cmd {
+		c := exec.Command(os.Args[0], "-test.run=^$")
+		c.Env = append(os.Environ(), fmt.Sprintf("NETBPF_HELPER=broker %s %s %s %s", network, listen, how, leak))
+		c.Stderr = os.Stderr
+		var perr error
+		if out, perr = c.StdoutPipe(); perr != nil {
+			t.Fatal(perr)
+		}
+		return c
+	})
+	if err != nil || placeErr != nil {
+		t.Fatalf("start broker: err=%v placeErr=%v", err, placeErr)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
+		t.Fatalf("broker port: %v", err)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &brokerRun{cmd: cmd, port: port, host: host}
+	b.subA, b.peerA = b.connect(t)
+	b.subB, b.peerB = b.connect(t)
+	return b
+}
+
+func (b *brokerRun) connect(t *testing.T) (net.Conn, netip.AddrPort) {
+	t.Helper()
+	c, err := net.Dial("tcp", net.JoinHostPort(b.host, strconv.Itoa(b.port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c, netip.MustParseAddrPort(c.LocalAddr().String())
+}
+
+// publish connects the publisher, publishes, and waits for the ack. It returns
+// the publisher's address as the broker sees it.
+func (b *brokerRun) publish(t *testing.T) netip.AddrPort {
+	t.Helper()
+	p, peer := b.connect(t)
+	if _, err := p.Write([]byte("p")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(p, make([]byte, 3)); err != nil {
+		t.Fatalf("no ack: %v", err)
+	}
+	return peer
+}
+
+func readAll(t *testing.T, c net.Conn) string {
+	t.Helper()
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	return string(got)
+}
+
+func toPeer(events []witness.DeliveryEvent, peer netip.AddrPort) []witness.DeliveryEvent {
+	var out []witness.DeliveryEvent
+	for _, e := range events {
+		if e.Peer == peer {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// The case this witness exists for. A broker in a session cgroup writes to one
+// subscriber on a socket it accepted before the witness even started. The
+// witness sees that send, with the subscriber as the peer; it tells the
+// publisher's ack apart; and "nothing went to the other subscriber" is a Pass
+// the real subscriber's socket agrees with. No dial is involved, so Dialed sees
+// none of it. Each way a process can write to a socket is run.
+func TestKernelSeesDeliveryOnAnAcceptedSocket(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		network, listen, host, how string
+		exactBytes                 bool
+	}{
+		{"write", "tcp4", "127.0.0.1:0", "127.0.0.1", "write", true},
+		{"writev", "tcp4", "127.0.0.1:0", "127.0.0.1", "writev", true},
+		{"sendmsg", "tcp4", "127.0.0.1:0", "127.0.0.1", "sendmsg", true},
+		{"sendfile", "tcp4", "127.0.0.1:0", "127.0.0.1", "sendfile", false},
+		{"dual-stack listener, IPv4 client", "tcp", ":0", "127.0.0.1", "write", true},
+		{"ipv6", "tcp6", "[::1]:0", "::1", "write", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.network == "tcp6" {
+				l6, err := net.Listen("tcp6", "[::1]:0")
+				if err != nil {
+					t.Skipf("no IPv6 loopback here: %v", err)
+				}
+				l6.Close()
+			}
+			g, root := sessionGroup(t, tidA)
+			b := startBroker(t, g, tc.network, tc.listen, tc.host, tc.how, "clean")
+
+			// Started after the subscribers are in: their handshakes are not in
+			// the window, as a test of a real broker's SUBACK would want.
+			var mu sync.Mutex
+			var strays []Event
+			w := start(t, Config{CgroupRoot: root, OnEvent: func(e Event) {
+				if e.Op == witness.OpDeliver && e.Attribution == "" {
+					mu.Lock()
+					strays = append(strays, e)
+					mu.Unlock()
+				}
+			}})
+			pub := b.publish(t)
+			if got := readAll(t, b.subA); got != message {
+				t.Fatalf("subscriber A read %q", got)
+			}
+			if got := readAll(t, b.subB); got != "" {
+				t.Fatalf("subscriber B read %q", got)
+			}
+			if err := w.Stop(); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+			if err := w.Health(); err != nil {
+				t.Fatalf("Health: %v", err)
+			}
+
+			id, err := g.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := w.Delivered(tidA)
+			toA := toPeer(got, b.peerA)
+			if len(toA) == 0 {
+				t.Fatalf("no delivery to subscriber A %v in %+v", b.peerA, got)
+			}
+			var total uint64
+			for _, e := range toA {
+				total += e.Bytes
+				if e.Op != witness.OpDeliver || e.Protocol != "tcp" || e.PID != b.cmd.Process.Pid ||
+					e.Attribution != witness.ByCgroup || e.TraceID != tidA || e.CgroupID != id || int(e.Local.Port()) != b.port {
+					t.Errorf("delivery fields: %+v", e)
+				}
+				if !strings.HasSuffix(e.Cgroup, cgroup.RootBase(root)+"/"+tidA) {
+					t.Errorf("cgroup path %q does not end in the session", e.Cgroup)
+				}
+			}
+			if tc.exactBytes && total != uint64(len(message)) {
+				t.Errorf("%d bytes to A, want %d: %+v", total, len(message), toA)
+			}
+			if acks := toPeer(got, pub); len(acks) != 1 || acks[0].Bytes != 3 {
+				t.Errorf("the ack to the publisher %v: %+v", pub, acks)
+			}
+			if n := len(toA) + 1; n != len(got) {
+				t.Errorf("%d sends, want only A's and the ack: %+v", len(got), got)
+			}
+			if v, err := harness.NoDelivery(w, tidA, harness.DeliveryTo(b.peerB)); v != harness.Pass {
+				t.Errorf("nothing went to B: %v, %v", v, err)
+			}
+			if v, _ := harness.NoDelivery(w, tidA, harness.DeliveryTo(b.peerA)); v != harness.Fail {
+				t.Errorf("A was delivered to: %v", v)
+			}
+			if v, _ := harness.NoDelivery(w, tidB, nil); v != harness.Pass {
+				t.Errorf("another trace sees this session's sends: %v", v)
+			}
+			if d := w.Dialed(tidA); len(d) != 0 {
+				t.Errorf("no dial happened here: %+v", d)
+			}
+			// The subscribers and the publisher are this process, outside any
+			// session: the kernel filter keeps their sends out.
+			if len(strays) != 0 {
+				t.Errorf("sends from outside any session reached user space: %+v", strays)
+			}
+		})
+	}
+}
+
+// The mutant in the trial: the broker's guard forced open, so the denied
+// subscriber gets the message. The socket says so, and so must the witness.
+func TestKernelFailsWhenTheDeniedSubscriberIsDeliveredTo(t *testing.T) {
+	g, root := sessionGroup(t, tidA)
+	b := startBroker(t, g, "tcp4", "127.0.0.1:0", "127.0.0.1", "write", "leak")
+	w := start(t, Config{CgroupRoot: root})
+	b.publish(t)
+	if got := readAll(t, b.subB); got != message {
+		t.Fatalf("subscriber B read %q", got)
+	}
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	v, err := harness.NoDelivery(w, tidA, harness.DeliveryTo(b.peerB))
+	if v != harness.Fail {
+		t.Fatalf("got %v, %v", v, err)
+	}
+	if !strings.Contains(err.Error(), b.peerB.String()) {
+		t.Fatalf("the failure must name the peer: %v", err)
+	}
+}
+
+// A send on a connected UDP socket has a peer but no name; one with a name is
+// delivery to that name, the same event Dialed reports.
+func TestKernelSeesUDPDelivery(t *testing.T) {
+	g, root := sessionGroup(t, tidB)
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	to := netip.MustParseAddrPort(pc.LocalAddr().String())
+
+	w := start(t, Config{CgroupRoot: root})
+	dial(t, g, "udpsend "+to.String()+" 1")
+	dial(t, g, "sendto udp4 "+to.String())
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	var connected, named int
+	for _, e := range toPeer(w.Delivered(tidB), to) {
+		if e.Protocol != "udp" || e.Bytes != 1 {
+			t.Errorf("fields: %+v", e)
+		}
+		switch e.Op {
+		case witness.OpDeliver:
+			connected++
+		case witness.OpSendmsg:
+			named++
+		}
+	}
+	if connected != 1 || named != 1 {
+		t.Fatalf("connected %d, named %d, want 1 and 1: %+v", connected, named, w.Delivered(tidB))
+	}
+	if d := w.Dialed(tidB); len(d) != 2 { // the connect, and the named send
+		t.Errorf("Dialed = %+v", d)
+	}
+}
+
+// A cgroup below the session is still the session, as Go attributes it, so the
+// kernel filter must let it through.
+func TestKernelFilterKeepsAChildOfTheSession(t *testing.T) {
+	g, root := sessionGroup(t, tidB)
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	child := filepath.Join(g.Dir(), "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		skipOrFail(t, "no child cgroup: %v", err)
+	}
+	defer func() {
+		for i := 0; i < 50 && os.Remove(child) != nil; i++ {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	dir, err := os.Open(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+
+	w := start(t, Config{CgroupRoot: root})
+	c := exec.Command(os.Args[0], "-test.run=^$")
+	c.Env = append(os.Environ(), "NETBPF_HELPER=udpsend "+pc.LocalAddr().String()+" 1")
+	c.Stderr = os.Stderr
+	c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(dir.Fd())}
+	if err := c.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := w.Delivered(tidB); len(got) != 1 || !strings.HasSuffix(got[0].Cgroup, tidB+"/child") {
+		t.Fatalf("Delivered = %+v", got)
+	}
+}
+
+// A send on a socket that is not inet has no peer to report. It is counted, so
+// a capture says what it did not look at.
+func TestKernelCountsSendsItCannotAddress(t *testing.T) {
+	g, root := sessionGroup(t, tidB)
+	sock := filepath.Join(t.TempDir(), "s")
+	uc, err := net.ListenPacket("unixgram", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer uc.Close()
+	w := start(t, Config{CgroupRoot: root})
+	dial(t, g, "unixsend "+sock)
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := w.Delivered(tidB); len(got) != 0 {
+		t.Errorf("Delivered = %+v", got)
+	}
+	if c := w.DeliveryCoverage(); c.OtherFamilySends == 0 {
+		t.Errorf("coverage = %+v", c)
+	}
+}
+
+// Stop delivers every send already in the ring buffer.
+func TestStopDrainsDeliveries(t *testing.T) {
+	g, root := sessionGroup(t, tidB)
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	w := start(t, Config{CgroupRoot: root})
+	const n = 2000
+	dial(t, g, fmt.Sprintf("udpsend %s %d", pc.LocalAddr(), n))
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := len(w.Delivered(tidB)); got != n {
+		t.Fatalf("saw %d of %d sends", got, n)
+	}
+}
+
+// A real overflow, not a written counter: the reader is held while a session
+// sends more than the ring buffer holds, so reservations really fail. Stop and
+// Health say so, a sighting is still a Fail, and no absence passes.
+func TestKernelRingOverflowFailsHealth(t *testing.T) {
+	g, root := sessionGroup(t, tidB)
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	to := netip.MustParseAddrPort(pc.LocalAddr().String())
+
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	defer free()
+	w := start(t, Config{CgroupRoot: root, OnEvent: func(Event) { <-release }})
+	dial(t, g, fmt.Sprintf("udpsend %s 20000", to))
+	free()
+	err = w.Stop()
+	if err == nil || !strings.Contains(err.Error(), "lost") {
+		t.Fatalf("Stop = %v", err)
+	}
+	if w.Health() == nil {
+		t.Fatal("kernel loss must persist in Health")
+	}
+	if c := w.DeliveryCoverage(); c.Lost == 0 {
+		t.Fatalf("coverage = %+v", c)
+	}
+	nobody := netip.MustParseAddrPort("192.0.2.1:1")
+	if v, _ := harness.NoDelivery(w, tidB, harness.DeliveryTo(nobody)); v != harness.Inconclusive {
+		t.Fatalf("absence over a lossy capture: %v", v)
+	}
+	if v, _ := harness.NoDelivery(w, tidB, harness.DeliveryTo(to)); v != harness.Fail {
+		t.Fatalf("what was seen still counts: %v", v)
+	}
+}
+
+// A hook that will not attach, on real programs: no capture, and Health says why.
+func TestKernelFailedAttachFailsHealth(t *testing.T) {
+	// Only the loaded case tells this from a failed load.
+	probe := New(Config{})
+	if err := probe.Start(); err != nil {
+		skipOrFail(t, "cannot load the eBPF programs: %v", err)
+	}
+	probe.Stop()
+	failAttach(t, 3)
+	w := New(Config{})
+	err := w.Start()
+	if err == nil || !strings.Contains(err.Error(), "attach handle_deliver") {
+		t.Fatalf("Start = %v", err)
+	}
+	if h := w.Health(); h == nil || !strings.Contains(h.Error(), "attach handle_deliver") {
+		t.Fatalf("Health = %v", h)
+	}
+	if v, _ := harness.NoDelivery(w, tidA, nil); v != harness.Inconclusive {
+		t.Fatalf("no capture, no absence: %v", v)
+	}
+}
+
+// sockaddr6 is a struct sockaddr_in6 with the family the caller chooses.
+func sockaddr6(family uint16, addr string) []byte {
+	b := make([]byte, 28)
+	binary.NativeEndian.PutUint16(b, family)
+	a := netip.MustParseAddr(addr).As16()
+	copy(b[8:], a[:])
+	return b
+}
+
+func sendRaw(fd int, name []byte) syscall.Errno {
+	msg := []byte("hello")
+	var p, n uintptr
+	if name != nil {
+		p, n = uintptr(unsafe.Pointer(unsafe.SliceData(name))), uintptr(len(name))
+	}
+	_, _, e := syscall.Syscall6(syscall.SYS_SENDTO, uintptr(fd), uintptr(unsafe.Pointer(&msg[0])), uintptr(len(msg)), 0, p, n)
+	return e
+}
+
+func connect6(fd int, to string) error {
+	sa := &syscall.SockaddrInet6{Addr: netip.MustParseAddr(to).As16()}
+	return syscall.Connect(fd, sa)
+}
+
+// The send's own failure does not matter: the hook runs before it.
+func raw6(family, to, name string) error {
+	fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_RAW, 253)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	if to != "-" {
+		if err := connect6(fd, to); err != nil {
+			return err
+		}
+	}
+	fam, err := strconv.Atoi(family)
+	if err != nil {
+		return err
+	}
+	sendRaw(fd, sockaddr6(uint16(fam), name))
+	return nil
+}
+
+func udp6Unspec(to, name string) error {
+	fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	ap := netip.MustParseAddrPort(to)
+	if err := syscall.Connect(fd, &syscall.SockaddrInet6{Addr: ap.Addr().As16(), Port: int(ap.Port())}); err != nil {
+		return err
+	}
+	if e := sendRaw(fd, sockaddr6(0, name)); e != 0 {
+		return e
+	}
+	return nil
+}
+
+func emptyName() error {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	sendRaw(fd, make([]byte, 16)[:0:16])
+	return nil
+}
+
+func peersOf(events []witness.DeliveryEvent) []string {
+	var out []string
+	for _, e := range events {
+		out = append(out, e.Peer.Addr().String())
+	}
+	return out
+}
+
+// Raw IPv6 goes to the address in a name whose family is 0. That send must be
+// charged to that address: not lost, and not to the peer the socket holds.
+func TestKernelSeesRawIPv6WithFamilyZero(t *testing.T) {
+	for _, tc := range []struct {
+		name, spec string
+		want       string
+	}{
+		{"control, AF_INET6", "raw6 10 - ::1", "::1"},
+		{"family 0, no peer", "raw6 0 - ::1", "::1"},
+		{"family 0, another peer held", "raw6 0 ::1 2001:db8::7", "2001:db8::7"},
+		{"AF_INET6, another peer held", "raw6 10 ::1 2001:db8::7", "2001:db8::7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, root := sessionGroup(t, tidB)
+			w := start(t, Config{CgroupRoot: root})
+			dial(t, g, tc.spec)
+			if err := w.Stop(); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+			if got := peersOf(w.Delivered(tidB)); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("Delivered peers = %v, want only %s", got, tc.want)
+			}
+			var named []string
+			for _, d := range w.Dialed(tidB) {
+				if d.Op == witness.OpSendmsg { // a connect to the peer held is a true attempt of its own
+					named = append(named, d.Dest.Addr().String())
+				}
+			}
+			if len(named) != 1 || named[0] != tc.want {
+				t.Fatalf("Dialed sends = %v, want only %s", named, tc.want)
+			}
+		})
+	}
+}
+
+// UDP over IPv6 is the other way round: family 0 is no name, so the datagram goes
+// to the socket's peer, and the name must not take the charge.
+func TestKernelChargesUDP6FamilyZeroToTheSocketPeer(t *testing.T) {
+	g, root := sessionGroup(t, tidB)
+	pc, err := net.ListenPacket("udp6", "[::1]:0")
+	if err != nil {
+		skipOrFail(t, "no IPv6 loopback: %v", err)
+	}
+	defer pc.Close()
+	w := start(t, Config{CgroupRoot: root})
+	dial(t, g, "udp6unspec "+pc.LocalAddr().String()+" 2001:db8::7")
+	pc.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := pc.ReadFrom(make([]byte, 16)); err != nil {
+		t.Fatalf("the datagram went somewhere else: %v", err)
+	}
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := peersOf(w.Delivered(tidB)); len(got) != 1 || got[0] != "::1" {
+		t.Fatalf("Delivered peers = %v, want only ::1", got)
+	}
+}
+
+// A name the sendmsg hook cannot read leaves no one to report the send, so the
+// delivery hook reports it, with an unknown peer.
+func TestKernelReportsANameNoHookCanRead(t *testing.T) {
+	g, root := sessionGroup(t, tidB)
+	w := start(t, Config{CgroupRoot: root})
+	dial(t, g, "emptyname")
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := w.Delivered(tidB); len(got) != 1 || !got[0].PeerUnknown() {
+		t.Fatalf("Delivered = %+v, want one with an unknown peer", got)
+	}
+}
+
+// A task that leaves its session takes its sends with it, so nothing may read
+// as absence afterwards, wherever it went.
+func TestKernelALeavingTaskFailsHealth(t *testing.T) {
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	addr := pc.LocalAddr().String()
+	for _, tc := range []struct {
+		name string
+		spec func(g *cgroup.Group, root string) string
+		want string
+	}{
+		{"moved to the session root", func(_ *cgroup.Group, root string) string { return "leave " + root + " " + addr }, "left a session"},
+		{"moved above the root", func(_ *cgroup.Group, root string) string { return "leave " + filepath.Dir(root) + " " + addr }, "left a session"},
+		{"moved to another session", func(_ *cgroup.Group, root string) string { return "leave " + root + "/" + tidA + " " + addr }, "left a session"},
+		{"child made above the root", func(_ *cgroup.Group, root string) string { return "forkout " + filepath.Dir(root) + " " + addr }, "left a session"},
+		{"moved within the session", func(g *cgroup.Group, _ string) string { return "leave " + g.Dir() + "/child " + addr }, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, root := sessionGroup(t, tidB)
+			other := filepath.Join(root, tidA)
+			child := filepath.Join(g.Dir(), "child")
+			for _, d := range []string{other, child} {
+				if err := os.Mkdir(d, 0o755); err != nil {
+					skipOrFail(t, "no cgroup %s: %v", d, err)
+				}
+				t.Cleanup(func() {
+					for i := 0; i < 50 && os.Remove(d) != nil; i++ {
+						time.Sleep(20 * time.Millisecond)
+					}
+				})
+			}
+			w := start(t, Config{CgroupRoot: root})
+			dial(t, g, tc.spec(g, root))
+			err := w.Stop()
+			v, verr := harness.NoDelivery(w, tidB, nil)
+			if tc.want == "" {
+				if err != nil || v != harness.Fail {
+					t.Fatalf("a move inside the session: Stop=%v, verdict=%v (%v), want a healthy sighting", err, v, verr)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Stop = %v, want %q", err, tc.want)
+			}
+			if v != harness.Inconclusive {
+				t.Fatalf("verdict = %v (%v), want Inconclusive", v, verr)
+			}
+			if w.DeliveryCoverage().LeftSession == 0 {
+				t.Fatalf("coverage = %+v", w.DeliveryCoverage())
+			}
+		})
+	}
+}
+
+// nest makes dir/names[0]/names[1]/... and returns the innermost.
+func nest(t *testing.T, dir string, names ...string) string {
+	t.Helper()
+	for _, n := range names {
+		dir = filepath.Join(dir, n)
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			skipOrFail(t, "no nested cgroup: %v", err)
+		}
+		d := dir
+		t.Cleanup(func() {
+			for i := 0; i < 50 && os.Remove(d) != nil; i++ {
+				time.Sleep(20 * time.Millisecond)
+			}
+		})
+	}
+	return dir
+}
+
+func sendFrom(t *testing.T, dir, addr string) {
+	t.Helper()
+	fd, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fd.Close()
+	c := exec.Command(os.Args[0], "-test.run=^$")
+	c.Env = append(os.Environ(), "NETBPF_HELPER=udpsend "+addr+" 1")
+	c.Stderr = os.Stderr
+	c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(fd.Fd())}
+	if err := c.Run(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The application owns everything below its session, so however it nests, the
+// send stays the session's. It cannot be pushed out of sight or onto a trace it
+// chooses by building a path that ends like another session.
+func TestKernelNestingCannotMoveASend(t *testing.T) {
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	addr := pc.LocalAddr().String()
+	levels := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = "n"
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name  string
+		extra []string
+	}{
+		{"a forged session within reach", []string{"a"}},
+		{"a forged session past the path kept", []string{"a", "b", "c", "d", "e"}},
+		{"far past the path kept", levels(14)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, root := sessionGroup(t, tidB)
+			leaf := nest(t, g.Dir(), append(tc.extra, filepath.Base(root), tidA)...)
+			w := start(t, Config{CgroupRoot: root})
+			sendFrom(t, leaf, addr)
+			if err := w.Stop(); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+			if got := w.Delivered(tidA); len(got) != 0 {
+				t.Fatalf("charged to the forged trace: %+v", got)
+			}
+			if got := w.Delivered(tidB); len(got) != 1 {
+				t.Fatalf("Delivered to the real trace = %+v", got)
+			}
+		})
+	}
+	t.Run("too deep to walk", func(t *testing.T) {
+		g, root := sessionGroup(t, tidB)
+		leaf := nest(t, g.Dir(), levels(40)...)
+		w := start(t, Config{CgroupRoot: root})
+		sendFrom(t, leaf, addr)
+		if err := w.Stop(); err == nil || !strings.Contains(err.Error(), "too long to walk") {
+			t.Fatalf("Stop = %v", err)
+		}
+		if v, err := harness.NoDelivery(w, tidB, nil); v != harness.Inconclusive {
+			t.Fatalf("verdict = %v (%v), want Inconclusive", v, err)
+		}
+	})
 }

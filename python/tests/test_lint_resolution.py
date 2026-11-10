@@ -34,6 +34,19 @@ def test_x():
     assert run([project]) == []
 
 
+def test_committed_on_a_witness_log_asks_a_witness(project):
+    (project / 'service.py').write_text('# subpoena:enforcement_point\ndef enforce(): return False\n')
+    write(project, '''# subpoena:impl_derived
+from subpoena.witness import read_log
+from subpoena.harness import Harness
+log = read_log(file)
+def test_x():
+    Harness().collect()
+    log.committed(trace_id)
+''')
+    assert 'unwitnessed-enforcement' not in {f.rule for f in run([project])}
+
+
 def test_conditional_expressions_cannot_guard_absence(project):
     for expression in ('flag and h.collect()', 'h.collect() if flag else None',
                        '[h.collect() for _ in items]'):

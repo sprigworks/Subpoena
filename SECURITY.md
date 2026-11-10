@@ -11,7 +11,7 @@ Subpoena's job is to stop tests from passing for the wrong reason, so a way to
 get a false Pass is a security bug. For example:
 
 - an absence check that passes on an incomplete or blind capture;
-- a witness that misses an exec or a connection it claims to cover, without
+- a witness that misses an exec, a connection or a file change it claims to cover, without
   reporting degraded health;
 - `subpoena-cross` reporting a mutant as killed when the suite did not catch
   it.

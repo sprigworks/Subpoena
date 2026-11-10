@@ -11,6 +11,9 @@ listed below, checked by shared cases and Python fixtures against the Go contrac
 | Witness file (W3, W4) | `subpoena.witness` | [`conformance/witness.yaml`](https://github.com/sprigworks/subpoena/blob/main/conformance/witness.yaml), all cases, and the `witness.ReadLog` cases (`tests/test_witness.py`) |
 | Absence checks (W5) | `subpoena.harness`: `no_spawn`, `require_no_spawn`, `check_no_spawn`, `watch_spawns`, `SpawnRule` | the same cases, and the `pkg/harness/watch_test.go` table (`tests/test_watch_spawns.py`) |
 | Network absence (W6) | `subpoena.witness.Sinkhole`; `subpoena.harness`: `no_dial`, `require_no_dial`, `check_no_dial`, `dial_to` | the `pkg/witness/sinkhole_test.go` and `pkg/harness/network_test.go` cases (`tests/test_network.py`) |
+| File absence (W7) | `subpoena.witness`: `read_log`, `Log.wrote`, `Log.covers`, `Log.roots`, `Log.silent_closes`, `FileEvent`; `subpoena.harness`: `no_write`, `require_no_write`, `check_no_write`. Reads the file `subpoena-witness -file-root` writes; running the witness and the SQLite reader stay Go-only | the `file_` cases in [`conformance/witness.yaml`](https://github.com/sprigworks/subpoena/blob/main/conformance/witness.yaml) (`tests/test_witness_cases.py`, `tests/test_witness.py`) |
+| Row absence | `subpoena.witness`: `Log.committed`; `subpoena.harness`: `no_row`, `require_no_row`, `check_no_row`. Reads the file `subpoena-witness db` writes | `tests/test_witness.py` |
+| Delivery absence (W8) | `subpoena.witness`: `Log.delivered`, `DeliveryEvent`; `subpoena.harness`: `no_delivery`, `require_no_delivery`, `check_no_delivery`, `delivery_to`. Reads the file; running the witness stays Go-only, and there is no `watch_deliveries` | the `delivery_` cases in `conformance/witness.yaml`, and `tests/test_delivery.py` |
 | Invariants by name | `subpoena.invariants`: `load`, `names`; the nearest `invariants/` above the caller, or a given directory | `tests/test_invariants.py` |
 | pytest fixtures | `subpoena.pytest_plugin` (loaded automatically): `subpoena_harness`, `subpoena_watch_spawns`, `subpoena_sinkhole` | `tests/test_pytest_plugin.py`, in a real inner pytest run |
 | Session cgroups (W2) | `subpoena.cgroup`: `from_env`, `Manager.create`, `Group.start` / `add` / `procs` / `id` / `remove`, `session_trace` | the `pkg/cgroup/cgroup_test.go` cases (`tests/test_cgroup.py`); the real-cgroup case needs a writable cgroup v2 hierarchy |
@@ -198,12 +201,29 @@ run. Never add a group or acceptance entry to hide a testable survivor. Keep
 release checks at `-j 1`, or confirm parallel kills there: contention can alter
 timing-sensitive tests. `--timeout` remains the per-run timeout in seconds.
 
-`--require-witness` accepts a mutant kill only when the first failing assertion
-is tagged `witness:`. A span or return-value failure first is reported as
+A kill must hold: its tests run again once with the mutant and three times
+without it, each on a fresh copy. Anything but a clean kill in the same test with
+the mutant, or a failure without it, is `enforcement-mutant-unconfirmed`, which
+fails the run, and `-select` does not retry it on the whole suite.
+
+`--test-helper FILE`, repeatable, names a file of test code that holds no tests,
+such as a module of shared assertions, so an assertion there counts as a test's.
+A file with enforcement markers is refused.
+
+`--require-witness` accepts a mutant kill only when the first failure is a
+`harness.WitnessFailure`: the harness's own witness checks raise it, and a test
+that asks a witness itself raises it through `harness.witness_fail(message)`.
+Text decides nothing, so `assert ok, "witness: ..."` is `other`: an assert
+message can be a value the code returned (`assert r.status == 403, r.body`), and
+under `assertEqual` it is an object's repr. A check that could not see
+(Inconclusive, bad capture health) fails the test with an `inconclusive:` message
+and is `other`: the code under test can blind a witness. A span or return-value failure first is reported as
 `enforcement-mutant-killed-by-self-report` and exits 1; a later witness failure
 cannot redeem it. Without the flag, existing kill classification is unchanged.
-The tags describe the assertion's oracle and remain a reviewed claim: do not
-label testimony as witness evidence. The Level 0 quickstart reads its in-memory
+A test's call to `witness_fail` remains a reviewed claim: do not
+report testimony through it. The code under test calling it is a crash, read from the
+failure's frames; test code and the code it calls share a process, so
+this raises the bar and proves nothing against code that sets out to forge it. The Level 0 quickstart reads its in-memory
 database directly before asking about spans, but that is `other` evidence;
 its CI uses ordinary cross mode. Production adopters need an independent
 observer appropriate to their real effect before selecting the strict gate.

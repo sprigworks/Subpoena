@@ -27,8 +27,10 @@ def allowed(admin):
 '''
 TEST = '''
 from auth import allowed
+from subpoena.harness import witness_fail
 def test_denied():
-    assert not allowed(False), "witness: denied action ran"
+    if allowed(False):
+        witness_fail("denied action ran")
 def test_admin():
     assert allowed(True)
 '''
@@ -263,7 +265,7 @@ def test_evidence_path_empty_without_evidence_directory(tmp_path):
 
 
 def test_require_witness_group_cannot_mask_self_report(tmp_path):
-    root = project(tmp_path, LAYERED, TEST.replace('witness:', 'testimony:'))
+    root = project(tmp_path, LAYERED, TEST.replace('witness_fail("denied action ran")', 'raise AssertionError("testimony: denied action ran")'))
     rep = cross.run(root, require_witness=True, select=True, jobs=2)
     assert rep.failed()
     assert [r.outcome for r in rep.results[:2]] == [cross.SURVIVED, cross.SURVIVED]

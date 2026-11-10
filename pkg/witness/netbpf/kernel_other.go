@@ -13,3 +13,5 @@ func (w *Witness) Start() error {
 
 // Stop does nothing.
 func (w *Witness) Stop() error { return nil }
+
+func cgroupID(string) (uint64, bool) { return 0, false }

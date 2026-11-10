@@ -22,6 +22,8 @@ replace golang.org/x/tools => github.com/golang/tools v0.40.1-0.20260108161641-c
 replace golang.org/x/mod => github.com/golang/mod v0.31.0
 replace golang.org/x/sync => github.com/golang/sync v0.20.0
 replace golang.org/x/net => github.com/golang/net v0.48.0
+replace golang.org/x/text => github.com/golang/text v0.33.0
+replace filippo.io/edwards25519 => github.com/FiloSottile/edwards25519 v1.1.0
 // gopkg.in is a blocked vanity host. A v3 tag cannot be a replace target on a
 // non-/v3 GitHub path, so pin the commit of tag v3.0.1 as a pseudo-version.
 replace gopkg.in/yaml.v3 => github.com/go-yaml/yaml v0.0.0-20220527083530-f6f7691b1fde

@@ -48,7 +48,7 @@ from subpoena.witness import read_log
 T = "c0de00000000000000000000000000a1"
 
 def log(*cmds):
-    lines = [{"time": "2026-10-26T12:00:00Z", "record": "start", "healthy": False}]
+    lines = [{"time": "2026-10-26T12:00:00Z", "record": "start", "healthy": False, "captures": ["exec"]}]
     lines += [{"time": "2026-10-26T12:00:01Z", "pid": 7, "command": c, "trace_id": T} for c in cmds]
     lines += [{"time": "2026-10-26T12:00:02Z", "record": "stop", "healthy": True}]
     return read_log(io.StringIO("\\n".join(json.dumps(l) for l in lines)))

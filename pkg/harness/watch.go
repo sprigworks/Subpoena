@@ -2,11 +2,13 @@ package harness
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sprigworks/subpoena/internal/crossmark"
 	"github.com/sprigworks/subpoena/pkg/witness"
 )
 
@@ -18,7 +20,55 @@ const (
 	TagWitness = "witness"
 	// TagTestimony marks a failure in the system's own telemetry.
 	TagTestimony = "testimony"
+	// TagInconclusive marks a check the witness could not answer: the capture
+	// failed, or says nothing of its health. It fails the test, as any
+	// Inconclusive does, but it is about the witness and not about the effect,
+	// and the code under test can cause it. It is never witness evidence.
+	TagInconclusive = "inconclusive"
 )
+
+// crossKey is the key subpoena-cross hands a test binary to sign witness
+// failures with. It leaves the environment here, so that child processes of the
+// code under test do not inherit it. That is all this does: /proc/<pid>/environ
+// keeps the value for the life of the process, so in-process code, and any
+// process of the same user, a child included, can read it there. Outside cross
+// it is empty and nothing is signed. See internal/crossmark.
+var crossKey = func() string {
+	key := os.Getenv(crossmark.Env)
+	os.Unsetenv(crossmark.Env)
+	return key
+}()
+
+// signable reports whether tb is one of package testing's own types. Only those
+// get the mark. The harness is public, so production code could otherwise pass
+// a stand-in TB, read the signed message and print it. A wrapper (GinkgoTB, a
+// struct embedding *testing.T) is a stand-in too: its failures read as other.
+var signable = func(tb testing.TB) bool {
+	switch tb.(type) {
+	case *testing.T, *testing.B, *testing.F:
+		return true
+	}
+	return false
+}
+
+// witnessText signs msg for cross, and leaves it alone outside it.
+func witnessText(tb testing.TB, msg string) string {
+	if crossKey == "" || !signable(tb) {
+		return msg
+	}
+	return crossmark.Sign(crossKey, msg)
+}
+
+// WitnessErrorf fails tb with a message tagged "witness:". A test that asks a
+// witness itself reports what it saw through this, not by writing the tag:
+// cross counts a tag as witness evidence only if the harness wrote it, since the
+// code under test can print any text. Under cross the message's first line ends
+// with a mark that says so, if tb is a *testing.T, B or F; elsewhere the message
+// is just the text.
+func WitnessErrorf(tb testing.TB, format string, args ...any) {
+	tb.Helper()
+	tb.Errorf("%s", witnessText(tb, TagWitness+": "+fmt.Sprintf(format, args...)))
+}
 
 // SpawnRule says which commands a WatchSpawns check accepts. Entries match
 // the witness's command line (ProcessEvent.Command), and the two lists match
@@ -58,7 +108,8 @@ type SpawnRule struct {
 //
 // At cleanup it stops w (if w has a Stop method), then fails the test, with
 // messages tagged "witness:", for every process seen for traceID that the rule
-// refuses, and for missing or bad capture health. If the test has already
+// refuses, and with "inconclusive:" for a witness file with no exec capture in it,
+// or missing or bad capture health. If the test has already
 // failed, every process the witness saw is logged as well.
 //
 // Cleanups run last-registered first, so this runs before a Stop registered
@@ -78,30 +129,34 @@ func checkSpawns(tb testing.TB, w witness.Witness, traceID string, rule SpawnRul
 	for _, p := range w.Spawned(traceID) {
 		switch {
 		case p.NameOnly() && slices.Contains(programs(rule.Never), taskName(p.Command)):
-			tb.Errorf("%s: refused program seen by name only for %s, arguments unknown: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
+			WitnessErrorf(tb, "refused program seen by name only for %s, arguments unknown: pid %d %q (%s)", traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
 		case p.NameOnly() && rule.Allowed != nil && !(rule.ExcuseNameOnly && slices.Contains(programs(rule.Allowed), taskName(p.Command))):
-			tb.Errorf("%s: process seen by name only for %s, not identified: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
+			WitnessErrorf(tb, "process seen by name only for %s, not identified: pid %d %q (%s)", traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
 		case p.NameOnly() && rule.Allowed != nil:
 			tb.Logf("%s: excused name-only sighting for %s: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution)
 		case matchesAny(p.Command, rule.Never):
-			tb.Errorf("%s: refused command ran for %s: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
+			WitnessErrorf(tb, "refused command ran for %s: pid %d %q (%s)", traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
 		case rule.Allowed != nil && !slices.Contains(rule.Allowed, p.Command):
-			tb.Errorf("%s: command not allowed for %s: pid %d %q (%s)", TagWitness, traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
+			WitnessErrorf(tb, "command not allowed for %s: pid %d %q (%s)", traceID, p.PID, p.Command, p.Attribution) //subpoena:enforcement
 			ok = false
 		case failedBefore:
 			tb.Logf("%s: after an earlier failure, saw pid %d %q (%s)", TagWitness, p.PID, p.Command, p.Attribution)
 		}
 	}
+	if err := execCapture(w); err != nil {
+		tb.Errorf("%s: %s: %v", TagInconclusive, traceID, err) //subpoena:enforcement
+		return false
+	}
 	h, isReporter := w.(witness.HealthReporter)
 	if !isReporter {
-		tb.Errorf("%s: %s: witness does not report capture health; absence of refused commands is not proven", TagWitness, traceID) //subpoena:enforcement
+		tb.Errorf("%s: %s: witness does not report capture health; absence of refused commands is not proven", TagInconclusive, traceID) //subpoena:enforcement
 		return false
 	}
 	if err := h.Health(); err != nil {
-		tb.Errorf("%s: %s: capture unhealthy, absence of refused commands is not proven: %v", TagWitness, traceID, err) //subpoena:enforcement
+		tb.Errorf("%s: %s: capture unhealthy, absence of refused commands is not proven: %v", TagInconclusive, traceID, err) //subpoena:enforcement
 		return false
 	}
 	return ok
@@ -169,7 +224,7 @@ func CheckNoSpawn(tb testing.TB, w witness.Witness, traceID string) bool {
 	tb.Helper()
 	v, err := NoSpawn(w, traceID)
 	if v != Pass {
-		tb.Errorf("%s", noSpawnMessage(traceID, v, err))
+		tb.Errorf("%s", noSpawnMessage(tb, traceID, v, err))
 		return false
 	}
 	return true
@@ -181,16 +236,41 @@ func CheckNoDial(tb testing.TB, w witness.NetworkWitness, traceID string, match 
 	tb.Helper()
 	v, err := NoDial(w, traceID, match)
 	if v != Pass {
-		tb.Errorf("%s", noDialMessage(traceID, v, err))
+		tb.Errorf("%s", noDialMessage(tb, traceID, v, err))
 		return false
 	}
 	return true
 }
 
-func noSpawnMessage(traceID string, v Verdict, err error) string {
-	return fmt.Sprintf("%s: no spawn for %s: %s: %v", TagWitness, traceID, v, err)
+// CheckNoDelivery is RequireNoDelivery without stopping the test. It reports
+// whether the check passed.
+func CheckNoDelivery(tb testing.TB, w witness.DeliveryWitness, traceID string, match func(witness.DeliveryEvent) bool) bool {
+	tb.Helper()
+	v, err := NoDelivery(w, traceID, match)
+	if v != Pass {
+		tb.Errorf("%s", noDeliveryMessage(tb, traceID, v, err))
+		return false
+	}
+	return true
 }
 
-func noDialMessage(traceID string, v Verdict, err error) string {
-	return fmt.Sprintf("%s: no dial for %s: %s: %v", TagWitness, traceID, v, err)
+func noSpawnMessage(tb testing.TB, traceID string, v Verdict, err error) string {
+	return verdictText(tb, fmt.Sprintf("no spawn for %s: %s: %v", traceID, v, err), v)
+}
+
+func noDialMessage(tb testing.TB, traceID string, v Verdict, err error) string {
+	return verdictText(tb, fmt.Sprintf("no dial for %s: %s: %v", traceID, v, err), v)
+}
+
+func noDeliveryMessage(tb testing.TB, traceID string, v Verdict, err error) string {
+	return verdictText(tb, fmt.Sprintf("no delivery for %s: %s: %v", traceID, v, err), v)
+}
+
+// verdictText tags a check's failure. Only a Fail, which is a sighting, is
+// witness evidence.
+func verdictText(tb testing.TB, msg string, v Verdict) string {
+	if v == Fail {
+		return witnessText(tb, TagWitness+": "+msg)
+	}
+	return TagInconclusive + ": " + msg
 }

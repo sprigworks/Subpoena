@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 )
@@ -31,6 +34,45 @@ type Line struct {
 	Attribution string    `json:"attribution,omitempty"`
 }
 
+// FileLine is one line of file witness output: one change under a watched
+// root. A line with a file_op field is a FileLine; docs/ports.md (W7) has the
+// rest. TraceID is empty for a witness that cannot attribute to a trace, and
+// such a line belongs to every trace.
+type FileLine struct {
+	Time        time.Time `json:"time"`
+	FileOp      string    `json:"file_op"`
+	Path        string    `json:"path"`
+	Root        string    `json:"root"`
+	IsDir       bool      `json:"is_dir"`
+	Source      string    `json:"source"`
+	Rename      string    `json:"rename,omitempty"`
+	Cookie      uint32    `json:"cookie,omitempty"`
+	TraceID     string    `json:"trace_id,omitempty"`
+	Attribution string    `json:"attribution"`
+}
+
+// DeliveryLine is one line of a delivery capture: one send seen by the kernel
+// (netbpf). A line with a delivery_op field is a DeliveryLine; docs/ports.md
+// (W8) has the rest. Peer and Local are "address:port", "[address]:port" for
+// IPv6. An empty Peer means the send's peer could not be read.
+type DeliveryLine struct {
+	Time           time.Time `json:"time"`
+	DeliveryOp     string    `json:"delivery_op"`
+	PID            int       `json:"pid"`
+	HostPID        int       `json:"host_pid"`
+	Comm           string    `json:"comm"`
+	Protocol       string    `json:"protocol"`
+	Peer           string    `json:"peer"`
+	Local          string    `json:"local"`
+	Bytes          uint64    `json:"bytes"`
+	Broadcast      bool      `json:"broadcast,omitempty"`
+	BroadcastRoute bool      `json:"broadcast_route,omitempty"`
+	CgroupID       uint64    `json:"cgroup_id"`
+	Cgroup         string    `json:"cgroup"`
+	TraceID        string    `json:"trace_id,omitempty"`
+	Attribution    string    `json:"attribution,omitempty"`
+}
+
 // Record is a line that marks a capture window: "start" once the witness is
 // attached, "stop" when it has stopped, with the capture's health. A record
 // line is told from an exec line by its record field.
@@ -39,7 +81,32 @@ type Record struct {
 	Record  string    `json:"record"`
 	Healthy bool      `json:"healthy"`
 	Error   string    `json:"error,omitempty"`
+	// Roots, on a file witness's start record, are the directories it watched.
+	// Only a start record's count.
+	Roots []string `json:"roots,omitempty"`
+	// Captures, on a start record, are the hooks that ran (CaptureExec,
+	// CaptureDelivery, CaptureFile, CaptureRow). A file that does not name a
+	// capture cannot prove an absence of what it would have seen, so every
+	// absence claim over a file reads this. Only a start record's count.
+	Captures []string `json:"captures,omitempty"`
+	// Coverage, on a stop record, says in one line what the capture might have
+	// missed even when healthy.
+	Coverage string `json:"coverage,omitempty"`
+	// SilentCloses, on a file witness's stop record, are the files opened for
+	// writing and closed with no write seen: no absence rests on them.
+	SilentCloses []string `json:"silent_closes,omitempty"`
+	// Symlinks, on a file witness's stop record, are the symlinks seen under
+	// the roots: a path crossing one is not covered.
+	Symlinks []string `json:"symlinks,omitempty"`
 }
+
+// Capture names, as a start record lists them.
+const (
+	CaptureExec     = "exec"
+	CaptureDelivery = "delivery"
+	CaptureFile     = "file"
+	CaptureRow      = "row"
+)
 
 // Record kinds.
 const (
@@ -47,16 +114,63 @@ const (
 	RecordStop  = "stop"
 )
 
+// EventRow is RowLine.Event. A line with an event field that is not a record is
+// a database witness's row line.
+const EventRow = "row"
+
+// RowLine is one line a database witness writes: one statement and what became
+// of it. Rows is -1 when the server gave no usable count. Unlike an exec line it
+// has no trace ID: it holds for every trace (Attribution "destination").
+type RowLine struct {
+	Time        time.Time `json:"time"`
+	Event       string    `json:"event"`
+	Engine      string    `json:"engine"`
+	Conn        int       `json:"conn"`
+	Dest        string    `json:"dest"`
+	Statement   string    `json:"statement"`
+	Verb        string    `json:"verb"`
+	Tables      []string  `json:"tables"`
+	Opaque      bool      `json:"opaque"`
+	Reason      string    `json:"reason,omitempty"`
+	Rows        int64     `json:"rows"`
+	Outcome     Outcome   `json:"outcome"`
+	Attribution string    `json:"attribution"`
+}
+
+// RowLineOf is e as a line of the witness file.
+func RowLineOf(e RowEvent) RowLine {
+	tables := e.Tables
+	if tables == nil {
+		tables = []string{} // the schema requires an array, never null
+	}
+	return RowLine{
+		Time: e.SeenAt, Event: EventRow, Engine: e.Engine, Conn: e.Conn, Dest: e.Dest.String(),
+		Statement: e.Statement, Verb: e.Verb, Tables: tables, Opaque: e.Opaque, Reason: e.Reason,
+		Rows: e.Rows, Outcome: e.Outcome, Attribution: string(e.Attribution),
+	}
+}
+
 // Log is a witness file read back: a Witness over what subpoena-witness
 // wrote, for tests that run the witness as a separate process.
 type Log struct {
-	lines  []Line
-	health error // the first capture fault in the file, or nil
+	lines      []Line
+	files      []FileLine
+	roots      []string
+	silent     []string
+	symlinks   []string
+	captures   []string
+	deliveries []DeliveryEvent
+	rows       []RowLine
+	coverage   string
+	health     error // the first capture fault in the file, or nil
 }
 
 var (
-	_ Witness        = (*Log)(nil)
-	_ HealthReporter = (*Log)(nil)
+	_ Witness         = (*Log)(nil)
+	_ FileWitness     = (*Log)(nil)
+	_ DeliveryWitness = (*Log)(nil)
+	_ DBWitness       = (*Log)(nil)
+	_ HealthReporter  = (*Log)(nil)
 )
 
 // ReadLog reads subpoena-witness JSON lines. Blank lines and unknown fields
@@ -99,6 +213,11 @@ func ReadLog(r io.Reader) (*Log, error) {
 				return nil, fmt.Errorf("witness: line %d: no time", n) //subpoena:enforcement
 			}
 			records++
+			l.silent = append(l.silent, rec.SilentCloses...)
+			l.symlinks = append(l.symlinks, rec.Symlinks...)
+			if rec.Coverage != "" {
+				l.coverage = rec.Coverage
+			}
 			switch rec.Record {
 			case RecordStart:
 				if open != 0 {
@@ -106,6 +225,8 @@ func ReadLog(r io.Reader) (*Log, error) {
 				}
 				open = n
 				windows++
+				l.captures = append(l.captures, rec.Captures...)
+				l.roots = append(l.roots, rec.Roots...)
 			case RecordStop:
 				switch {
 				case open == 0:
@@ -117,6 +238,53 @@ func ReadLog(r io.Reader) (*Log, error) {
 			default:
 				return nil, fmt.Errorf("witness: line %d: unknown record %q", n, rec.Record) //subpoena:enforcement
 			}
+			continue
+		}
+		if op, ok := keys["file_op"]; ok && string(op) != "null" {
+			var fl FileLine
+			if err := json.Unmarshal(b, &fl); err != nil {
+				return nil, fmt.Errorf("witness: line %d: %w", n, err)
+			}
+			if fl.Time.IsZero() {
+				return nil, fmt.Errorf("witness: line %d: no time", n) //subpoena:enforcement
+			}
+			if fl.Path == "" {
+				return nil, fmt.Errorf("witness: line %d: no path", n) //subpoena:enforcement
+			}
+			switch FileOp(fl.FileOp) {
+			case FileCreate, FileWrite, FileRename, FileUnlink:
+			default:
+				return nil, fmt.Errorf("witness: line %d: unknown file_op %q", n, fl.FileOp) //subpoena:enforcement
+			}
+			if open == 0 {
+				fault(fmt.Errorf("witness: line %d: a file event outside any capture window", n)) //subpoena:enforcement
+			}
+			l.files = append(l.files, fl)
+			continue
+		}
+		if op, ok := keys["delivery_op"]; ok && string(op) != "null" {
+			e, err := readDelivery(b)
+			if err != nil {
+				return nil, fmt.Errorf("witness: line %d: %w", n, err) //subpoena:enforcement
+			}
+			if open == 0 {
+				fault(fmt.Errorf("witness: line %d: a delivery outside any capture window", n)) //subpoena:enforcement
+			}
+			l.deliveries = append(l.deliveries, e)
+			continue
+		}
+		if ev, ok := keys["event"]; ok && string(ev) != "null" {
+			row, err := readRow(b, keys)
+			if err != nil {
+				return nil, fmt.Errorf("witness: line %d: %w", n, err) //subpoena:enforcement
+			}
+			if open == 0 {
+				fault(fmt.Errorf("witness: line %d: a row outside any capture window", n)) //subpoena:enforcement
+			}
+			if row.Outcome == OutcomeUnknown {
+				fault(fmt.Errorf("witness: line %d: a write whose outcome was not seen", n)) //subpoena:enforcement
+			}
+			l.rows = append(l.rows, row)
 			continue
 		}
 		var ln Line
@@ -150,10 +318,77 @@ func ReadLog(r io.Reader) (*Log, error) {
 	return l, nil
 }
 
-// knownKeys are the field names of Line and Record.
+// readDelivery reads a delivery line. A peer that does not parse is an error,
+// never an unknown peer: an empty one is how the witness says it could not tell.
+func readDelivery(b []byte) (DeliveryEvent, error) {
+	var d DeliveryLine
+	if err := json.Unmarshal(b, &d); err != nil {
+		return DeliveryEvent{}, err
+	}
+	if d.Time.IsZero() {
+		return DeliveryEvent{}, errors.New("no time")
+	}
+	switch Op(d.DeliveryOp) {
+	case OpDeliver, OpSendmsg:
+	default:
+		return DeliveryEvent{}, fmt.Errorf("unknown delivery_op %q", d.DeliveryOp)
+	}
+	e := DeliveryEvent{
+		PID: d.PID, Comm: d.Comm, Op: Op(d.DeliveryOp), Protocol: d.Protocol, Bytes: d.Bytes, Broadcast: d.Broadcast, BroadcastRoute: d.BroadcastRoute,
+		Cgroup: d.Cgroup, CgroupID: d.CgroupID, TraceID: d.TraceID, Attribution: Attribution(d.Attribution), SeenAt: d.Time,
+	}
+	var err error
+	if d.Peer != "" {
+		if e.Peer, err = netip.ParseAddrPort(d.Peer); err != nil {
+			return DeliveryEvent{}, fmt.Errorf("peer: %w", err)
+		}
+		if e.Peer.Addr().Zone() != "" {
+			return DeliveryEvent{}, fmt.Errorf("peer: %q has a zone, which the kernel never reports", d.Peer)
+		}
+		e.Peer = netip.AddrPortFrom(e.Peer.Addr().Unmap(), e.Peer.Port())
+	}
+	if d.Local != "" {
+		if e.Local, err = netip.ParseAddrPort(d.Local); err != nil {
+			return DeliveryEvent{}, fmt.Errorf("local: %w", err)
+		}
+		if e.Local.Addr().Zone() != "" {
+			return DeliveryEvent{}, fmt.Errorf("local: %q has a zone, which the kernel never reports", d.Local)
+		}
+	}
+	return e, nil
+}
+
+// readRow decodes a row line. A row it cannot read could be a write, so anything
+// out of shape is an error, as for an exec, and never a skip.
+//
+//subpoena:enforcement_point
+func readRow(b []byte, keys map[string]json.RawMessage) (RowLine, error) {
+	var row RowLine
+	if err := json.Unmarshal(b, &row); err != nil {
+		return row, err
+	}
+	// A missing count would decode as zero rows, which is no effect at all.
+	if rows, ok := keys["rows"]; !ok || string(rows) == "null" || row.Rows < RowsUnknown {
+		return row, errors.New("no usable rows field") //subpoena:enforcement
+	}
+	if row.Event != EventRow {
+		return row, fmt.Errorf("unknown event %q", row.Event) //subpoena:enforcement
+	}
+	if row.Time.IsZero() {
+		return row, errors.New("no time") //subpoena:enforcement
+	}
+	switch row.Outcome {
+	case OutcomeRead, OutcomeCommitted, OutcomeRolledBack, OutcomeFailed, OutcomeUnknown:
+	default:
+		return row, fmt.Errorf("unknown outcome %q", row.Outcome) //subpoena:enforcement
+	}
+	return row, nil
+}
+
+// knownKeys are the field names of Line, Record, FileLine, DeliveryLine and RowLine.
 var knownKeys = func() []string {
 	var out []string
-	for _, v := range []any{Line{}, Record{}} {
+	for _, v := range []any{Line{}, Record{}, FileLine{}, DeliveryLine{}, RowLine{}} {
 		t := reflect.TypeOf(v)
 		for i := 0; i < t.NumField(); i++ {
 			name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
@@ -193,7 +428,7 @@ func (l *Log) Health() error {
 	return nil
 }
 
-// Len returns the number of lines read.
+// Len returns the number of exec lines read.
 func (l *Log) Len() int { return len(l.lines) }
 
 // Lines returns the lines read, in file order.
@@ -229,3 +464,100 @@ func (l *Log) Spawned(traceID string) []ProcessEvent {
 	}
 	return out
 }
+
+// Wrote returns the file changes for traceID: lines naming it, and every line
+// that names no trace, which a tier-1 witness's never do.
+func (l *Log) Wrote(traceID string) []FileEvent {
+	var out []FileEvent
+	for _, f := range l.files {
+		if f.TraceID != "" && f.TraceID != traceID {
+			continue
+		}
+		out = append(out, FileEvent{
+			Op: FileOp(f.FileOp), Path: f.Path, Root: f.Root, IsDir: f.IsDir, Source: FileSource(f.Source),
+			Rename: f.Rename, Cookie: f.Cookie, TraceID: f.TraceID, Attribution: Attribution(f.Attribution), SeenAt: f.Time,
+		})
+	}
+	return out
+}
+
+// Committed returns every committed row line, for every trace: a database witness
+// attributes by destination, and a row line has no trace ID.
+func (l *Log) Committed(traceID string) []RowEvent {
+	var out []RowEvent
+	for _, r := range l.rows {
+		if r.Outcome != OutcomeCommitted {
+			continue
+		}
+		dest, _ := netip.ParseAddrPort(r.Dest)
+		out = append(out, RowEvent{
+			Engine: r.Engine, Conn: r.Conn, Dest: dest, Statement: r.Statement, Verb: r.Verb,
+			Tables: r.Tables, Opaque: r.Opaque, Reason: r.Reason, Rows: r.Rows, Outcome: r.Outcome,
+			Attribution: Attribution(r.Attribution), SeenAt: r.Time,
+		})
+	}
+	return out
+}
+
+// Delivered returns every send whose trace ID, read by the kernel side from its
+// cgroup, is traceID. Nothing the application controls is consulted. The empty
+// trace ID matches nothing.
+func (l *Log) Delivered(traceID string) []DeliveryEvent {
+	if traceID == "" {
+		return nil
+	}
+	var out []DeliveryEvent
+	for _, e := range l.deliveries {
+		if e.TraceID == traceID {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// CapturedDeliveries reports whether the file's start record says the delivery
+// hook ran. Without it the file has no delivery lines because nothing looked,
+// which says nothing about sends: harness.NoDelivery is then Inconclusive.
+func (l *Log) CapturedDeliveries() bool {
+	return slices.Contains(l.captures, CaptureDelivery)
+}
+
+// CapturedExecs reports whether the file's start record says the exec hook ran.
+// Without it the file has no exec lines because nothing looked: harness.NoSpawn
+// is then Inconclusive.
+func (l *Log) CapturedExecs() bool {
+	return slices.Contains(l.captures, CaptureExec)
+}
+
+// CapturedFiles reports whether the file's start record says a file witness ran.
+// Without it harness.NoWrite and NoCommit are Inconclusive.
+func (l *Log) CapturedFiles() bool {
+	return slices.Contains(l.captures, CaptureFile)
+}
+
+// CapturedRows reports whether the file's start record says a database witness
+// ran. Without it harness.NoRow is Inconclusive.
+func (l *Log) CapturedRows() bool {
+	return slices.Contains(l.captures, CaptureRow)
+}
+
+// Covers reports whether path lies under a root the file's start record names,
+// and crosses no symlink its stop record names.
+func (l *Log) Covers(path string) bool {
+	return filepath.IsAbs(path) && slices.ContainsFunc(l.roots, func(r string) bool { return pathWithin(path, r) }) &&
+		!crossesSymlink(path, l.symlinks)
+}
+
+// Roots are the directories the file's start record names. An exec witness's
+// file names none.
+func (l *Log) Roots() []string { return slices.Clone(l.roots) }
+
+// SilentCloses are the files the stop record names as closed with no write seen.
+func (l *Log) SilentCloses() []string { return slices.Clone(l.silent) }
+
+// Coverage is the stop record's account of what the capture might have
+// missed, or "" if it gives none.
+func (l *Log) Coverage() string { return l.coverage }
+
+// Rows returns the row lines read, in file order, whatever their outcome.
+func (l *Log) Rows() []RowLine { return append([]RowLine(nil), l.rows...) }

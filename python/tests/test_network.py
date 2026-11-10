@@ -5,10 +5,12 @@ require_no_dial, check_no_dial and dial_to."""
 import socket
 
 import pytest
+import yaml
 
+from conftest import CONFORMANCE
 from subpoena import witness
 from subpoena.harness import (Verdict, check_no_dial, check_no_spawn, dial_to, no_dial, require_no_dial)
-from subpoena.witness import BY_DESTINATION, OP_CONNECT, AddrPort, NetworkEvent, Sinkhole
+from subpoena.witness import BY_DESTINATION, MARK_HEADER, OP_CONNECT, AddrPort, NetworkEvent, Sinkhole
 
 
 def dial(s, n=1):
@@ -113,8 +115,9 @@ def test_no_dial_needs_healthy_capture(w, match, want):
     if got is Verdict.PASS:
         require_no_dial(w, "trace", match)
     else:
-        assert msg.startswith("witness: no dial for trace: ")
-        with pytest.raises(AssertionError, match="^witness: no dial for trace: "):
+        tag = "inconclusive" if got is Verdict.INCONCLUSIVE else "witness"
+        assert msg.startswith(f"{tag}: no dial for trace: ")
+        with pytest.raises(AssertionError, match=f"^{tag}: no dial for trace: "):
             require_no_dial(w, "trace", match)
 
 
@@ -223,3 +226,96 @@ def test_a_mapped_filter_still_sees_a_real_connection():
         assert verdict is Verdict.FAIL
         with pytest.raises(AssertionError):
             require_no_dial(s, "trace", dial_to(mapped))
+
+
+# --- answering Sinkhole: an upstream that must answer, with marks ---
+
+def _get(s, mark=""):
+    import http.client
+    c = http.client.HTTPConnection(str(s.addr.addr), s.addr.port, timeout=5)
+    c.request("POST", "/secret?x=1", body=b"a body", headers={MARK_HEADER: mark} if mark else {})
+    r = c.getresponse()
+    out = r.status, r.read()
+    c.close()
+    return out
+
+
+def test_answering_sinkhole_answers_and_records_the_request():
+    s = Sinkhole(answer=True)
+    assert _get(s, "a") == (200, b"")
+    assert s.stop() is None and s.health() is None
+    (e,) = s.marked("a")
+    assert e.request == "POST /secret?x=1 HTTP/1.1"
+    assert e.attribution == BY_DESTINATION
+    assert e.headers[MARK_HEADER.lower()] == "a"
+    assert "secret" not in repr(e)
+
+
+def test_a_mark_hides_no_arrival():
+    s = Sinkhole(answer=True)
+    for mark in ("a", "b", ""):
+        _get(s, mark)
+    s.stop()
+    assert len(s.marked("a")) == 1
+    assert len(s.dialed("c")) == 3
+
+
+def test_a_client_that_keeps_sending_does_not_hold_stop():
+    import socket
+    import time
+    s = Sinkhole(answer=True)
+    c = socket.create_connection((str(s.addr.addr), s.addr.port))
+    c.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    done = time.monotonic() + 4
+    try:
+        while time.monotonic() < 1 + (done - 4):
+            c.sendall(b"x")
+            time.sleep(0.05)
+    except OSError:
+        pass
+    start = time.monotonic()
+    s.stop()
+    c.close()
+    assert time.monotonic() - start < 2.5
+
+
+def test_an_arrival_that_is_not_http_still_counts():
+    import socket
+    s = Sinkhole(answer=True)
+    c = socket.create_connection((str(s.addr.addr), s.addr.port))
+    c.sendall(b"not http\r\n\r\n")
+    c.close()
+    assert s.stop() is None
+    (e,) = s.dialed("any")
+    assert e.request == "" and e.attribution == BY_DESTINATION
+
+
+# Review 6, finding 14, and Review 7, finding 9: the same bytes read the same in
+# both languages, from one table (pkg/witness/sinkhole_test.go reads it too). Only
+# marked() and the answer differ by request: dialed() sees every arrival.
+SINKHOLE = yaml.safe_load((CONFORMANCE / "sinkhole.yaml").read_text())
+
+
+def test_the_sinkhole_cases_are_there():
+    assert len(SINKHOLE["cases"]) >= 60
+
+
+@pytest.mark.parametrize("case", SINKHOLE["cases"], ids=[c["name"] for c in SINKHOLE["cases"]])
+def test_marked_reads_a_request_as_go_does(case):
+    raw = case["request"].replace("@FILL@", "y" * case.get("fill", 0)).encode("latin-1")
+    s = Sinkhole(answer=True)
+    c = socket.create_connection((str(s.addr.addr), s.addr.port), timeout=5)
+    c.sendall(raw)
+    c.shutdown(socket.SHUT_WR)
+    reply = b""
+    while True:
+        chunk = c.recv(4096)
+        if not chunk:
+            break
+        reply += chunk
+    c.close()
+    s.stop()
+    assert bool(reply) == case["answered"], reply
+    for mark in SINKHOLE["probes"]:
+        assert len(s.marked(mark)) == (1 if mark in case["marks"] else 0), mark
+    assert len(s.dialed("any")) == 1

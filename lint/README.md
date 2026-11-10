@@ -20,7 +20,7 @@ Exit status: 0 clean, 1 findings, 2 usage or load error. The registry package
 | --- | --- |
 | `unknown-telemetry` | A string constant (literal, local identifier, imported constant, or folded expression) passed as the span name (`x.Start(ctx, "...")`, `SetName("...")`) or as an attribute key (`attribute.String("...", v)` and the other typed constructors) whose value is not in the registry, or a `semconv.X` selector where `X` does not exist. A literal that equals a registry value is accepted; prefer the constant. |
 | `no-trace-assertion` | A `_test.go` file that defines tests but never calls `Collect()`. Files with no `Test`/`Benchmark`/`Fuzz`/`Example` function (helpers only) are exempt, and so are files marked `//subpoena:pure_logic` (below). A `pure_logic` file that imports telemetry is flagged instead. |
-| `unwitnessed-enforcement` | A function whose doc comment carries `//subpoena:enforcement_point` when no `_test.go` file in the tree asks a Witness: `Spawned` or `Dialed`, or the harness checks `NoSpawn`, `RequireNoSpawn`, `CheckNoSpawn`, `WatchSpawns`, `NoDial`, `RequireNoDial` and `CheckNoDial`. |
+| `unwitnessed-enforcement` | A function whose doc comment carries `//subpoena:enforcement_point` when no `_test.go` file in the tree asks a Witness: `Spawned`, `Dialed`, `Wrote`, `Delivered` or `Committed`, or the harness checks `NoSpawn`, `RequireNoSpawn`, `CheckNoSpawn`, `WatchSpawns`, `NoDial`, `RequireNoDial`, `CheckNoDial`, `NoWrite`, `RequireNoWrite`, `CheckNoWrite`, `WatchWrites`, `NoCommit`, `RequireNoCommit`, `CheckNoCommit`, `NoDelivery`, `RequireNoDelivery`, `CheckNoDelivery`, `WatchDeliveries`, `NoRow`, `RequireNoRow`, `CheckNoRow` and `WatchRows`. |
 | `unguarded-absence` | A `RequireAbsent(...)` or `.Absent(...)` call with no `Collect()` call earlier in the same top-level function. |
 | `missing-provenance` | A `_test.go` file without `//subpoena:spec_derived` or `//subpoena:impl_derived` above the package clause. |
 | `orphan-invariant` | A TraceQL string literal passed to a harness query or assert function in a `_test.go` file (`RequireAbsent`/`RequireExists` third argument; `Absent`, `Exists`, `Query` first argument) that, trimmed, does not byte-match a file in `invariants/`. Reported at the literal's `file:line`. |
@@ -98,10 +98,14 @@ and queries assembled from constants through variables.
 Calls in rules 2 to 4 are resolved by type. The targets are loaded with the go
 command, tests included, and a `Collect`, `RequireAbsent` or `Absent` call
 counts only if it resolves to a function declared in a package whose path ends
-in `/pkg/harness`. `Spawned` and `Dialed` count only if they resolve to
+in `/pkg/harness`. `Spawned`, `Dialed`, `Wrote`, `Delivered` and `Committed` count only if they resolve to
 `/pkg/witness` or a package below it (such as `execbpf`). The checks
 `NoSpawn`, `RequireNoSpawn`, `CheckNoSpawn`, `WatchSpawns`, `NoDial`,
-`RequireNoDial` and `CheckNoDial` count only if they resolve to the harness. A renamed import still counts. A method of the same
+`RequireNoDial`, `CheckNoDial`, `NoWrite`, `RequireNoWrite`, `CheckNoWrite`,
+`WatchWrites`, `NoCommit`, `RequireNoCommit`, `CheckNoCommit`, `NoDelivery`,
+`RequireNoDelivery`, `CheckNoDelivery`, `WatchDeliveries`, `NoRow`,
+`RequireNoRow`, `CheckNoRow` and `WatchRows` count only if
+they resolve to the harness. A renamed import still counts. A method of the same
 name on another type, such as a metrics `Collect`, does not.
 
 A test helper may wrap `Collect`, for example to close the system and stop
@@ -148,8 +152,8 @@ func (h *rig) Collect(t *testing.T) *harness.Trace {
 Known imprecision: some files can't be type-checked. Examples are a target
 outside any module, a nested module, or a file excluded by build constraints.
 For those files the rules fall back to matching by name: `Collect`,
-`Spawned` and `Dialed` count when the file imports the package, and the
-absence calls count by name alone. A call that doesn't compile is matched the
+`Spawned`, `Dialed`, `Wrote`, `Delivered` and `Committed` count when the file imports the package, and
+the absence calls count by name alone. A call that doesn't compile is matched the
 same way. When this happens, `subpoena-lint` prints how many files it matched
 by name to stderr. Rule 3 is tree-wide, not per-function. These limits are
 listed here so nobody mistakes them for guarantees. Cross-examination

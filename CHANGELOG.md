@@ -1,7 +1,451 @@
 # Changelog
 
-## Unreleased
+## v0.1.0-alpha.5 and v0.1.0-alpha.6 (2026-11-07)
 
+Tagged `v0.1.0-alpha.5` and `v0.1.0-alpha.6`, on the same commit: the fixes and the new witnesses
+landed interleaved, so no earlier commit holds the fixes alone. No Python release goes with these
+tags. PyPI stays at 0.1.0a4 until a `python/` tag is cut.
+
+What is new:
+
+- **Three witnesses:** file writes, database commits (Postgres and MySQL, experimental) and
+  delivery on an inbound socket.
+- **A kill has to hold:** it reruns on the whole suite, with and without the mutant, and a Go kill
+  needs a failed test that links the mutated package.
+- **Sinkhole** can answer 200, and `Marked` tells one arrival from another.
+- **Cross output** prints upstream line numbers and counts markers against mutants.
+- **Python verdicts:** `--test-helper` declares test code, `Mock.assert_*` under pytest-mock is a
+  kill, and production code run by `--doctest-modules` no longer counts as test code.
+
+Stated limits:
+
+- Forged runner output can fool a plain kill. Only a verified witness mark under
+  `--require-witness` holds against it (docs/architecture.md, "What forged output can do").
+- A witness mark does not hold against code that reads the key and signs its own mark. Do not rely
+  on one against a suite written to cheat.
+- A Pass from the database witness is experimental, and its known gaps are listed in its entry below.
+
+- **A poll inside an exec waits for the arguments.** `ProcWitness` could land after an exec set the
+  new task name and before the arguments existed, and it kept that name as an unidentified event for
+  good. Under an `Allowed` list that went red with nothing wrong, in about 2 of 100 batches of the
+  gateway suite under load. Such a poll now re-reads the process for up to 5ms, and takes the line if
+  the name, binary and cgroup still match. If they do not, or the wait runs out, the name stays and
+  the check goes red as before. A read that pairs the old name with the new line can still go red.
+- **A run that cost a kill says which test failed in it.** An unconfirmed kill showed the last 20
+  lines of the red run and the mutant run's failing tests. In a long suite those lines are the slowest
+  tests' passes, so the test that failed without the mutant could not be seen. Where that run has a
+  failure to name, the output now starts with its failed tests and first failure. What counts as unconfirmed is unchanged.
+- **A panic testify's `suite` recovered is a crash.** It reports one through `t.Errorf`, with no
+  line at column 0, so it read as a plain kill. `test panicked:` after a file and line, in a test
+  that did not pass, now counts as a crash, as Ginkgo's `[PANICKED]` does. New cost: a failed test
+  that logs those words reads crashed.
+- **A recovered panic in a parallel test is a crash.** Package testing's own frames can put the
+  `panic:` line of one parallel test on another that passed, where it read as a log line and the
+  test's plain failure as a kill, with nothing forged. A crash line on a passing test now counts if
+  that test ran beside one that did not pass, read from each test's events from `run`, or `cont` if
+  it paused, to its end, whatever slashes the subtests' names hold. That covers subtests started from
+  goroutines, with three exceptions that stay plain kills and are stated in docs/architecture.md: one whose name goes on from a
+  sibling's, which passes and ends while that sibling runs, one whose parent carries on and recovers the panic in its own
+  body, and one that works and then calls `t.Parallel`. Sequential suites
+  keep the log-line rule, unless a `TestMain` that calls `m.Run` again repeats their names. New cost: a passing test that logs such a line beside a real
+  failure reads crashed, and the run fails.
+- **A quiet first `m.Run` no longer reads survived.** A `TestMain` that threw away a first
+  `m.Run`'s output left no fail event, and under `-test.failfast` the second `m.Run` ran nothing, so
+  a mutant the suite catches read as a survivor. A green first run with a package that has tests and
+  ran none now goes again without that flag, as one with a fail event already did. A target with no such
+  package takes no extra run. New cost: any package under the target that passes and shows nothing of `m.Run` on a green run, including a `TestMain` that hides
+  `m.Run`'s output and calls it again only on failure and a `TestMain` gate that exits without `m.Run`, costs every
+  survivor of the target one more suite run and one more first try for a flake, so a flake can still turn a true survivor there into a kill, exit 0.
+- **The reruns without the mutant are no longer blind to a second `m.Run`.** They kept
+  `-test.failfast`, under which a `TestMain` that calls `m.Run` again exits 0 after a real failure,
+  so a test that fails with no mutant at all read as a kill, witness kills included. They now run
+  without that flag, and such a suite reads unconfirmed. No extra runs: a rerun that passes runs the
+  same tests, and one that fails runs the rest of its package before the mutant ends.
+- **A witness mark is good for one run of one mutant.** The key lasted all of cross's run, so a
+  signed line kept from one mutant's run and printed in another's read as a witness kill, under
+  `--require-witness`, on a mutant no witness saw. Each `go test` command now signs with its own
+  key, and such a line reads as self-report. So does one kept from a mutant's first run and printed
+  on its repeat. No extra runs.
+- **`make test-db` clears up after a killed run.** A killed test binary left its `--rm` database
+  containers running, and they held the host's AIO slots until MySQL could not start. Each
+  container now names its owner in labels, and a run removes those whose owner is gone on this
+  host, leaving any other run's alone.
+- **`subpoena-witness` stops while waiting on a FIFO with no reader.** The open came before the
+  stall guard, so SIGTERM did nothing and only SIGKILL ended it. It now exits 1, with no start
+  record and no ready file, as it did after SIGKILL.
+- **A dangling link cannot put `-out` or `-ready` under a watched root.** `EvalSymlinks` refuses a
+  link to a file not made yet, and the check then passed. Links are now followed one at a time.
+- **A `TestMain` that retries and shows its output no longer hides a kill.** `-test.failfast` made a
+  second `m.Run` a run of nothing that exits 0, so a suite that caught the mutant read as survived.
+  A green run with a test's fail event in it now goes again without that flag. Red still has to
+  hold as a kill, and a retry that truly passes is still survived.
+- **A failed `Example` is a kill.** It has a fail event and no `file:line`, so it read as a crash.
+  Package testing's own `got:` report now counts as its failure message, as `other` evidence.
+- **A printed log line after open text takes no witness kill.** A line such as
+  `INFO    server.go:42: handling request` has the shape of a failure after text printed with
+  no newline, and it read as the test's first failure, pushing a witness kill down to
+  self-report. Such a line now counts only in a test with no other failure message, or when it
+  carries the harness's mark.
+- **A printed pass no longer turns a witness kill into unconfirmed.** Code under test could print
+  go test's framed `--- PASS:` line beside its real failure, and the test then read as passed. A
+  witness failure with the run's mark now outlives a pass, unless another test started between
+  the pass and the fail. A printed pass still costs a plain kill, and one in a test that then runs
+  beside another costs a witness kill too: that reads unconfirmed, and the run stays red.
+- **A fail printed after a real pass is no kill.** Every test passed, `TestMain` exited 1 on the
+  mutant, and text printed after the last test read as that test's failure. A pass ends a test,
+  so only a witness failure's mark counts after one. The same goes for a fail printed for a test
+  that never ran, in a package whose `m.Run` said `PASS`. A suite that hides that `PASS` by
+  swapping `os.Stdout` around `m.Run` is not caught: such a fail still reads as a plain kill, as
+  no output can show it, and only `--require-witness` stops it.
+- **A second `m.Run` that runs nothing does not cost a real kill.** Under `-test.failfast` it says
+  `PASS` after a real failure, so the failure was dropped and the run read unconfirmed. Such a run
+  now takes its failed tests from a run without that flag. Three shapes still lose the kill, loudly,
+  reading unconfirmed: a second `m.Run` that truly passes; a failure only in the second `m.Run`,
+  a signed witness failure included; and two `m.Run` calls with a later test that panics on the mutant.
+- **Under `--require-witness`, a crash line is a crash in any test.** A framed `=== NAME` line could
+  move a recovered panic's line onto a test that passed, and a witness failure then read as a
+  witness kill. A passing test that prints such a line beside a witness failure now reads crashed.
+  Without the flag the moved line is still a log line, and that plain kill stands: a plain kill
+  assumes the suite is not forging test-runner output. See `docs/architecture.md`.
+- **A printed pass does not hide a crash line.** A test that recovers a panic stays a crash, as
+  Ginkgo's does, and a printed pass switched that off for a test that really failed. A crash line
+  now counts in any test with a fail event, whatever pass sits beside it.
+- **A fail printed in a green package is no failure.** A package counts only if its binary exited
+  1, so such a line no longer carries a kill for a run that is red because another package crashed.
+- **A package that hangs no longer costs another package's kill.** Every package runs now, and a
+  timed-out run went straight to `enforcement-mutant-timeout`, with a clean failure in the
+  output. A run with a clean failure in a package that finished now goes to the repeat, and a
+  hang with none stays a timeout. If the repeat hangs too, each package with a failed test goes
+  alone, so a hang in another package costs nothing, even one its `TestMain` reaches or one in a
+  test of the same name. A hang in the failed package itself can still cost the kill: that reads
+  `enforcement-mutant-unconfirmed`, and cross says it hung, not that it was a flake.
+- **A kill that needs an earlier test survives a repeat that stops short.** When the repeat
+  crashed or hung, cross ran the first run's failed tests alone, and a test that needs what ran
+  before it then passed, so a real kill read as unconfirmed. The first run's own command now
+  goes first, then that command in each failed package alone, and the failed tests alone only
+  if those stop short too.
+- **A routing header on an IPv6 flow label gives an unknown peer.** It was on neither the send
+  nor the socket's options, so a packet could reach a hop no rule saw. The delivery hook now
+  walks the flow labels the socket holds, however a send names one.
+- **A broadcast on a connected socket is read from its route.** The kernel checks `SO_BROADCAST`
+  when it finds a route, and a connected UDP socket keeps it, so an app could set the option,
+  connect to a broadcast address, clear it and send, with `NoDelivery` Pass. The delivery hook
+  now reads the route the socket holds (`broadcast_route` on a line, `BroadcastRoute`), which
+  also shows a broadcast address set by hand on a connected send. On a send that names such an
+  address it stays unknown, and `witnesses/README.md` says so.
+- **`WatchRows` needs a row capture,** as `NoRow` and every other `Watch` check do. On a witness
+  file that names none it is Inconclusive, and a refused write in such a file still fails.
+- **The database witness goes by what the server shows.** A `SET` of a setting that
+  changes lexing or lookup counts in any spelling, and the session survives only a
+  plain value on an allow-list; the startup packet and `options` go by the same rule.
+  A keyword is excused only in its exact position, and bare `JOIN (`, alias column
+  lists, `WITH t(a) AS`, `INSERT INTO o AS u (id)`, `LIKE (` and `trim(both` no longer
+  read as calls. On MySQL a write open at `COM_QUIT` or a session reset is `unknown` and
+  a fault, even on InnoDB, where it was `rolled_back`; a failed statement commits unless
+  its verb is known not to; savepoint names fold as the server folds them; and `LOAD
+  DATA ... SET` is checked. Any opaque statement makes Postgres prepared names
+  opaque. `INHERIT`, `SET SCHEMA`, `ATTACH PARTITION`, `INHERITS` and `PARTITION OF` are
+  opaque, and `Missed` now says that a claim on a table is only as good as the name in
+  the statement: updatable views, partitions and inheritance reach a table it does not name.
+- **Cross's verdicts no longer turn on which package finished first.** `-require-witness`
+  reads evidence by package, and a test of the first run that gives witness evidence on the
+  repeat is enough, wherever it ran. A package that dies on the repeat, or a later crash under
+  `-shuffle`, no longer loses a kill: the first run's failed tests run again alone. `go test`'s
+  own `-failfast`, in `GOFLAGS` too, no longer skips packages or stops the repeat, and
+  `-evidence-dir` keeps the repeat's output. A printed open line before a test's failure is
+  no crash. A `fail` event counts only for a test that ran and did not pass, so a framed line
+  in a test's output cannot name a test that passed; `docs/architecture.md` states what is left.
+- **Markers.** A marker in the wrong case or with two letters swapped is an error, in Go and
+  Python. On a line of its own, `// subpoena: enforcement points are listed` is prose again, and
+  the error's hint no longer speaks only of a line of code.
+- **Python cross keeps its verdicts when a detached writer holds its directory:** cleanup is
+  bounded as Go's is, and names a tree it could not remove.
+- **The Python Sinkhole reads a request as Go's does,** including what `http.ReadRequest` refuses
+  and marks in UTF-8, from one table, `conformance/sinkhole.yaml`.
+
+- **A witness file must name the capture a claim needs.** Every start record now
+  lists its capture, with `file` and `row` beside `exec` and `delivery`, and every
+  absence claim reads it in Go and Python: a file that does not name the capture is
+  Inconclusive, however healthy. `subpoena-witness -file-root`, `FileWatch.WriteLog`
+  and `subpoena-witness db` write the new names. **A file from before this change, or
+  one written by hand with no `captures`, no longer passes.** Python gains `no_row`.
+  Only a start record's `roots` count.
+- **`execbpf` has `netbpf`'s checks.** A recursion miss, a task leaving its session and
+  a path too long to walk fail `Health`, and a session past 8 levels is attributed
+  where it was missed. `Start` refuses a root no cgroup name can match.
+- **The delivery witness reports a source route and `SO_BROADCAST`.** A send with an IP
+  source route adds its first hop as a peer on port 0, or an unknown peer if the
+  route cannot be read. A delivery line gains `broadcast`, and `NoDelivery`, `DeliveryTo`
+  and `Never` are Inconclusive on a broadcast or multicast send on the rule's port.
+  A cgroup elsewhere that shares the root's name no longer fails `Health`.
+- **`subpoena-witness -file-root` no longer hangs on a stalled output**, and refuses
+  `-out` or `-ready` under a watched root.
+- **The file witness no longer overstates.** A SQLite table claim is Inconclusive
+  for a virtual table, whose rows are on no page of its own, and the reader now
+  names any table whose schema row changed or whose pages changed owner, so a
+  drop, rename, swap or `ADD COLUMN` is Fail where it was Pass. `WatchSQLite`
+  resolves symlinks, as SQLite does, and `Path` is the real file. In rollback mode a
+  database written with no net change is `unknown`, so a commit undone by
+  restoring the file is Inconclusive, and so now is a spilled rollback. Linux
+  native AIO joins `mmap` as a write inotify cannot see, and is documented with
+  it: `Stop` now compares every file with the capture's start and reports a
+  difference no event explains (`Source` `stat`), which also finds a write through
+  a hard link, and reads a `chmod` as a write. `NoWrite` is Inconclusive about a
+  silent close, a path crossing a symlink, and on a witness with no roots.
+  `FileWitness` gains `Roots` and `SilentCloses`. `NewFileWatch` refuses one
+  directory under two spellings. `Stop` and memory are bounded with writers still
+  going. `subpoena-witness -file-root` writes its start record at attach, so a
+  killed run cannot read healthy.
+- **A kill's repeat is the whole command, and asks more.** Cross's repeat with the
+  mutant runs the mutant run's whole command without `-failfast`, so `-shuffle` and a
+  failure that shows in another package no longer lose a kill. A test of the first run
+  must fail again, read from `fail` events and not printed text, and under
+  `--require-witness` its first evidence must be witness again, or the kill is
+  `killed-by-self-report`. A misspelt marker after upstream's comment is an error,
+  a block comment or string that shows a marker no longer counts as one, and a
+  tree moved aside goes with the run. `Sinkhole.Marked` reads a request the same in
+  Go and Python.
+
+- **A broker's delivery has a witness.** gmqtt had none: a broker writes to a
+  subscriber on a socket it accepted, and `Sinkhole` and `netbpf` see outbound
+  dials only. `netbpf` has a second hook on `security_socket_sendmsg` that reports
+  sends on connected inet sockets from session cgroups, with the peer read from
+  the socket. `witness.DeliveryWitness` (`Delivered`), `harness.NoDelivery`,
+  `RequireNoDelivery`, `CheckNoDelivery`, `DeliveryTo` and `WatchDeliveries` with a
+  `DeliveryRule` let a test say nothing went to one peer while the broker's acks
+  to another go on; the lint counts them. It is tier 2 only: there is no honest
+  tier 1. It sees that bytes went, not what they were, and the sender must be in
+  the session cgroup, so a broker inside the test binary is not seen.
+  `witnesses/README.md` has what else it misses. `subpoena-witness -deliveries`
+  writes delivery lines, and Python reads them (`Log.delivered`, `no_delivery`).
+- **The delivery witness no longer passes on what it did not see.** A witness
+  file now says which captures ran (`captures` on the start record), and
+  `NoDelivery` over a file without `delivery` is Inconclusive in Go and Python,
+  so files written before this change are too. `netbpf` `Health` fails on kernel
+  recursion misses, which `preempt=full` makes common, for `Delivered` and
+  `Dialed`; on a task leaving its session by a move or `CLONE_INTO_CGROUP`; on a
+  cgroup path too long to walk; and on a send under the session root in no session.
+  Attribution now walks to the top of the hierarchy, so a session can nest past 8
+  levels without going unseen, and a cgroup it names like another session cannot
+  take the charge; `SessionTrace` in Go and Python counts only the first root
+  element in a path. A raw IPv6 name with family 0 is reported, a datagram or raw
+  send is charged to its name and not the socket's peer, and a name no hook can
+  read is an unknown peer. `DeliveryTo`, `Never` and `DialTo` ignore a zone. `Start`
+  refuses a root of `..`. `subpoena-witness` gives up on a stalled output when
+  stopping, and both readers refuse a zone, a bracketed IPv4 address and a trailing
+  newline in a peer.
+- **A failed `netbpf` start says why.** `Health` already failed, as "capture has
+  not stopped"; it now keeps the load or attach error. `Start` also refuses a
+  cgroup root name the kernel can never match, which read as silence.
+- **The database witness trusts less.** It treats a call as opaque unless it is an
+  exact name on a short per-engine list, and on Postgres the same goes for
+  operators outside a built-in list, casts to unknown types and fields of an
+  expression. `EXPLAIN`, `CREATE TABLE ... AS`, `ALTER TABLE` expressions and `COPY ...
+  PROGRAM` are read for what they run. A session whose lexing or function lookup it
+  can't follow is opaque for good. A `CALL` or `DO` that failed where it could have
+  committed is `unknown` and Inconclusive. Names take their SQL only when the server
+  confirms the `Parse`, `PREPARE TRANSACTION` settles at its tag, and Postgres names
+  are cut to 63 bytes. A view over a writing function, field notation (`o.w` calling
+  `w(o)`) and an overload of a listed name stay out of reach: `witnesses/README.md`.
+- **A database witness, for Postgres and MySQL, is experimental.** A Pass from it can
+  be false. It works out what SQL does from the statement text, and known statement
+  shapes get past that. Do not rely on its results as proof; they do not count as
+  witness evidence for any published claim yet. As of the last review it has ten open
+  problems. Postgres false Passes: a function after a comma in `FROM` with a column list;
+  a quoted type name on a typed string; `UPDATE pg_settings` changing the session; a
+  column named `end` inside a `CASE`; a space in `$1 .field`; a domain reached by
+  `ALTER TABLE`. MySQL false Passes: `SET CHAR SET`; a `MERGE` table. Both engines: a
+  setting changed inside an opaque statement before `Mark`. One false Fail on Postgres:
+  `LIKE` after a column with a keyword-like name such as `type`. The list is in
+  `witnesses/README.md`.
+  `pkg/witness/dbproxy` is a
+  wire-protocol proxy: point the application's DSN at its loopback listener and
+  it forwards to the real server, logging statements and commits per connection.
+  `harness.RequireNoRow(t, w, traceID, table)`, `NoRow`, `CheckNoRow` and
+  `WatchRows` ask it, and the lint counts them with no new rule. It reports what
+  the server committed: a rolled-back write is not an effect, an autocommit write
+  is. A statement it cannot parse counts against every table, and an unreadable
+  frame, a transaction dropped open, a connection it could not proxy and a client
+  that insists on TLS are Inconclusive. Attribution is by destination, as with
+  Sinkhole. It has no SQLite or MongoDB support. Python reads its row lines
+  (`Log.committed`), from the file `subpoena-witness db` writes. Running it stays
+  Go-only. The module now requires pgx and go-sql-driver/mysql, for its
+  integration tests only.
+- **A Go kill needs a failed test that links the mutant.** go-kratos/gateway got a
+  kill from a test whose binary did not contain the mutated package. Cross checks
+  with `go list -deps -test`, and such a kill is `unconfirmed`. A suite that runs
+  the code as a separate program links none of it, so its kills are lost too.
+- **Python helpers can be declared, and pytest-mock is assertion machinery.**
+  `--test-helper FILE` says a file holds test code, so an assertion there is a
+  kill and not a crash; a file with enforcement markers is refused. Every
+  `Mock.assert_*` under pytest-mock came back `crashed`, because the plugin wraps
+  them; those are kills now.
+- **Markers can follow a comment, are counted, and lines map upstream.** A marker
+  after an upstream comment was dropped silently, and now takes effect. Cross
+  prints markers beside mutants and names any that made no mutant. A mutant's
+  line prints with the line it has once marker-only lines are taken out.
+- **Sinkhole can answer.** It accepted and closed, so a proxy in front of it
+  turned the hangup into a 502 and hid what the proxy did next.
+  `NewAnsweringSinkhole` (`Sinkhole(answer=True)` in Python) replies 200 with an
+  empty body and records the request line and headers. `Marked` finds arrivals by
+  their `X-Subpoena-Mark` header. A mark comes through the code under test, so it
+  hides nothing from `Dialed`.
+- **A file witness, tier 1.** `witness.FileWatch` is inotify on a watched root,
+  recursive, with no privilege: `create`, `write`, `rename` and `unlink`, with
+  path and time of reading. Attribution is by root, as `Sinkhole`'s is by
+  destination, so every event is returned for every trace. Overflow, the watch
+  limit, a root that vanishes and a directory lost before its watch landed fail
+  `Health`; `Coverage()` reports the gaps and what no gap can show, a file made
+  and removed in a new directory before its watch landed. The harness gets
+  `NoWrite`, `RequireNoWrite`, `CheckNoWrite` and `WatchWrites`, and the lint
+  counts them. `witness.WatchSQLite` and `RequireNoCommit` read a SQLite
+  database's WAL, header and pages, with no triggers and no SQLite library, to
+  tell a commit from no commit and name the tables changed, so an audit row
+  does not contradict a claim about another table. Python's `read_log` reads the
+  new `file_op` lines, with `no_write`, `require_no_write` and `check_no_write`;
+  running the witness stays Go-only (`subpoena-witness -file-root`).
+- **The wrong cause is no longer called a build failure.** A test or panic whose
+  text held `[build failed]` or `[setup failed]` came back `invalid`, read from
+  anywhere in the output. Cross now reads only `go test`'s own line. A package
+  `go test` passes for having no tests, but which does not build, made every
+  mutant `invalid` as "did not compile"; it now stops the run at the baseline.
+- **Docs say what a kill does not prove.** An early return, an assignment or a
+  wrong guard can stop the allowed path too, and then an allowed-path test kills
+  the mutant with the refusal unexamined. This is known and cross does not
+  close it; `docs/architecture.md` says how to read a kill for it.
+- **Printed text no longer counts as witness evidence; deliberate forgery still
+  can.** Python read `witness:` anywhere in the message, which holds pytest's diff
+  of the app's own values, and then at the start of a message, which can be the
+  app's own body or `__repr__`. It now reads the failure's type: `subpoena.harness`
+  raises `WitnessFailure`, a test that asks a witness itself calls the new
+  `harness.witness_fail`, and any other text is `other`, so a Python test that
+  wrote the tag by hand changes verdict under `--require-witness`. Go read the tag
+  from any line in the shape of a `t.Log`, which the app can print. Under cross
+  the harness now signs its witness failures with a key made for the run, and an
+  unsigned tag is `other`. A Go test that wrote `witness:` by hand now calls the
+  new `harness.WitnessErrorf`; a module pinned to an older harness gets `other`
+  until it updates. Only a `*testing.T`, `B` or `F` gets the mark, so a
+  `testing.TB` of production code's own gets none, and a wrapper such as
+  `GinkgoTB` reads as `other`. Code set on forging one can get a real `*testing.T`
+  from `testing.RunTests`, though a real test must fail too. This stops what a system prints in
+  the ordinary way, and no more. The key stays readable: `/proc/<pid>/environ`
+  keeps it after the harness unsets it, so in-process code, a child, or any process
+  of the same user can compute a mark, and Python code can raise the type. Output
+  outside cross is unchanged.
+- **A witness that could not see is no witness evidence.** An Inconclusive and a
+  capture health failure were tagged and signed like a sighting, and the code
+  under test can cause one: leak file descriptors until the scan fails, and
+  `--require-witness` passed with nothing ever spawned. They still fail the test,
+  now under the new `inconclusive:` tag, which reads as `other`, in Go and Python.
+- **Order no longer decides a Python crash from a kill.** Cross ran pytest with
+  `-x`, so a crash behind the first failure was never seen, and under
+  pytest-randomly the same mutant was `killed` or `crashed` by chance. Every test
+  now runs, whatever the arguments say, so Go's rule holds: a crash beside an
+  assertion is a crash. First evidence comes from the first test collected, not
+  the first to finish under xdist. The inner pytest runs with `-p no:randomly`.
+- **Python test code is what pytest collected.** A file counted as test code by
+  its name, so an `assert` in a production `limit_test.py`, or anywhere under
+  `python_files = *.py`, was a kill. It is a crash now, as any assert in the code
+  under test is, unless pytest collected a test from that file. So an assertion
+  helper in a `test_*.py` holding no tests is a crash too, and a `conftest.py` is
+  still test code by its name, even in a production directory.
+- **A kill needs its tests to pass without the mutant.** A suite that went red
+  for any reason was a kill: a file a test left in the shared copy, a marker
+  outside it, a flake, with the enforcement never called. Each Go case now gets
+  a fresh copy, as Python's did, and in both languages a kill must hold. It runs
+  again once with the mutant, and must be a clean kill with a test of the first
+  run among the failed, so a rare flake does not pass: runs without the mutant
+  alone let one through nearly every time. Then three times without the mutant,
+  the first the mutant run's whole command, so a failure that needs a test in
+  another package comes back too, and in Go the rest the failed packages. Every
+  run is on a fresh copy and starts the same way as the mutant run. A kill that
+  does not hold is the new `enforcement-mutant-unconfirmed`, which fails the run,
+  with or without `-select`, and it says why. A kill now costs up to five runs.
+  State that clears itself before the reruns, or a flake that fails twice running
+  in the same test, can still pass, so it stays a weak spot, stated in
+  `docs/architecture.md`.
+- **Cross reads a test binary's exit code.** A panic beside another writer's
+  open line (`....panic: runtime error`) matched no crash line, so a real panic
+  came back a kill about half the time. `go test -json` gives no exit code, so
+  cross records it through `go test -exec`, and any exit but 1 is a death. The
+  wrapper is a small Go program cross builds at the start of a run, so it needs no
+  `sh`, filters no environment variable, and a project's own `-exec` stays in place
+  under it. Every go test of a run uses it, baseline and reruns included. Cross
+  stops if it cannot build it. An exit 1 is a failed test only if the binary
+  finished testing, shown by a profile package testing writes when `m.Run` ends,
+  so a printed `--- FAIL:` line and an `os.Exit(1)` is a crash. A project's runner
+  that runs the binary on another machine leaves no profile: its kills are
+  crashes, or cross stops at the baseline if the profile's path does not exist
+  there. `GOFLAGS=-memprofile=...` makes every kill a crash on a single-package
+  target, so unset it for a cross run. The exit code also settles a `panic:` line a passing test printed, say
+  from a recover middleware: the binary lived, so the line voids no kill, in
+  either test order. It did before, but only when the printing test ran first. A
+  `panic:` line in a test that did not pass still voids the package's kills.
+- **Output outside a test is never a failure message.** A `file.go:N:` line
+  printed while `TestMain` or `init` ran, then an exit, was a kill with no test
+  failed, and a `witness:` tag on that line passed `-require-witness`. It is a
+  crash now.
+- **A red baseline says why, in Go and Python.** `baseline suite is not green`
+  could end with nothing after it: a timeout left no output, and the last 40
+  lines could be all `ok` and `[no test files]`. It now gives the reason first
+  (a timeout, with what was still running and `-timeout` to raise; the failing
+  test; a collection error; no tests) and drops what passing tests printed.
+- **Python cross works under pytest-xdist.** Workers start after the plugin
+  takes its settings out of the environment, so they recorded nothing: with
+  `-- -n 4`, a real kill came back `crashed`, or `invalid` if only workers
+  imported the module. Workers now record their own failures and imports, and
+  a worker that dies is a crash. `-select` stops with a reason under `-n`.
+- **Python cross forces a guard that spans lines.** `if check(\n    x,\n):`
+  became `if False\n\n:`, a SyntaxError, so the mutant came back `invalid`.
+  The forced condition keeps its line breaks in brackets now.
+- **Cross can remove a Go function's last `return`.** Deleting it did not
+  compile, so the mutant came back `invalid` with advice to fix a placement
+  that had no fix. Where the refusal is an error and every other result is
+  plainly zero, cross now puts a return of zero values in its place:
+  `return nil, ErrDenied` becomes `return nil, nil`. Any other such return
+  stays `invalid` and says to mark the guard. That includes `return p.Check(u)`
+  and `return check(u), nil`: zero can be the refusal there, so an allowed-path
+  test would "kill" a mutant with the refusal unexamined. It also includes any
+  call in the error, `fmt.Errorf` and `errors.New` too: `return
+  s.Authorize(admins)` is the work the allowed path needs, and a stand-in would
+  drop it.
+- **Python cross stops counting None as enforcement gone.** A marked return
+  that ends a function came back as `pass`, so `return user in ADMINS` became
+  None and `assert allowed("ann")` "killed" it with no test of a denied user.
+  Such a return is now `invalid` unless the function gives None on another
+  path, and says to mark the guard.
+- **A crash shows the package that died.** It printed the last lines of the
+  whole run, usually the `--- PASS` lines of an unrelated package. It now
+  prints that package's panic, or its last lines after a `log.Fatal`.
+- **Python cross reads webtest's status check.** `TestApp.get(url, status=403)`
+  raises webtest's `AppError`, not an `AssertionError`, so a test's expected
+  status came back `crashed`. It is an assertion now when test code made the
+  call and stated the status. With no `status=` the test expected nothing, and
+  a 5xx is the app falling over, so both stay a crash, as does an `AppError`
+  for errors the app logged.
+- **A stray `.git` above the temp directory no longer invalidates mutants.** A
+  copy holds no repository, so `go build` of a main package climbed to any empty
+  `.git` above it, failed on VCS stamping, and reported "did not compile". Cross
+  now builds its copies with `-buildvcs=false`.
+- **Cross reads Ginkgo failures.** A Ginkgo v2 `[FAILED]` spec under the suite's
+  `Running Suite:` banner is a kill; it was `crashed`, because Ginkgo prints no
+  `file.go:N:` line. A panic beside it still makes it a crash, ahead of or
+  behind the failure, Ginkgo's `[PANICKED]` included: the output cannot show
+  that an assertion library printed a report. A `witness:` tag counts only when
+  a report holds one message, since its timeline prints the spec's log lines.
+- **Cross prints the failure text of testify and multi-line failures.** Both
+  leave the `file.go:N:` line blank, so `first evidence (other):` printed
+  nothing. Cross now reads the text under it. A tag still counts only on the
+  `file.go:N:` line, so this cannot upgrade a kill.
+- **`witness.NewSinkholeAt`.** A sinkhole can listen on a chosen address, so a
+  test can witness an IPv6 path (`::1`) or use a second loopback address when
+  127.0.0.1 is one the code may reach. Go only; Python keeps the 127.0.0.1
+  listener.
+- **Cross names a witness failure behind a log line.** Go test prints `t.Log`
+  and `t.Error` alike, so a log line ahead of a witness assertion counted as
+  the first evidence and strict mode rejected the kill, with nothing to say
+  why. It is still rejected; cross now prints the witness failure that came
+  later and the fix.
 - **`make demo` and `examples/saidno`.** A gateway answers 403 and logs the
   denial, but it has already run the tool: ordinary tests stay green and
   the witness goes red. A witness that loses capture reports Inconclusive where a

@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -267,4 +269,167 @@ func TestRingBufferDropsMakeCaptureInconclusive(t *testing.T) {
 	if v, verr := harness.NoSpawn(w, "c0de0000000000000000000000000001"); v != harness.Inconclusive {
 		t.Fatalf("absence over a lossy window: want Inconclusive, got %v (%v)", v, verr)
 	}
+}
+
+// The helper process: forks a child into another cgroup, which runs true.
+func TestMain(m *testing.M) {
+	if dir := os.Getenv("EXECBPF_FORKOUT"); dir != "" {
+		os.Exit(forkOut(dir))
+	}
+	os.Exit(m.Run())
+}
+
+func forkOut(dir string) int {
+	fd, err := os.Open(dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer fd.Close()
+	c := exec.Command("true")
+	c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(fd.Fd())}
+	if err := c.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// A task that leaves its session takes its execs with it, so nothing may read as
+// absence afterwards, wherever it went.
+func TestKernelALeavingTaskFailsHealth(t *testing.T) {
+	leave := func(dir string) (string, []string) {
+		return "sh", []string{"-c", "echo $$ > " + dir + "/cgroup.procs; exec true"}
+	}
+	for _, tc := range []struct {
+		name string
+		dir  func(g *cgroup.Group, root string) string
+		fork bool
+		want bool // Health fails
+	}{
+		{name: "moved to the session root", dir: func(_ *cgroup.Group, root string) string { return root }, want: true},
+		{name: "moved above the root", dir: func(_ *cgroup.Group, root string) string { return filepath.Dir(root) }, want: true},
+		{name: "moved to another session", dir: func(_ *cgroup.Group, root string) string { return filepath.Join(root, tidB) }, want: true},
+		{name: "child made above the root", dir: func(_ *cgroup.Group, root string) string { return filepath.Dir(root) }, fork: true, want: true},
+		{name: "moved within the session", dir: func(g *cgroup.Group, _ string) string { return filepath.Join(g.Dir(), "child") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, root := sessionGroup(t, tidA)
+			nest(t, root, tidB)
+			nest(t, g.Dir(), "child")
+			w := start(t, Config{CgroupRoot: root})
+			if tc.fork {
+				cmd, placeErr, err := g.Start(func() *exec.Cmd {
+					c := exec.Command(os.Args[0], "-test.run=^$")
+					c.Env = append(os.Environ(), "EXECBPF_FORKOUT="+tc.dir(g, root))
+					c.Stderr = os.Stderr
+					return c
+				})
+				if err != nil || placeErr != nil {
+					t.Fatalf("start: %v %v", err, placeErr)
+				}
+				if err := cmd.Wait(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				name, args := leave(tc.dir(g, root))
+				run(t, g, name, args...)
+			}
+			err := w.Stop()
+			v, verr := harness.NoSpawn(w, tidB+"0")
+			if !tc.want {
+				if err != nil || v != harness.Pass {
+					t.Fatalf("a move inside the session: Stop=%v, verdict=%v (%v)", err, v, verr)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "left a session") {
+				t.Fatalf("Stop = %v", err)
+			}
+			if v != harness.Inconclusive {
+				t.Fatalf("verdict = %v (%v), want Inconclusive", v, verr)
+			}
+		})
+	}
+}
+
+// nest makes dir/names[0]/names[1]/... and returns the innermost.
+func nest(t *testing.T, dir string, names ...string) string {
+	t.Helper()
+	for _, n := range names {
+		dir = filepath.Join(dir, n)
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			skipOrFail(t, "no nested cgroup: %v", err)
+		}
+		d := dir
+		t.Cleanup(func() {
+			for i := 0; i < 50 && os.Remove(d) != nil; i++ {
+				time.Sleep(20 * time.Millisecond)
+			}
+		})
+	}
+	return dir
+}
+
+func runIn(t *testing.T, dir string) {
+	t.Helper()
+	fd, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fd.Close()
+	c := exec.Command("true")
+	c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(fd.Fd())}
+	if err := c.Run(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The application owns everything below its session. However it nests, the exec
+// stays the session's: past the 8 elements kept the session root must be what
+// stays, and a path that ends like another session must change nothing.
+func TestKernelNestingCannotMoveAnExec(t *testing.T) {
+	levels := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = "n"
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name  string
+		extra []string
+	}{
+		{"a forged session within reach", []string{"a"}},
+		{"a forged session past the path kept", []string{"a", "b", "c", "d", "e"}},
+		{"far past the path kept", levels(14)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, root := sessionGroup(t, tidA)
+			leaf := nest(t, g.Dir(), append(tc.extra, filepath.Base(root), tidB)...)
+			w := start(t, Config{CgroupRoot: root})
+			runIn(t, leaf)
+			if err := w.Stop(); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+			if got := w.Spawned(tidB); len(got) != 0 {
+				t.Fatalf("charged to the forged trace: %+v", got)
+			}
+			if got := w.Spawned(tidA); len(got) != 1 {
+				t.Fatalf("Spawned for the real trace = %+v", got)
+			}
+		})
+	}
+	t.Run("too deep to walk", func(t *testing.T) {
+		g, root := sessionGroup(t, tidA)
+		leaf := nest(t, g.Dir(), levels(40)...)
+		w := start(t, Config{CgroupRoot: root})
+		runIn(t, leaf)
+		if err := w.Stop(); err == nil || !strings.Contains(err.Error(), "too long to walk") {
+			t.Fatalf("Stop = %v", err)
+		}
+		if v, err := harness.NoSpawn(w, tidA); v != harness.Inconclusive {
+			t.Fatalf("verdict = %v (%v), want Inconclusive", v, err)
+		}
+	})
 }

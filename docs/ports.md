@@ -11,7 +11,7 @@ progress, and it says so.
 
 | Port | Status |
 | --- | --- |
-| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader, spawn and network absence checks with the loopback sinkhole, Python AST lint, cross-examination for pytest with groups, selection and parallel runs. Not ported: running a witness (it reads the file `subpoena-witness` writes) and registry-drift |
+| Python ([python/](../python/README.md), `pip install subpoena`) | H, Q, W, L and G pass: harness cases, 139 evaluator cases, witness reader with row lines, spawn, network, file and delivery absence checks with the loopback sinkhole, Python AST lint, cross-examination for pytest with groups, selection and parallel runs. Not ported: running a witness (it reads the file `subpoena-witness` writes) and registry-drift |
 | TypeScript | generated names only (`generated/ts/semconv.ts`: `SPAN_AGENT_SESSION_EXEC`, `ATTR_SESSION_ID`, `ATTRIBUTE_TIERS`). Harness not started |
 
 ## What a port is, and what it reuses
@@ -107,10 +107,11 @@ query. It exits 0 only if every answer matches. CI runs it against
 ## W: the witness
 
 The witness is not ported. `subpoena-witness` (Linux, eBPF) runs beside the
-tests in every language and writes one JSON object per line for each exec. A
-port reads that file. The format is a contract: its schema is
+tests in every language and writes one JSON object per line for each exec, and
+with `-deliveries` for each send (W8). A port reads that file. The format is a contract: its schema is
 [witness-event.schema.json](witness-event.schema.json), and a Go test keeps
-the command's output and the schema in step.
+the command's output and the schema in step. The table is an exec line; W7 has
+a file line, W8 a delivery line and W9 a row line.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -150,6 +151,10 @@ ones keep their name and meaning.
   has exactly one start..stop window, every exec lies inside it, it is
   closed, and its stop says `healthy: true` with no error. Anything else is
   a capture fault: the execs still count, but no absence rests on the file.
+  The start record's `captures` lists the hooks behind the window: `"exec"`,
+  `"delivery"`, `"file"`, `"row"`. Only a start record's `captures` and `roots`
+  count. Every absence claim reads it: a file that does not name the capture the
+  claim needs is Inconclusive however healthy, as nothing was looking.
   A read error, never a skip: an unknown record kind, a line that is not a
   JSON object (NaN and Infinity included), a time that is not RFC 3339 with
   a zone or is the zero time, a field of the wrong type, an integer outside
@@ -157,8 +162,8 @@ ones keep their name and meaning.
   case. A null field is the same as an absent one.
 - **W5. Absence checks.** `no_spawn(witness, trace_id)` is Fail when the
   witness saw any process for the trace (even from an unhealthy capture),
-  Inconclusive when it saw none but its health is bad or unreported, and Pass
-  only from a healthy witness. `watch_spawns` registers a teardown check with
+  Inconclusive when it saw none but its health is bad or unreported, or its
+  file names no `exec` capture, and Pass only from a healthy witness. `watch_spawns` registers a teardown check with
   a `SpawnRule`: `Never` entries match a command line whose words end with
   theirs, the program compared without its directory on either side;
   `Allowed` matches exactly; a name-only sighting fails when its name is a
@@ -183,7 +188,133 @@ also pass.
   witness (`netbpf`) is not ported.
 
 Check: `pkg/witness/sinkhole_test.go` and `pkg/harness/network_test.go`
-hold the cases; the Python runner is `python/tests/test_network.py`.
+hold the cases; the Python runner is `python/tests/test_network.py`. An answering
+sinkhole reads a request as Go's `http.ReadRequest` does, so a port refuses what that
+refuses and gives `marked` the same bytes: `conformance/sinkhole.yaml` holds the requests
+both runners pass. Go's reading is its standard library's, so a Go release or
+`GODEBUG=httplaxcontentlength=1` can move it, and the table then fails.
+
+- **W7. File changes.** The file witness is not ported either: Go's
+  `FileWatch` runs beside the tests (`subpoena-witness -file-root dir`, no
+  privilege) and writes the same kind of file. A line with a non-null `file_op`
+  field is one change. `file_op` is `create`, `write`, `rename` or `unlink`;
+  `path` is the absolute path, `root` the watched root, `is_dir` a boolean,
+  `source` `inotify`, `scan` or `stat`, `attribution` `root`, and `time` when
+  the witness read the event. `stat` means no kernel event named the path, but
+  the check at stop found it differing from the start: the only mark Linux leaves
+  for some writes, since `mmap` and native AIO (`io_submit`) queue no inotify
+  event for anyone. A rename is two lines, with `rename` `from` and `to` and the
+  same `cookie`. The start record names the watched `roots`, and the witness
+  writes it once attached, so a killed witness leaves a window that never stopped.
+  The stop record may carry a `coverage` line, `silent_closes` (files opened for
+  writing and closed with no write seen) and `symlinks` (those under the roots).
+  `wrote(trace_id)` returns every line
+  whose `trace_id` is empty or equals it, so a tier-1 line belongs to every
+  trace. `no_write(witness, trace_id, *paths)` follows W5's rule: one line that
+  touches a path (the path, anything below it, or a rename of a directory
+  above it; none: any line) is Fail even from an unhealthy capture. With none,
+  a file with no `roots` is Inconclusive, whatever the claim, as are a path under
+  no root or crossing a listed symlink, a claimed path that is or holds a silent
+  close (for no paths, any silent close), and missing or bad health. A file name
+  that is not UTF-8 cannot be written, and such a capture's stop record is
+  unhealthy. A read error, as for an exec: an unknown `file_op`, no `path`, and a
+  field of the wrong type. The SQLite reader is Go-only.
+
+  Not closable from a file witness, and to be stated by any port: a store to an
+  already-dirty mapped page through a mapping held open past stop, which leaves
+  no event, no silent close and no moved timestamp (`witnesses/README.md`).
+
+Check: the `file_` cases in `conformance/witness.yaml`; the Python runners are
+`python/tests/test_witness_cases.py` and `python/tests/test_witness.py`.
+
+- **W8. Delivery lines.** `subpoena-witness -deliveries` also writes one line
+  per send from a session cgroup; a line with a non-null `delivery_op` field is
+  one, and it comes before the exec reading of a line. The fields are `time`,
+  `pid`, `host_pid`, `comm`, `cgroup_id`, `cgroup`, `trace_id` and `attribution`
+  as above, and:
+
+  | Field | Type | Meaning |
+  | --- | --- | --- |
+  | `delivery_op` | `"deliver"` or `"sendmsg"` | a send on a connected socket, or one that named its destination |
+  | `protocol` | string | `tcp`, `udp`, or another IP protocol name or number |
+  | `peer` | string | the far end, `address:port` or `[address]:port`; empty when the witness could not read it |
+  | `local` | string | this end, in the same form; empty when unknown |
+  | `bytes` | integer (uint64) | what the caller asked to send, not what the peer received |
+
+  | `broadcast` | boolean | a datagram or raw socket had `SO_BROADCAST` set; absent when false |
+  | `broadcast_route` | boolean | the send went out on a broadcast route the socket held, whatever the option said; absent when false |
+
+  A stop record may carry `coverage`, one line on
+  what the capture might have missed even when healthy. W3 and W4 apply: `delivered(trace_id)` returns every
+  line whose `trace_id` equals it, the empty trace ID matches nothing, and a line
+  outside the window is a capture fault. A read error, never a skip: an unknown
+  `delivery_op`, a `peer` or `local` that is not empty and does not parse (an IPv4
+  address in brackets, a trailing newline and a zone do not), and a `captures` that
+  is not a list of strings. An empty `peer` is not an error: such a send may have
+  gone to any peer.
+  `no_delivery(witness, trace_id, match)` follows W6's rule over `delivered`, and
+  with no matching send a file whose start record does not list `delivery` is
+  Inconclusive, however healthy: nothing was looking. A send a match does not
+  take, that is `fanout` (`broadcast_route` set, or its `peer` multicast or
+  `255.255.255.255`, or `broadcast` set with an IPv4 `peer` whose last two bits are set), and that the match takes as `any_member()`, is Inconclusive too: it may
+  have reached the peer. `delivery_to` then compares only the port.
+  `delivery_to(peers)` matches a send that may have gone to a peer: a zero port
+  matches every port of the address, an unspecified address matches the port on
+  any address, an IPv4-mapped address matches its IPv4 form, a send with an
+  unknown peer or no port matches, and naming no peers matches every send. A port
+  reads the file; it does not run this witness, which has no tier 1 in any
+  language.
+
+  Health does the rest of the work, and a reader needs nothing more for it: the
+  witness writes an unhealthy stop record if a task left a session during the
+  capture, if the kernel skipped a program (recursion misses, host-wide), or if a
+  cgroup path was too long to walk. A task that left before the witness started,
+  and a process privileged enough to detach it, are outside what a file can say;
+  `witnesses/README.md` has the limits.
+
+Check: the `delivery_` cases in `conformance/witness.yaml` (`delivered`,
+`no_delivery`, `no_delivery_peers`); the matching rules are in
+`pkg/harness/delivery_test.go`, and the Python runner is
+`python/tests/test_delivery.py`.
+
+- **W9. Row lines.** The database witness (`pkg/witness/dbproxy`, experimental) is not ported;
+  `subpoena-witness db` runs it and writes the same file format, with one line
+  per statement. A line with no `record` field and a non-null `event` field is
+  a row line; `event` is `row`, and any other value is a read error.
+
+  | Field | Type | Meaning |
+  | --- | --- | --- |
+  | `engine` | `"postgres"` or `"mysql"` | the wire protocol |
+  | `conn` | integer | the witness's number for the connection |
+  | `dest` | string | the address the application connected to |
+  | `statement`, `verb` | string | SQL as sent, cut at 8 KiB; first keyword. Never bound values |
+  | `tables` | array of strings | tables written; a Postgres name is cut to the 63 bytes the server keeps |
+  | `opaque`, `reason` | boolean, string | it may have written anything, and why. A call, and on Postgres an operator, cast or field of an expression, is opaque unless it is proven inert. A plain qualified column is a read |
+  | `rows` | integer | rows changed, -1 if unknown |
+  | `outcome` | string | `read`, `committed`, `rolled_back`, `failed` or `unknown` |
+  | `attribution` | `"destination"` | it holds for every trace |
+
+  `committed(trace_id)` returns every line with outcome `committed`, for every
+  trace, the empty ID included. A line is an effect if it is committed and `rows`
+  is not 0. It counts against a table if it is opaque, names no table, or a name
+  matches without case on its dotted parts from the right. A line with `rows`
+  missing, null or below -1 is a read error, never a skip: read as 0, it would be
+  no effect. So is an `outcome` outside the five. A row outside the capture
+  window, or with outcome `unknown`, is a capture fault. `unknown` is also what a
+  routine gets that failed or rolled back where it could have committed part of
+  its work, so `failed` means the server refused the statement and nothing of it
+  stayed, as far as the wire can say. W4's other rules apply.
+  The file cannot show what only the catalog knows: a view over a writing function,
+  field notation (`o.w` calling `w(o)`), or an overload of a built-in name, installed
+  before the capture, reads as a plain read, and a write through an updatable view, or
+  to a partition, a parent or a child, is a write to the name in the statement. A
+  table in a claim is only as good as that name (`witnesses/README.md` has the list of
+  what is never seen).
+  A port ships the reader; a `no_row` check over it is not in Python yet, so a
+  Python test reads `committed` and `health` itself.
+
+Check: the row cases in `conformance/witness.yaml`, through both runners, and
+`pkg/witness/logrow_test.go`, which `python/tests/test_witness.py` ports.
 
 ## L and G: lint and cross-examination
 
@@ -195,16 +326,25 @@ hold the cases; the Python runner is `python/tests/test_network.py`.
   `python/tests/test_lint.py`. Registry-drift remains a Go-only subcommand.
 - **G1.** A port's cross-examination removes each statement marked as enforcement and
   requires the suite to fail. A mutant that does not compile or import counts
-  as invalid, not killed. As in Go: a guard marker forces an `if` condition;
+  as invalid, not killed. So does a marked return with no honest stand-in: one
+  that ends the function, in a function that gives None on no other path, where
+  None could force enforcement on. As in Go: a guard marker forces an `if` condition;
   a red suite is a kill only on an assertion failure in test code (an
   assertion in the code under test, a crash, an exception other than an
-  assertion, or a dead test process is `crashed`); a hang, or a test-framework
-  timeout, is `timeout`; a marker that takes no effect, and an enforcement point with no
+  assertion, or a dead test process is `crashed`; an assertion library's own
+  failure type counts as an assertion, as webtest's status check does in
+  Python); a hang, or a test-framework
+  timeout, is `timeout`; a kill that, run again with the mutant on a fresh copy, is not a
+  clean failure of a test that failed the first time, or that fails in a rerun without
+  the mutant, is `unconfirmed`, which fails the run, and `-select` does not retry
+  it on the whole suite; a marker that takes no effect, and an enforcement point with no
   statement marker, are errors; the baseline must be green. Python's
   `subpoena-cross` also refuses a mutant the suite never imported from the
   copy (an installed package shadowing it) as invalid. It also implements layer
   groups, reviewed `cross-masked.txt`, `-j`, `-select` and `-evidence-dir`;
-  `python/tests/test_cross_parity.py` checks these with real pytest runs.
+  `python/tests/test_cross_parity.py` checks these with real pytest runs. It
+  reads pytest-xdist workers (`-- -n 4`) the same way; only `-select` refuses
+  them, since per-test coverage needs one process.
 
 Neither is needed to start. Until a port has them, it says so.
 

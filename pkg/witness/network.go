@@ -1,6 +1,7 @@
 package witness
 
 import (
+	"net/http"
 	"net/netip"
 	"time"
 )
@@ -15,6 +16,10 @@ const (
 	// OpSendmsg is a send with an explicit destination (sendto, sendmsg,
 	// sendmmsg): unconnected UDP, or TCP Fast Open.
 	OpSendmsg Op = "sendmsg"
+	// OpDeliver is a send on a connected socket, which names no destination:
+	// write, send, sendmsg and the like. It is a DeliveryEvent's Op, never a
+	// NetworkEvent's: such a send is not a connection attempt.
+	OpDeliver Op = "deliver"
 )
 
 // NetworkEvent is one observed outbound connection attempt. It records the
@@ -31,6 +36,14 @@ type NetworkEvent struct {
 	TraceID     string         // set when Attribution is ByCgroup
 	Attribution Attribution
 	SeenAt      time.Time
+	HTTP        *HTTPRequest // what an answering Sinkhole read, nil otherwise
+}
+
+// HTTPRequest is a request an answering Sinkhole read. A pointer, so an event
+// stays comparable, and so a printed event holds no header values.
+type HTTPRequest struct {
+	Line    string // request line
+	Headers http.Header
 }
 
 // NetworkWitness reports outbound connection attempts attributable to a trace.

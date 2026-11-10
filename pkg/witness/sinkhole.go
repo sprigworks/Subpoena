@@ -1,9 +1,12 @@
 package witness
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"sync"
 	"time"
@@ -14,6 +17,17 @@ import (
 // the safe direction for an absence claim, exact when one trace is in flight.
 const ByDestination Attribution = "destination"
 
+// MarkHeader is a request header the test sends through the code under test, so
+// that Marked can tell arrivals apart. It comes through the code under test, so
+// it decides nothing: Dialed returns every arrival whatever it says.
+const MarkHeader = "X-Subpoena-Mark"
+
+// answerRead bounds how long an answering Sinkhole waits on one connection. The
+// arrival is already recorded by then.
+const answerRead = 2 * time.Second
+
+const answer200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+
 // Sinkhole is a tier-1 network witness: a TCP listener the test stands up as a
 // destination the code under test must never reach, then points that code at.
 // Every connection that arrives is recorded and closed. It needs no root and no
@@ -23,10 +37,16 @@ const ByDestination Attribution = "destination"
 // It sees only its own address. "Nothing reached the sinkhole" is the claim it
 // can certify; "nothing reached anywhere" needs netbpf. Arrivals carry no PID
 // or cgroup, so Dialed returns every arrival for every trace (ByDestination).
+//
+// A proxy turns a closed connection into a 502, which can hide what the proxy
+// did next. NewAnsweringSinkhole stands in for an upstream that must answer: it
+// replies 200 with an empty body, and records the request line and headers.
 type Sinkhole struct {
-	ln   *net.TCPListener
-	addr netip.AddrPort
-	done chan struct{}
+	ln     *net.TCPListener
+	addr   netip.AddrPort
+	done   chan struct{}
+	answer bool
+	conns  sync.WaitGroup
 
 	mu       sync.Mutex
 	events   []NetworkEvent
@@ -42,13 +62,39 @@ var (
 // drain is drainAccepts, replaceable in tests to inject a failed drain.
 var drain = drainAccepts
 
-// NewSinkhole listens on a free loopback port and starts recording.
+// DrainAccepts accepts and closes every connection already queued on ln, without
+// waiting, and says how many there were. It is for a witness with its own
+// listener: a connection in the queue at Stop arrived, and nothing has read it.
+func DrainAccepts(ln *net.TCPListener) (int, error) { return drainAccepts(ln) }
+
+// NewSinkhole listens on a free port on 127.0.0.1 and starts recording.
 func NewSinkhole() (*Sinkhole, error) {
-	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	return NewSinkholeAt(netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 0))
+}
+
+// NewSinkholeAt listens on addr and starts recording; port 0 picks a free one.
+// Use it when the claim is about a particular address: ::1 for an IPv6 path,
+// or a second loopback address when 127.0.0.1 is one the code may reach.
+func NewSinkholeAt(addr netip.AddrPort) (*Sinkhole, error) {
+	ln, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(addr))
 	if err != nil {
 		return nil, fmt.Errorf("sinkhole: %w", err)
 	}
 	s := &Sinkhole{ln: ln, addr: ln.Addr().(*net.TCPAddr).AddrPort(), done: make(chan struct{})}
+	go s.accept()
+	return s, nil
+}
+
+// NewAnsweringSinkhole is NewSinkhole for an upstream that must answer. Every
+// arrival is recorded before a byte is read, so a client that sends nothing, or
+// something that is not HTTP, still counts. Each connection gets one 200 with
+// an empty body, and is closed.
+func NewAnsweringSinkhole() (*Sinkhole, error) {
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		return nil, fmt.Errorf("sinkhole: %w", err)
+	}
+	s := &Sinkhole{ln: ln, addr: ln.Addr().(*net.TCPAddr).AddrPort(), done: make(chan struct{}), answer: true}
 	go s.accept()
 	return s, nil
 }
@@ -66,12 +112,34 @@ func (s *Sinkhole) accept() {
 			}
 			return
 		}
-		s.record()
+		i := s.record()
+		if s.answer {
+			s.conns.Add(1)
+			go s.serve(c, i)
+			continue
+		}
 		c.Close()
 	}
 }
 
-func (s *Sinkhole) record() {
+// serve reads one request, fills in event i, answers and closes. A request it
+// cannot read leaves the arrival as it is, which holds for every trace.
+func (s *Sinkhole) serve(c *net.TCPConn, i int) {
+	defer s.conns.Done()
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(answerRead))
+	req, err := http.ReadRequest(bufio.NewReader(c))
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	s.events[i].HTTP = &HTTPRequest{Line: req.Method + " " + req.RequestURI + " " + req.Proto, Headers: req.Header}
+	s.mu.Unlock()
+	io.WriteString(c, answer200)
+	io.Copy(io.Discard, req.Body) // closing on unread bytes can reset the answer away
+}
+
+func (s *Sinkhole) record() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, NetworkEvent{
@@ -81,6 +149,7 @@ func (s *Sinkhole) record() {
 		Attribution: ByDestination,
 		SeenAt:      time.Now(),
 	})
+	return len(s.events) - 1
 }
 
 func (s *Sinkhole) fail(err error) {
@@ -113,6 +182,7 @@ func (s *Sinkhole) Stop() error {
 	}
 	s.ln.Close()
 	<-s.done
+	s.conns.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.finished = true
@@ -120,11 +190,30 @@ func (s *Sinkhole) Stop() error {
 }
 
 // Dialed returns every connection that reached the sinkhole, whatever the
-// trace: arrivals cannot be told apart by trace.
+// trace: arrivals cannot be told apart by trace, and a mark does not change that,
+// because the code under test could send any mark it liked.
 func (s *Sinkhole) Dialed(string) []NetworkEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]NetworkEvent(nil), s.events...)
+}
+
+// Marked returns the arrivals whose first MarkHeader is mark, for telling one
+// request from another: an arrival with no such header matches no mark, "" included.
+// It is no absence check: ask Dialed for that.
+func (s *Sinkhole) Marked(mark string) []NetworkEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []NetworkEvent
+	for _, e := range s.events {
+		if e.HTTP == nil {
+			continue
+		}
+		if marks := e.HTTP.Headers.Values(MarkHeader); len(marks) > 0 && marks[0] == mark {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // Health reports whether the capture is complete: stopped, drained, and no

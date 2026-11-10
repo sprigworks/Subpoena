@@ -16,7 +16,7 @@ endif
 WEAVER ?= weaver
 REGISTRY := registry
 
-.PHONY: demo all build vet fmt test lint lint-drift cross cross-self conform python test-cgroup test-ebpf generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
+.PHONY: demo all build vet fmt test lint lint-drift cross cross-self conform python test-cgroup test-ebpf test-db generate-bpf conformance alerts oats check generate generate-invariants registry-check check-generated tidy
 
 all: build vet test
 
@@ -25,6 +25,7 @@ build:
 
 vet:
 	go vet ./...
+	GOOS=darwin go vet ./pkg/witness/ ./pkg/harness/
 
 fmt:
 	gofmt -l -w .
@@ -57,7 +58,7 @@ cross:
 # Subpoena's own fail-closed guards, cross-examined like any adopter's.
 CROSS_SELF := ./pkg/harness ./pkg/witness ./internal/cross ./conformance/oatscapture
 cross-self:
-	@set -e; for t in $(CROSS_SELF); do go run ./cmd/subpoena-cross $$t; done
+	@set -e; for t in $(CROSS_SELF); do go run ./cmd/subpoena-cross -timeout 20m $$t; done
 
 # Check a TraceQL evaluator in any language against the conformance corpus
 # (docs/ports.md): make conform EVAL="python -m subpoena.traceql". Without
@@ -93,6 +94,12 @@ test-ebpf:
 	-v "$$(go env GOMODCACHE)":/go/pkg/mod:ro -e GOFLAGS=-mod=mod -e GOTOOLCHAIN=local \
 	-e SUBPOENA_EBPF_REQUIRE=1 $(GO_IMAGE) \
 	go test -count=1 -v ./pkg/witness/execbpf ./pkg/witness/netbpf
+
+# The database witness against real postgres and mysql containers, with real
+# clients. Plain `go test` runs these too if Docker and both images are there, and
+# skips otherwise; SUBPOENA_DB_REQUIRE pulls the images and makes a skip a failure.
+test-db:
+	SUBPOENA_DB_REQUIRE=1 go test -count=1 -timeout 30m -v ./pkg/witness/dbproxy/live
 
 # Regenerate the eBPF objects and Go bindings from pkg/witness/{execbpf,netbpf}/bpf/*.c
 # (needs clang). The output is committed so ordinary builds need no clang.

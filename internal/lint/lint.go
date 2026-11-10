@@ -49,6 +49,9 @@ const (
 var witnessCalls = []struct{ name, importSuffix string }{
 	{"Spawned", witnessSuffix},
 	{"Dialed", witnessSuffix},
+	{"Wrote", witnessSuffix},
+	{"Delivered", witnessSuffix},
+	{"Committed", witnessSuffix},
 	{"NoSpawn", harnessSuffix},
 	{"RequireNoSpawn", harnessSuffix},
 	{"NoDial", harnessSuffix},
@@ -56,6 +59,21 @@ var witnessCalls = []struct{ name, importSuffix string }{
 	{"CheckNoSpawn", harnessSuffix},
 	{"CheckNoDial", harnessSuffix},
 	{"WatchSpawns", harnessSuffix},
+	{"NoWrite", harnessSuffix},
+	{"RequireNoWrite", harnessSuffix},
+	{"CheckNoWrite", harnessSuffix},
+	{"WatchWrites", harnessSuffix},
+	{"NoCommit", harnessSuffix},
+	{"RequireNoCommit", harnessSuffix},
+	{"CheckNoCommit", harnessSuffix},
+	{"NoDelivery", harnessSuffix},
+	{"RequireNoDelivery", harnessSuffix},
+	{"CheckNoDelivery", harnessSuffix},
+	{"WatchDeliveries", harnessSuffix},
+	{"NoRow", harnessSuffix},
+	{"RequireNoRow", harnessSuffix},
+	{"CheckNoRow", harnessSuffix},
+	{"WatchRows", harnessSuffix},
 }
 
 // asksWitness reports whether f calls one of witnessCalls (see callsFrom).
@@ -69,8 +87,8 @@ func asksWitness(f file) bool {
 }
 
 // harnessSuffix and witnessSuffix say where the calls rules 2 to 4 look for
-// are declared: Collect and the absence checks in the harness, Spawned and
-// Dialed in the witness package or one under it, such as execbpf. Matched by
+// are declared: Collect and the absence checks in the harness, Spawned, Dialed,
+// Wrote, Delivered and Committed in the witness package or one under it, such as execbpf. Matched by
 // suffix, so a service that vendored them under its own path is covered.
 const (
 	harnessSuffix = "/pkg/harness"
@@ -964,7 +982,7 @@ func checkUnwitnessedEnforcement(t *tree) []Finding {
 				continue
 			}
 			out = append(out, t.finding(RuleUnwitnessedEnforcement, fd.Pos(),
-				"enforcement point %s has no test that asks a Witness (Spawned, Dialed, or harness.RequireNoSpawn/RequireNoDial); span assertions alone are testimony, not proof", fd.Name.Name))
+				"enforcement point %s has no test that asks a Witness (Spawned, Dialed, Wrote, Delivered, Committed, or harness.RequireNoSpawn/RequireNoDial/RequireNoWrite/RequireNoDelivery/RequireNoRow); span assertions alone are testimony, not proof", fd.Name.Name))
 		}
 	}
 	return out
