@@ -56,6 +56,8 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   them; a new guard gets the markers and a test that kills its mutant.
   CI's `tier1` leaves `./internal/cross` out (it takes hours), so run
   `make cross-self` locally on any change under `internal/cross` and before a tag.
+  The `cross-self-long` workflow runs it weekly on a self-hosted runner, and
+  on demand from `main` (Actions > cross-self-long > Run workflow).
 
 ## Environment
 
