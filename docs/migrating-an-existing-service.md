@@ -297,7 +297,7 @@ observer, for example an audit log. There is no interface for them; that is
 future work. The `unwitnessed-enforcement` lint rule only checks that some test
 asks a witness (`Spawned`, `Dialed`, `Wrote`, `Delivered`, `Committed`, or a
 harness check such as `RequireNoSpawn`, `RequireNoDial`, `RequireNoWrite`,
-`RequireNoDelivery` or `RequireNoRow`; `lint/README.md` has the list), so for
+`RequireNoDelivery` or `RequireNoRow`; `docs/lint.md` has the list), so for
 other enforcement points review has to carry it.
 
 ## 5. Add provenance markers
@@ -336,7 +336,7 @@ make lint-drift BASE=origin/main                 # registry-drift, for review
 | Lint finding | Fix |
 | --- | --- |
 | `unknown-telemetry` | Use a generated constant; if the name is new, add it to the registry (reviewed) |
-| `no-trace-assertion` | The file defines tests but never calls `Collect()`. If it holds only pure-logic tests, mark it `//subpoena:pure_logic` (see "What to delete"). A helper that wraps `Collect` counts only if every return hands back the trace from its own harness `Collect` call (`lint/README.md`) |
+| `no-trace-assertion` | The file defines tests but never calls `Collect()`. If it holds only pure-logic tests, mark it `//subpoena:pure_logic` (see "What to delete"). A helper that wraps `Collect` counts only if every return hands back the trace from its own harness `Collect` call (`docs/lint.md`) |
 | `unguarded-absence` | Call `Collect()`, or a verified wrapper, earlier in the same function |
 | `missing-provenance` | Add the marker (step 5) |
 | `unwitnessed-enforcement` | Add a test that asks a witness (`Spawned`, `Dialed`, `Wrote`, `Delivered`, `Committed`) what happened |

@@ -22,7 +22,7 @@ progress, and it says so.
 | Tier-1 harness | yes (H1–H6) | — |
 | TraceQL evaluation | optional (Q1–Q3) | `subpoena-traceql`, until it has its own evaluator |
 | Witness | a reader for its tests (W1–W3) | `subpoena-witness`, `pkg/cgroup` conventions |
-| Lint | eventually (L1) | the rule set and its meaning (`lint/README.md`) |
+| Lint | eventually (L1) | the rule set and its meaning (`docs/lint.md`) |
 | Cross-examination | eventually (G1) | the marker and the mutation it applies |
 | Tiers 2 and 3 | nothing | OATS stack, alert rules |
 
@@ -318,7 +318,7 @@ Check: the row cases in `conformance/witness.yaml`, through both runners, and
 
 ## L and G: lint and cross-examination
 
-- **L1.** A port's lint applies the same rules as `lint/README.md`, adapted
+- **L1.** A port's lint applies the same rules as `docs/lint.md`, adapted
   to the language: no telemetry string literals, `collect()` before
   telemetry assertions, a witness call in every enforcement-point test, and
   provenance markers. Python runs `subpoena-lint <dir>` (or
