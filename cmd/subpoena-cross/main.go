@@ -33,13 +33,21 @@ func main() {
 	jobs := flag.Int("j", 1, "single mutants to run at once, each in its own copy of the module")
 	requireWitness := flag.Bool("require-witness", false, "accept a kill only when its first failure is independent witness evidence")
 	sel := flag.Bool("select", false, "run each mutant against only the tests that executed its line (per-test coverage pass first)")
+	shard := flag.String("shard", "", "k/n: judge only shard k of n of the mutants, so n runs of one commit (one per host) judge each once")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: subpoena-cross [-timeout 5m] [-j 1] [-select] [-require-witness] [-evidence-dir dir] <dir>")
+		fmt.Fprintln(os.Stderr, "usage: subpoena-cross [-timeout 5m] [-j 1] [-select] [-shard k/n] [-require-witness] [-evidence-dir dir] <dir>")
 	}
 	flag.Parse()
 	if flag.NArg() != 1 || *timeout <= 0 || *jobs < 1 {
 		flag.Usage()
 		os.Exit(2)
+	}
+	var k, n int
+	if *shard != "" {
+		if _, err := fmt.Sscanf(*shard, "%d/%d", &k, &n); err != nil || fmt.Sprintf("%d/%d", k, n) != *shard || n < 1 || k < 1 || k > n {
+			fmt.Fprintf(os.Stderr, "subpoena-cross: -shard %q: want k/n with 1 <= k <= n\n", *shard)
+			os.Exit(2)
+		}
 	}
 	// Mutant runs have their own process groups, so a terminal's Ctrl-C reaches
 	// only this process: cancel the run, which kills them and removes the
@@ -47,12 +55,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() { <-ctx.Done(); stop() }()
-	rep, err := cross.Run(ctx, cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr, EvidenceDir: *evidenceDir, Jobs: *jobs, Select: *sel, RequireWitness: *requireWitness})
+	rep, err := cross.Run(ctx, cross.Options{Target: flag.Arg(0), Timeout: *timeout, Log: os.Stderr, EvidenceDir: *evidenceDir, Jobs: *jobs, Select: *sel, RequireWitness: *requireWitness, Shard: k, Shards: n})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "subpoena-cross:", err)
 		os.Exit(2)
 	}
 	fmt.Printf("%d enforcement point(s), %d marker(s), %d mutant(s)\n", rep.EnforcementPoints, rep.Markers, len(rep.Results))
+	if rep.Shards > 0 {
+		// One line per mutant judged here, so the shards' outputs together can
+		// be checked to judge each of the Total mutants exactly once.
+		fmt.Printf("shard %d/%d: %d of %d mutant(s)\n", rep.Shard, rep.Shards, singles(rep), rep.Total)
+		for _, r := range rep.Results {
+			if r.Group == "" {
+				fmt.Printf("shard %d/%d judged %s\n", rep.Shard, rep.Shards, r.Mutant.Name())
+			}
+		}
+	}
 	for _, at := range rep.Unplaced {
 		fmt.Printf("marker made no mutant: %s\n", at)
 	}
@@ -165,4 +183,15 @@ func where(m cross.Mutant) string {
 		return fmt.Sprintf("%s:%d (upstream line %d)", m.File, m.Line, m.Upstream)
 	}
 	return fmt.Sprintf("%s:%d", m.File, m.Line)
+}
+
+// singles counts the mutants judged alone: one per mutant, groups aside.
+func singles(rep *cross.Report) int {
+	n := 0
+	for _, r := range rep.Results {
+		if r.Group == "" {
+			n++
+		}
+	}
+	return n
 }

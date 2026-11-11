@@ -1,0 +1,117 @@
+name: cross-internal
+
+# Cross on internal/cross, the part of `make cross-self` that tier1 leaves out.
+# Each mutant reruns that package's suite several times, so one run takes hours
+# on one host and passes GitHub's 6-hour job limit. Here `subpoena-cross -shard`
+# splits the mutants across hosted runners: every shard of a commit computes the
+# same split, judges its share, and the cover job checks that the shards together
+# judged every mutant exactly once.
+#
+# It runs on a pull request or push that touches Cross, weekly on main, and on
+# demand. A scheduled run that fails opens an issue.
+#
+# The shard count appears twice: in the matrix and in SHARDS. Keep them equal.
+# The suite took 473 s alone on 4 pinned cores on 2026-11-10, and a kill reruns
+# it about five times, so a mutant is about 40 minutes at -j 1. 19 shards of the
+# 57 mutants is at most 3 each (with groups whole), about 2 hours a shard, well
+# inside the 6-hour limit even on slower runner CPUs.
+on:
+  pull_request:
+    paths:
+      - "internal/cross/**"
+      - "cmd/subpoena-cross/**"
+      - ".github/workflows/cross-internal.yml"
+      - ".github/scripts/cross-shards-cover.sh"
+      - "go.mod"
+      - "go.sum"
+  push:
+    branches: [main]
+    paths:
+      - "internal/cross/**"
+      - "cmd/subpoena-cross/**"
+      - ".github/workflows/cross-internal.yml"
+      - ".github/scripts/cross-shards-cover.sh"
+      - "go.mod"
+      - "go.sum"
+  schedule:
+    - cron: "0 6 * * 0" # Sundays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-internal-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SHARDS: "19"
+
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: true
+      # -j 1: a hosted runner has 4 CPUs, and one mutant's suite uses them all.
+      # GOFLAGS lifts go test's own 10-minute limit above Cross's -timeout, so a
+      # slow run ends as a Cross timeout verdict, not a test binary panic.
+      - name: cross-examination over internal/cross, shard ${{ matrix.shard }}
+        env:
+          GOFLAGS: -timeout=50m
+        run: |
+          set -o pipefail
+          go build -o "$RUNNER_TEMP/subpoena-cross" ./cmd/subpoena-cross
+          "$RUNNER_TEMP/subpoena-cross" -timeout 40m -j 1 -shard "${{ matrix.shard }}/$SHARDS" ./internal/cross | tee "$RUNNER_TEMP/shard-${{ matrix.shard }}.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: cross-internal-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard-${{ matrix.shard }}.txt
+          if-no-files-found: ignore
+
+  cover:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cross-internal-shard-*
+          path: shards
+          merge-multiple: true
+      - name: every mutant judged once
+        run: .github/scripts/cross-shards-cover.sh "$SHARDS" shards/shard-*.txt
+      - name: every shard passed
+        if: needs.shard.result != 'success'
+        run: |
+          echo "a shard failed or was cancelled: ${{ needs.shard.result }}" >&2
+          exit 1
+
+  alert:
+    needs: [shard, cover]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create -R "${{ github.repository }}" \
+            --title "cross-internal failed on the weekly run ($(date -u +%Y-%m-%d))" \
+            --body "The scheduled Cross run over internal/cross failed: $RUN"
