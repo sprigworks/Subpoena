@@ -221,7 +221,7 @@ pkg/cgroup/           one cgroup per session, named with the trace ID
 pkg/production/       drop test-tier attributes in production (exporter, Collector config)
 witnesses/            witness design notes, Tetragon policy (enforcement)
 invariants/           *.traceql invariants (+ embedded loader)
-cmd/subpoena-lint/    static checks (see lint/README.md)
+cmd/subpoena-lint/    static checks (see docs/lint.md)
 cmd/subpoena-cross/   cross-examination
 cmd/subpoena-witness/ runs a witness, JSON lines out
 cmd/subpoena-invgen/  writes invariants/names.go (also for other modules)

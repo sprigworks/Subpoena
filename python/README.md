@@ -103,9 +103,9 @@ For a deliberate Level 0 exception, repeat `--exempt rule=reason`. Only
 reason is required and printed, and an unused waiver errors. An educational
 enforcement function needs its own `# subpoena:unwitnessed <reason>` marker
 immediately above its definition or decorators. Other functions still need
-witnesses. See [marker validation](https://github.com/sprigworks/subpoena/blob/main/lint/README.md#explicit-level-0-exemptions).
+witnesses. See [marker validation](https://github.com/sprigworks/subpoena/blob/main/docs/lint.md#explicit-level-0-exemptions).
 
-The rules have the meanings in [lint/README.md](https://github.com/sprigworks/subpoena/blob/main/lint/README.md):
+The rules have the meanings in [docs/lint.md](https://github.com/sprigworks/subpoena/blob/main/docs/lint.md):
 `unknown-telemetry`, `no-trace-assertion`, `unwitnessed-enforcement`,
 `unguarded-absence`, `missing-provenance`, `orphan-invariant`,
 `provider-override`, and opt-in `dead-telemetry`. The separate `registry-drift`

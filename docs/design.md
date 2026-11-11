@@ -86,7 +86,7 @@ The rules are in [`AGENTS.md`](../AGENTS.md), which Claude Code and other agents
 | `dead-telemetry` | A registry name no code uses (opt-in) |
 | `registry-drift` | A registry change in the same PR as a test that depends on it |
 
-Each rule is described in [lint/README.md](../lint/README.md). The provenance markers carry one more rule: tests are written from the registry and the docs before reading the implementation. Tests anchored on the implementation detect fewer faults ([arXiv:2607.05139](https://arxiv.org/abs/2607.05139) measured 14% against 25%).
+Each rule is described in [docs/lint.md](../docs/lint.md). The provenance markers carry one more rule: tests are written from the registry and the docs before reading the implementation. Tests anchored on the implementation detect fewer faults ([arXiv:2607.05139](https://arxiv.org/abs/2607.05139) measured 14% against 25%).
 
 ## Worked example: an authorization gate
 

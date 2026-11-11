@@ -1,6 +1,6 @@
 # subpoena:spec_derived
 # subpoena:pure_logic
-"""L1 contract fixtures, written from lint/README.md before the Python implementation."""
+"""L1 contract fixtures, written from docs/lint.md before the Python implementation."""
 import subprocess
 import sys
 from pathlib import Path
