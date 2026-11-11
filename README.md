@@ -40,7 +40,9 @@ that kind of code in three ways.
 To see a failure ordinary tests miss, run `make demo`. A gateway answers 403 and logs the denial, but it has already run the tool ([`examples/saidno`](examples/saidno)).
 
 **Status: alpha, v0.1.0-alpha.6.** APIs will change. Go is the reference
-implementation, and Python is a port (see [Languages](#languages)).
+implementation, and Python is a port (see [Languages](#languages)). The Python
+package on PyPI is 0.1.0a4 and pairs with Go v0.1.0-alpha.4; no Python release
+goes with alpha.5 or alpha.6.
 
 ## What a test looks like
 
