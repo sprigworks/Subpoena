@@ -232,6 +232,11 @@ type Report struct {
 	// StaleAccepted lists entries of the masked-layer file (MaskedFile) that
 	// matched no masked layer. They fail the run, so the file cannot go stale.
 	StaleAccepted []string
+	// Total is the number of mutants discovery found. A sharded run judges
+	// only its share of them; Shard and Shards (1-based) say which, and are
+	// zero when the run is not sharded.
+	Total         int
+	Shard, Shards int
 }
 
 // MaskedFile, in the target directory, lists masked layers accepted as
@@ -296,11 +301,15 @@ type Options struct {
 	// in a per-test coverage pass after the baseline (see select.go).
 	Select   bool
 	selected map[string][]string // Mutant.Name() -> tests, when Select
-	noTests  map[string]bool     // packages the baseline showed to have no test to run
-	runs     *atomic.Int64       // numbers the evidence files
-	key      string              // a sandbox's key until runner.test gives it its own
-	run      *runner             // starts every test binary of the run
-	modPath  string              // the module's path, as go reads it
+	// Shard and Shards, when Shards > 0, judge only shard Shard of Shards
+	// (1-based) of the mutants: see shardOf. Every shard of one snapshot
+	// splits the mutants the same way, so the shards together judge each once.
+	Shard, Shards int
+	noTests       map[string]bool // packages the baseline showed to have no test to run
+	runs          *atomic.Int64   // numbers the evidence files
+	key           string          // a sandbox's key until runner.test gives it its own
+	run           *runner         // starts every test binary of the run
+	modPath       string          // the module's path, as go reads it
 	// afterDiscover, if set, runs after the snapshot is taken and before
 	// baseline. Tests use it to edit the live tree. Production leaves it nil.
 	afterDiscover func(liveRoot string)
@@ -364,6 +373,17 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 	groups, err := groupsOf(mutants)
 	if err != nil {
 		return nil, err
+	}
+	rep.Total = len(mutants)
+	var elsewhere map[string]bool
+	if o.Shards > 0 {
+		if mutants, elsewhere, err = shardOf(mutants, o.Shard, o.Shards); err != nil {
+			return nil, err
+		}
+		for g := range elsewhere {
+			delete(groups, g)
+		}
+		rep.Shard, rep.Shards = o.Shard, o.Shards
 	}
 
 	if err := absoluteReplaces(ctx, root, tmp); err != nil {
@@ -548,7 +568,7 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 			rep.Results[single[m.Name()]].Outcome, rep.Results[single[m.Name()]].MaskedBy = Masked, by
 		}
 	}
-	if err := acceptMasked(rep, filepath.Join(tmp, rel, MaskedFile)); err != nil {
+	if err := acceptMasked(rep, filepath.Join(tmp, rel, MaskedFile), elsewhere); err != nil {
 		return nil, err
 	}
 	return rep, nil
@@ -2996,7 +3016,7 @@ func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 // missing file accepts nothing.
 //
 //subpoena:enforcement_point
-func acceptMasked(rep *Report, path string) error {
+func acceptMasked(rep *Report, path string, elsewhere map[string]bool) error {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -3024,7 +3044,9 @@ func acceptMasked(rep *Report, path string) error {
 			break
 		}
 		reasons[key] = strings.TrimSpace(f[4])
-		order = append(order, key)
+		if !elsewhere[strings.TrimPrefix(strings.TrimSpace(f[2]), "group=")] {
+			order = append(order, key) // another shard's group is that shard's to match
+		}
 	}
 	if bad > 0 {
 		return fmt.Errorf("cross: %s:%d: want <file> | <func> | group=<group> | <removed text> | <reason>, each layer listed once", MaskedFile, bad) //subpoena:enforcement

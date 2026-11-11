@@ -321,7 +321,15 @@ selected subset that fails together (tests that depend on each other's
 order), is an error. The coverage pass costs about
 one extra suite run, so it pays off when each mutant's suite is long: on
 cross-self on the same day (short suites) `-j 8 -select` took 141 s against 135 s for `-j 8`,
-with the same verdicts. An enforcement point
+with the same verdicts. `-shard k/n` judges only shard k of n of the mutants,
+so n runs of one commit, one per host, split a run too long for one: each
+shard runs its own baseline, and a group stays whole in one shard, with its
+`cross-masked.txt` entries matched there only. Every shard of a snapshot splits
+the mutants the same way, and each prints `shard k/n judged <mutant>` per mutant
+and `shard k/n: m of T mutant(s)`; `.github/scripts/cross-shards-cover.sh` checks
+the n outputs judged every one of the T exactly once. A shard with no mutant is
+an error. The `cross-internal` workflow runs `internal/cross` this way in 19
+shards. An enforcement point
 with no `//subpoena:enforcement` statement is an error, not a skip, so one
 covered function cannot hide an unexamined one. The report starts with the
 number of enforcement points and mutants.
