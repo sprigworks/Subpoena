@@ -544,7 +544,7 @@ func TestReview7OpaqueStatementForgetsPreparedNames(t *testing.T) {
 	})
 }
 
-// The lists in sql.go and the files the live tests hold against a real server
+// The lists in classify.go and the files the live tests hold against a real server
 // must be the same lists.
 func TestReview7ListsMatchTestdata(t *testing.T) {
 	keys := func(m map[string]bool) []string {
@@ -566,7 +566,7 @@ func TestReview7ListsMatchTestdata(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got := strings.Fields(string(b)); !slices.Equal(got, keys(list)) {
-			t.Errorf("%s does not match the list in sql.go", file)
+			t.Errorf("%s does not match the list in classify.go", file)
 		}
 	}
 }
