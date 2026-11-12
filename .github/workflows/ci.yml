@@ -35,17 +35,73 @@ jobs:
         run: go run ./cmd/subpoena-cross --require-witness ./examples/saidno
       - name: the demo comes out as its README says
         run: make demo
-      # internal/cross is left out here: each of its mutants reruns a
-      # 5-minute suite four times, about 19 hours at -j 1, past GitHub's
-      # 6-hour job limit. It stays in CROSS_SELF, so `make cross-self` and
-      # `make check` still run it, and cross-internal.yml runs it in shards on
-      # every change to Cross and weekly.
+      # Cross over Subpoena's own guards, minus two packages. internal/cross
+      # runs in cross-internal.yml: each of its mutants reruns a 5-minute suite
+      # several times, past GitHub's 6-hour job limit. pkg/witness has about
+      # 300 mutants, 2.5 hours at -j 1, so the witness-cross jobs below split it
+      # into shards that run beside tier1. `make cross-self` and `make check`
+      # still run all of CROSS_SELF in one go.
       - name: cross-examination over Subpoena's own guards
-        run: make cross-self CROSS_SELF="./pkg/harness ./pkg/witness ./conformance/oatscapture"
+        run: make cross-self CROSS_SELF="./pkg/harness ./conformance/oatscapture"
       # Evidence, not a pass bar: the runner's process count, full-scan and
       # children-walk cost, and how many short processes ProcWitness caught.
       - name: ProcWitness benchmarks (report only)
         run: go test -run '^$' -bench 'Proc' -benchtime 50x ./pkg/witness
+
+  # Cross over pkg/witness/..., split with `subpoena-cross -shard`. Every shard
+  # of a commit computes the same split and judges its share; witness-cross
+  # checks that the shards together judged every mutant exactly once, and
+  # fails if any shard failed. The shard count appears twice: in the matrix and
+  # in WITNESS_SHARDS. Keep them equal.
+  witness-cross-shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: true
+      - name: cross-examination over pkg/witness, shard ${{ matrix.shard }}
+        env:
+          WITNESS_SHARDS: "6"
+        run: |
+          set -o pipefail
+          go build -o "$RUNNER_TEMP/subpoena-cross" ./cmd/subpoena-cross
+          "$RUNNER_TEMP/subpoena-cross" -timeout 20m -shard "${{ matrix.shard }}/$WITNESS_SHARDS" ./pkg/witness | tee "$RUNNER_TEMP/shard-${{ matrix.shard }}.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: witness-cross-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard-${{ matrix.shard }}.txt
+          if-no-files-found: ignore
+
+  witness-cross:
+    needs: witness-cross-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: witness-cross-shard-*
+          path: shards
+          merge-multiple: true
+      - name: every mutant judged once
+        run: .github/scripts/cross-shards-cover.sh 6 shards/shard-*.txt
+      - name: every shard passed
+        if: needs.witness-cross-shard.result != 'success'
+        run: |
+          echo "a shard failed or was cancelled: ${{ needs.witness-cross-shard.result }}" >&2
+          exit 1
 
   # The Python port (python/): its own tests over the shared corpus, then the
   # evaluator through subpoena-conform, the protocol every port is checked by.
