@@ -103,6 +103,9 @@ test-db:
 
 # Regenerate the eBPF objects and Go bindings from pkg/witness/{execbpf,netbpf}/bpf/*.c
 # (needs clang). The output is committed so ordinary builds need no clang.
+# Build with clang 14.0.0 (Ubuntu 22.04's clang-14, 1:14.0.0-1ubuntu1.1) as
+# `clang` on PATH: other versions emit different bytes, and the kernel workflow's
+# bpf-objects job rebuilds with that clang and fails on any difference.
 generate-bpf:
 	go generate ./pkg/witness/execbpf ./pkg/witness/netbpf
 

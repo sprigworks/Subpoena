@@ -75,8 +75,10 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
 - `make test-ebpf` (the eBPF witnesses against the real kernel) needs Docker
   and runs privileged; elsewhere its kernel tests skip, so do not claim they
   passed. After editing `pkg/witness/execbpf/bpf/exec.c` or
-  `pkg/witness/netbpf/bpf/net.c`, run `make generate-bpf` (clang) and commit
-  the regenerated objects.
+  `pkg/witness/netbpf/bpf/net.c`, run `make generate-bpf` with clang 14.0.0
+  (Ubuntu 22.04's clang-14) as `clang` and commit the regenerated objects. CI's
+  `bpf-objects` job rebuilds them with that clang and fails on any byte of
+  difference; another clang version will not match.
 - `make test-db` (the database witness against real servers) needs Docker. Plain
   `go test` runs those tests only if Docker and both images are there, and skips
   them otherwise, so do not claim they passed without seeing them run.
