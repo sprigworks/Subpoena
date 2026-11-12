@@ -54,8 +54,11 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   refusing Pass on a truncated capture, lost kernel events, cross's own
   refusals) are enforcement points too. `make cross-self` cross-examines
   them; a new guard gets the markers and a test that kills its mutant.
-  CI's `tier1` leaves `./internal/cross` out (it takes hours), so run
-  `make cross-self` locally on any change under `internal/cross` and before a tag.
+  CI's `tier1` leaves `./internal/cross` out (it takes hours). The
+  `cross-internal` workflow runs it instead, split with `subpoena-cross -shard`
+  across hosted runners, on any pull request that touches Cross, weekly, and
+  on demand. Its `cover` job checks the shards judged every mutant once; a
+  green PR needs it. Run `make cross-self` locally before a tag.
 
 ## Environment
 

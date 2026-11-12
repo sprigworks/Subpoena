@@ -1,6 +1,6 @@
 """Python L1 lint. Static AST checks; target modules and registries are never imported.
 
-See lint/README.md for the rules and python/README.md for Python resolution limits.
+See docs/lint.md for the rules and python/README.md for Python resolution limits.
 Exit codes: 0 clean, 1 findings, 2 usage or load error.
 """
 from __future__ import annotations

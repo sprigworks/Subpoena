@@ -766,7 +766,7 @@ func TestMaskedEntryNamesTheGroup(t *testing.T) {
 	if err := os.WriteFile(path, []byte("exec.go | Exec | group=g | return ErrNo | covered together\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := acceptMasked(rep, path); err != nil {
+	if err := acceptMasked(rep, path, nil); err != nil {
 		t.Fatal(err)
 	}
 	if rep.Results[0].Accepted != "" || len(rep.StaleAccepted) != 1 || !rep.Failed() {
@@ -775,7 +775,7 @@ func TestMaskedEntryNamesTheGroup(t *testing.T) {
 	if err := os.WriteFile(path, []byte("exec.go | Exec | return ErrNo | no group\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := acceptMasked(rep, path); err == nil || !strings.Contains(err.Error(), "group=<group>") {
+	if err := acceptMasked(rep, path, nil); err == nil || !strings.Contains(err.Error(), "group=<group>") {
 		t.Fatalf("an entry without its group must be refused, got %v", err)
 	}
 }
@@ -904,7 +904,7 @@ func TestMaskedEntryAcceptsOneLayer(t *testing.T) {
 	if err := os.WriteFile(path, []byte("exec.go | Exec | group=g | return ErrNo | covered together\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := acceptMasked(twoLayers, path); err == nil || !strings.Contains(err.Error(), "matches 2 masked layers") {
+	if err := acceptMasked(twoLayers, path, nil); err == nil || !strings.Contains(err.Error(), "matches 2 masked layers") {
 		t.Fatalf("want an ambiguous-entry error, got %v", err)
 	}
 	for _, r := range twoLayers.Results {
@@ -916,7 +916,7 @@ func TestMaskedEntryAcceptsOneLayer(t *testing.T) {
 	if err := os.WriteFile(path, []byte("exec.go | Exec | group=g | return ErrNo | one\nexec.go | Exec | group=g | return ErrNo | two\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := acceptMasked(oneLayer, path); err == nil || !strings.Contains(err.Error(), "each layer listed once") {
+	if err := acceptMasked(oneLayer, path, nil); err == nil || !strings.Contains(err.Error(), "each layer listed once") {
 		t.Fatalf("want a duplicate-entry error, got %v", err)
 	}
 }

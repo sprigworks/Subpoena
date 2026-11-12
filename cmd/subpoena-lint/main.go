@@ -1,5 +1,5 @@
 // Command subpoena-lint checks a package tree for trace-native testing
-// violations. See lint/README.md for the rules.
+// violations. See docs/lint.md for the rules.
 //
 //	subpoena-lint [-registry dir] [-invariants dir] [-dead-telemetry] [-exempt rule=reason] <dir>...
 //	subpoena-lint registry-drift [--base ref] [repo]

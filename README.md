@@ -40,7 +40,9 @@ that kind of code in three ways.
 To see a failure ordinary tests miss, run `make demo`. A gateway answers 403 and logs the denial, but it has already run the tool ([`examples/saidno`](examples/saidno)).
 
 **Status: alpha, v0.1.0-alpha.6.** APIs will change. Go is the reference
-implementation, and Python is a port (see [Languages](#languages)).
+implementation, and Python is a port (see [Languages](#languages)). The Python
+package on PyPI is 0.1.0a4 and pairs with Go v0.1.0-alpha.4; no Python release
+goes with alpha.5 or alpha.6.
 
 ## What a test looks like
 
@@ -138,7 +140,7 @@ Details in [docs/architecture.md](docs/architecture.md).
 | SQLite commit checks (`RequireNoCommit`) | yes | no |
 | Delivery on an existing socket (`RequireNoDelivery`, `WatchDeliveries`), eBPF only | yes | `no_delivery` over the witness file |
 | Database row checks (`RequireNoRow`, `dbproxy`; Postgres and MySQL only; experimental) | yes | reads the file `subpoena-witness db` writes |
-| Cross-examination (`subpoena-cross`) | yes, plus layer groups, `-j` and `-select` | yes, for pytest, including groups, `-j`, `-select` and evidence files |
+| Cross-examination (`subpoena-cross`) | yes, plus layer groups, `-j`, `-select` and `-shard` | yes, for pytest, including groups, `-j`, `-select` and evidence files |
 | Lint (`subpoena-lint`) | yes | yes, eight AST rules; registry-drift stays Go-only |
 | Tiers 2 and 3 (OATS, alert rules) | same files, any language | same files, any language |
 
@@ -219,7 +221,7 @@ pkg/cgroup/           one cgroup per session, named with the trace ID
 pkg/production/       drop test-tier attributes in production (exporter, Collector config)
 witnesses/            witness design notes, Tetragon policy (enforcement)
 invariants/           *.traceql invariants (+ embedded loader)
-cmd/subpoena-lint/    static checks (see lint/README.md)
+cmd/subpoena-lint/    static checks (see docs/lint.md)
 cmd/subpoena-cross/   cross-examination
 cmd/subpoena-witness/ runs a witness, JSON lines out
 cmd/subpoena-invgen/  writes invariants/names.go (also for other modules)
