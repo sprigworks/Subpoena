@@ -7,8 +7,11 @@ name: cross-internal
 # same split, judges its share, and the cover job checks that the shards together
 # judged every mutant exactly once.
 #
-# It runs on a pull request or push that touches Cross, weekly on main, and on
-# demand. A scheduled run that fails opens an issue.
+# It runs on a pull request that touches Cross, weekly on main, and on demand.
+# Not on push to main: main requires branches to be up to date before merging,
+# so the merged tree is the one the pull request's shards already judged, and a
+# second 19-shard run would only hold GitHub's 20 job slots from other work.
+# A scheduled run that fails opens an issue.
 #
 # The shard count appears twice: in the matrix and in SHARDS. Keep them equal.
 # The suite took 473 s alone on 4 pinned cores on 2026-11-10, and a kill reruns
@@ -17,15 +20,6 @@ name: cross-internal
 # inside the 6-hour limit even on slower runner CPUs.
 on:
   pull_request:
-    paths:
-      - "internal/cross/**"
-      - "cmd/subpoena-cross/**"
-      - ".github/workflows/cross-internal.yml"
-      - ".github/scripts/cross-shards-cover.sh"
-      - "go.mod"
-      - "go.sum"
-  push:
-    branches: [main]
     paths:
       - "internal/cross/**"
       - "cmd/subpoena-cross/**"
