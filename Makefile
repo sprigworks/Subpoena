@@ -56,7 +56,7 @@ cross:
 	go run ./cmd/subpoena-cross --require-witness ./examples/saidno
 
 # Subpoena's own fail-closed guards, cross-examined like any adopter's.
-CROSS_SELF := ./pkg/harness ./pkg/witness ./internal/cross ./conformance/oatscapture
+CROSS_SELF := ./pkg/harness ./pkg/witness ./internal/cross ./conformance/oatscapture ./pkg/report ./cmd/subpoena-report
 cross-self:
 	@set -e; for t in $(CROSS_SELF); do go run ./cmd/subpoena-cross -timeout 20m $$t; done
 
