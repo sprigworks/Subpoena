@@ -49,6 +49,33 @@ jobs:
       - run: uname -r && ls -l /sys/kernel/btf/vmlinux
       - run: make test-ebpf
 
+  # The committed eBPF objects must be what bpf/*.c compiles to. A byte compare
+  # only holds with one compiler, so this job pins Ubuntu 22.04's clang 14.0.0
+  # (the version the objects are built with) and fails on any difference.
+  bpf-objects:
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - name: pinned clang
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git make \
+            clang-14=1:14.0.0-1ubuntu1.1
+          mkdir -p /opt/bpf-cc && ln -s /usr/bin/clang-14 /opt/bpf-cc/clang
+          echo /opt/bpf-cc >> "$GITHUB_PATH"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: true
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: clang --version && make generate-bpf
+      - name: committed objects match the source
+        run: |
+          git status --porcelain -- pkg/witness/execbpf pkg/witness/netbpf
+          git diff --exit-code --stat -- pkg/witness/execbpf pkg/witness/netbpf
+          test -z "$(git status --porcelain -- pkg/witness/execbpf pkg/witness/netbpf)"
+
   conformance:
     runs-on: ubuntu-latest
     steps:
