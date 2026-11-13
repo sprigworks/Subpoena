@@ -224,9 +224,15 @@ func TestUpstreamDownIsInconclusive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, err := c.Read(make([]byte, 1)); err == nil {
+	// A timeout is not a cut-off: on a loaded machine the proxy may not have
+	// accepted the connection yet, and Stop would then report it as queued.
+	c.SetReadDeadline(time.Now().Add(60 * time.Second))
+	_, err = c.Read(make([]byte, 1))
+	if err == nil {
 		t.Fatal("the client must be cut off")
+	}
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatalf("the proxy never handled the connection: %v", err)
 	}
 	err = p.Stop()
 	if err == nil || !strings.Contains(err.Error(), "could not be proxied") {
