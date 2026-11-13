@@ -19,7 +19,9 @@ head=$2
 # and the files that decide how the check runs.
 extra='^(go\.mod|go\.sum|conformance/|docs/witness-event\.schema\.json|\.github/workflows/ci\.yml|\.github/scripts/(witness-affected|cross-shards-cover)\.sh)'
 
-if ! changed=$(git diff --name-only "$base" "$head"); then
+# --no-renames lists both sides of a rename, so moving a file out of an input
+# directory still counts; -z keeps paths with unusual characters unquoted.
+if ! changed=$(git diff --no-renames --name-only -z "$base" "$head" | tr '\0' '\n'); then
 	echo "witness-affected: git diff $base $head failed; running the check" >&2
 	echo true
 	exit 0
