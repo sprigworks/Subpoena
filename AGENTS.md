@@ -58,7 +58,10 @@ witness, not by the spans. These rules keep that true. `subpoena-lint` and
   `cross-internal` workflow runs it instead, split with `subpoena-cross -shard`
   across hosted runners, on any pull request that touches Cross, weekly, and
   on demand. Its `cover` job checks the shards judged every mutant once; a
-  green PR needs it. Run `make cross-self` locally before a tag.
+  green PR needs it. `pkg/witness` is left out of `tier1` too: the
+  `witness-cross` jobs in `ci.yml` run it in 12 shards on a pull request that
+  changes one of its inputs (`.github/scripts/witness-affected.sh` decides),
+  daily, and on demand. Run `make cross-self` locally before a tag.
 
 ## Environment
 
