@@ -78,7 +78,7 @@ From a checkout of [github.com/sprigworks/subpoena](https://github.com/sprigwork
 make python        # venv, pytest, subpoena-conform
 ```
 
-`make python` needs [uv](https://docs.astral.sh/uv/) and Go 1.25+ (for
+`make python` needs [uv](https://docs.astral.sh/uv/) and Go 1.26+ (for
 `subpoena-conform`).
 
 CI runs Python 3.9 and 3.12.

@@ -24,7 +24,7 @@ The rule: a denied agent gets a 403, and its tool never runs.
   Subpoena (checks capture health)         FAIL  Inconclusive: capture failed, so nothing is proven
 ```
 
-It needs Go 1.25+ on Linux and no privileges. The first run has to compile, so it can take
+It needs Go 1.26+ on Linux and no privileges. The first run has to compile, so it can take
 half a minute. After that it takes a few seconds.
 
 ## What happens

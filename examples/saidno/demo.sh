@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the same gateway three ways and prints what each kind of check says.
 # Exits non-zero if any check doesn't come out the way the README says, so CI
-# keeps the demo honest. Needs Go 1.25+ on Linux, and no privileges.
+# keeps the demo honest. Needs Go 1.26+ on Linux, and no privileges.
 set -u
 if [ "$(uname -s)" != Linux ]; then
 	echo 'This demo needs Linux: its witness reads /proc.' >&2
