@@ -1045,7 +1045,7 @@ excused in one position only.
 with pgx, go-sql-driver, `psql` and the `mysql` client, checking each verdict against
 what the tables hold. Those tests skip without Docker or the images, and under
 `subpoena-cross`; `make test-db` makes a skip a failure. The limits above that can
-be pinned are, in `TestReview6PostgresStatedLimits`. The frame parsers also
+be pinned are, in `TestPostgresPreinstalledRoutineLimits`. The frame parsers also
 replay bytes recorded from those servers, in `pkg/witness/dbproxy/testdata`.
 
 ### How other witnesses identify a process's cgroup

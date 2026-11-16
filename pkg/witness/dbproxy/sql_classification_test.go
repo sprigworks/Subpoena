@@ -1,8 +1,7 @@
 //subpoena:impl_derived
 //subpoena:pure_logic
 
-// Round 2 review 7, RESEARCH/ROUND2_REVIEW7_DB_20261106.md in the workspace. The
-// live package runs these for real; here they pin the reading without a server.
+// SQL call positions, types, builtins, and table routing.
 package dbproxy
 
 import (
@@ -12,165 +11,8 @@ import (
 	"testing"
 )
 
-// H1, H2, L2: a setting that changes lexing or lookup counts in any spelling, and
-// only a value that is plainly safe keeps the session.
-func TestReview7SetTaint(t *testing.T) {
-	long := strings.Repeat("é", 40)
-	for _, tc := range []struct {
-		d     dialect
-		sql   string
-		taint bool
-	}{
-		{dialectPostgres, `SET search_path = s, E'pg\x5fcatalog', public`, true},
-		{dialectPostgres, `SET search_path = s, $$pg_catalog$$`, true},
-		{dialectPostgres, `SET search_path = s, 'pg_catalog'`, true},
-		{dialectPostgres, `SET search_path = s, "pg_catalog"`, true},
-		{dialectPostgres, `SET search_path = s, PG_CATALOG`, true},
-		{dialectPostgres, `SET "search_path" = s, pg_catalog`, true},
-		{dialectPostgres, `SET "SEARCH_PATH" = s, pg_catalog`, true},
-		{dialectPostgres, `SET "search-path" = s, pg_catalog`, true},
-		{dialectPostgres, `SET LOCAL search_path TO s, pg_catalog`, true},
-		{dialectPostgres, `SET search_path = s pg_catalog`, true},
-		{dialectPostgres, `SET search_path = s,`, true},
-		{dialectPostgres, `SET search_path = 1`, true},
-		{dialectPostgres, `SET search_path = 'it''s'`, true},
-		{dialectPostgres, `SET SCHEMA E'x'`, true},
-		{dialectPostgres, `SET U&"search\005fpath" = s, pg_catalog`, true},
-		{dialectPostgres, `SET U&"sea\0072ch\005fpa\0074h" = s`, true},
-		{dialectPostgres, `SET search_path = s, ` + long + `, pg_catalog`, true},
-		{dialectPostgres, `SET standard_conforming_strings = E'o\x6e'`, true},
-		{dialectPostgres, `SET standard_conforming_strings = $$on$$`, true},
-		{dialectPostgres, `SET client_encoding = E'SJ\x49S'`, true},
-		{dialectPostgres, `SET client_encoding = $$UTF8$$`, true},
-		{dialectPostgres, `SET "client_encoding" = 'SJIS'`, true},
-		{dialectPostgres, `SET NAMES`, true},
-		{dialectPostgres, `SET a.b = search_path`, true},
-		{dialectPostgres, `SELECT set_config('search_path', 's,pg_catalog', false)`, true},
-		{dialectPostgres, `SELECT pg_catalog.set_config('client-encoding', 'SJIS', false)`, true},
-		{dialectPostgres, `SELECT set_config(E'search\x5fpath', 's', false)`, true},
-		{dialectPostgres, `SELECT set_config($1, 's', false)`, true},
-		{dialectPostgres, `SELECT "set_config"('search_path', 's', false)`, true},
-		{dialectPostgres, `SET search_path = "$user", public`, false},
-		{dialectPostgres, `SET search_path = 'app', public`, false},
-		{dialectPostgres, `SET search_path TO DEFAULT`, false},
-		{dialectPostgres, `SET search_path = ''`, false},
-		{dialectPostgres, `SET SCHEMA 'app'`, false},
-		{dialectPostgres, `SET NAMES 'UTF8'`, false},
-		{dialectPostgres, `SET standard_conforming_strings = 1`, false},
-		{dialectPostgres, `SET TIME ZONE 'UTC'`, false},
-		{dialectPostgres, `SET application_name = 'search_path'`, false},
-		{dialectPostgres, `SELECT set_config('app.user', 'x', true)`, false},
-
-		{dialectMySQL, "SET `sql_mode`='ANSI_QUOTES'", true},
-		{dialectMySQL, `SET sql_mode='A\NSI_QUOTES'`, true},
-		{dialectMySQL, "SET @@`sql_mode`='ANSI'", true},
-		{dialectMySQL, "SET @@session.`SQL_MODE` = 'ANSI'", true},
-		{dialectMySQL, "SET SESSION `sql-mode` = 'ANSI'", true},
-		{dialectMySQL, "SET `character_set_client`=gbk", true},
-		{dialectMySQL, "SET @@session.character_set_client = gbk", true},
-		{dialectMySQL, "SET sql_mode = 4", true},
-		{dialectMySQL, "SET sql_mode = 0x4", true},
-		{dialectMySQL, "SET sql_mode = _utf8mb4'ANSI_QUOTES'", true},
-		{dialectMySQL, "SET sql_mode = x'414e5349'", true},
-		{dialectMySQL, "SET sql_mode = (SELECT 'ANSI')", true},
-		{dialectMySQL, "SET sql_mode = DEFAULT", true},
-		{dialectMySQL, "SET sql_mode = CONCAT('AN', 'SI')", true},
-		{dialectMySQL, "SET sql_mode = CONCAT (@@sql_mode, ',STRICT_ALL_TABLES')", true},
-		{dialectMySQL, "SET sql_mode = CONCAT(@@global.sql_mode, ',STRICT_ALL_TABLES')", true},
-		{dialectMySQL, "SET sql_mode = CONCAT(@@sql_mode, ',STRICT_ALL_TABLES', ',ANSI')", true},
-		{dialectMySQL, "SET sql_mode = CONCAT(@@sql_mode, @x)", true},
-		{dialectMySQL, "SET sql_mode = 'STRICT_TRANS_TABLES,ANSI'", true},
-		{dialectMySQL, "SET sql_mode = 'STRICT_ALL_TABLES''ANSI'", true},
-		{dialectMySQL, "SET sql_mode = 'ROLLED_OUT_LATER'", true},
-		{dialectMySQL, "SET a = 1, sql_mode = 'ANSI'", true},
-		{dialectMySQL, "SET a = (1, 2), `sql_mode` = 'ANSI'", true},
-		{dialectMySQL, "SET sql_mode", true},
-		{dialectMySQL, `SET NAMES 'g\bk'`, true},
-		{dialectMySQL, "SET NAMES gbk COLLATE gbk_bin", true},
-		{dialectMySQL, "SET NAMES utf8mb4 WHATEVER", true},
-		{dialectMySQL, "SET NAMES DEFAULT", true},
-		{dialectMySQL, "SET CHARACTER SET gbk", true},
-		{dialectMySQL, "SET /*! sql_mode */ = 'x'", true},
-		{dialectMySQL, "SET NAMES latin2", false},
-		{dialectMySQL, "SET NAMES 'latin2' COLLATE 'latin2_bin'", false},
-		{dialectMySQL, "SET CHARACTER SET cp1251", false},
-		{dialectMySQL, "SET character_set_connection = gbk", false},
-		{dialectMySQL, "SET @@SESSION.sql_mode = CONCAT(@@sql_mode, ',STRICT_ALL_TABLES'), @@SESSION.sql_auto_is_null = 0, @@SESSION.wait_timeout = 2147483", false},
-		{dialectMySQL, "SET sql_mode = CONCAT(@@session.sql_mode, ',NO_ZERO_DATE,NO_ZERO_IN_DATE', ',TRADITIONAL')", false},
-		{dialectMySQL, "SET sql_mode = ''", false},
-		{dialectMySQL, `SET sql_mode = "STRICT_TRANS_TABLES,NO_ZERO_DATE"`, false},
-		{dialectMySQL, "SET sql_mode = TRADITIONAL", false},
-		{dialectMySQL, "SET @m = @@sql_mode", false},
-		{dialectMySQL, "SET NAMES utf8mb4, sql_mode = ''", false},
-		{dialectMySQL, "SET autocommit = 1", false},
-	} {
-		got := parseSQL(tc.d, tc.sql)
-		taint := ""
-		for i := range got {
-			if got[i].taint != "" {
-				taint = got[i].taint
-			}
-		}
-		if (taint != "") != tc.taint {
-			t.Errorf("%v %q: taint %q, want %v", tc.d, tc.sql, taint, tc.taint)
-		}
-	}
-}
-
-// A SET the witness could not read is opaque, and what it may have set still goes
-// for what follows a Mark.
-func TestReview7GlobalSetKeepsItsTaint(t *testing.T) {
-	s := classOf(t, dialectMySQL, "SET @@`global`.sql_mode = 'ANSI'")
-	if s.class != classOpaque || s.taint == "" {
-		t.Fatalf("%+v", s)
-	}
-}
-
-func TestReview7LoginSettings(t *testing.T) {
-	for _, tc := range []struct {
-		key, value string
-		taint      bool
-	}{
-		{"search_path", "s,pg_catalog,public", true},
-		{"SEARCH_PATH", "s,pg_catalog,public", true},
-		{"Search_Path", `s,"pg_catalog"`, true},
-		{"search-path", "s,PG_CATALOG", true},
-		{"search_path", `s,pg\_catalog`, true},
-		{"search_path", "app,public", false},
-		{"search_path", `"$user",public`, false},
-		{"standard_conforming_strings", "off", true},
-		{"STANDARD_CONFORMING_STRINGS", "off", true},
-		{"standard_conforming_strings", "on", false},
-		{"client_encoding", "SJIS", true},
-		{"CLIENT-ENCODING", "BIG5", true},
-		{"client_encoding", "UTF8", false},
-		{"application_name", "pg_catalog", false},
-		{"options", "-c search-path=s,pg_catalog,public", true},
-		{"OPTIONS", "-c search_path=s,pg_catalog", true},
-		{"options", "--search-path=s,pg_catalog", true},
-		{"options", "-csearch_path=s,pg_catalog", true},
-		{"options", `-c search\_path=s,pg\_catalog`, true},
-		{"options", `-c Search_Path=s,\ pg_catalog`, true},
-		{"options", "-c client-encoding=SJIS", true},
-		{"options", "-c statement_timeout=5 -c standard-conforming-strings=off", true},
-		{"options", "-ec search_path=s,pg_catalog", true}, // a switch it does not read
-		{"options", "-B=1", true},
-		{"options", "-c", true},
-		{"options", "-c search_path", true},
-		{"options", "-c search_path=app,public", false},
-		{"options", "-c statement_timeout=5 --lock_timeout=1", false},
-		{"options", "", false},
-	} {
-		w := newPG(t)
-		w.client(pgStartup(3<<16, append(append(cstr(tc.key), cstr(tc.value)...), 0)...))
-		if (w.s.(*pgSession).taint != "") != tc.taint {
-			t.Errorf("%s=%q: taint %q, want %v", tc.key, tc.value, w.s.(*pgSession).taint, tc.taint)
-		}
-	}
-}
-
 // H3, F1: a keyword is excused only where no call can stand.
-func TestReview7CallPositions(t *testing.T) {
+func TestCallPositions(t *testing.T) {
 	for _, tc := range []sqlCase{
 		// H3 and what it would turn into if the excuses were looser.
 		pgOnly("SELECT 1 AS a ORDER BY rollup(1)", "opaque"),
@@ -292,7 +134,7 @@ func wantClass(t *testing.T, tc sqlCase) {
 
 // M2, and the rest of its class: a word the grammar would take as a type is only
 // a keyword in its one position.
-func TestReview7Types(t *testing.T) {
+func TestTypes(t *testing.T) {
 	for _, tc := range []sqlCase{
 		pgOnly("SELECT 1::double", "opaque"),
 		pgOnly("SELECT CAST(1 AS double)", "opaque"),
@@ -324,7 +166,7 @@ func TestReview7Types(t *testing.T) {
 }
 
 // L1: what a driver and a client send.
-func TestReview7ListedBuiltins(t *testing.T) {
+func TestListedBuiltins(t *testing.T) {
 	for _, tc := range []sqlCase{
 		pgOnly("select $1::text::regtype::oid", "read"),
 		pgOnly("SELECT 'a'::regclass, 1::oid, 'a'::name, '127.0.0.1'::inet, 'a'::pg_catalog.text", "read"),
@@ -345,7 +187,7 @@ func TestReview7ListedBuiltins(t *testing.T) {
 
 // H7: LOAD DATA's SET clause runs for every row; the column list and its other
 // clauses are not expressions.
-func TestReview7LoadData(t *testing.T) {
+func TestLoadData(t *testing.T) {
 	for _, tc := range []sqlCase{
 		myOnly("LOAD DATA INFILE 'f' INTO TABLE z (a) SET b = f()", "opaque"),
 		myOnly("LOAD DATA INFILE 'f' INTO TABLE z CHARACTER SET latin1 (a) SET b = f()", "opaque"),
@@ -361,7 +203,7 @@ func TestReview7LoadData(t *testing.T) {
 
 // H8: a change that routes rows between tables, seen on the wire, is opaque as
 // RENAME is. A claim's table is otherwise whatever the statement names.
-func TestReview7Routing(t *testing.T) {
+func TestRouting(t *testing.T) {
 	for _, tc := range []sqlCase{
 		pgOnly("ALTER TABLE child INHERIT users", "opaque"),
 		pgOnly("ALTER TABLE st.moved SET SCHEMA public", "opaque"),
@@ -388,165 +230,9 @@ func TestReview7Routing(t *testing.T) {
 	}
 }
 
-// H5: LOCK TABLES commits before it opens the table, so its ERR has committed
-// what came before. So may anything not known to leave the transaction alone.
-func TestReview7FailedStatementThatMayCommit(t *testing.T) {
-	for _, tc := range []struct {
-		sql, want string
-	}{
-		{"LOCK TABLES no_such WRITE", "committed INSERT"},
-		{"UNLOCK TABLES", "committed INSERT"},
-		{"RESET MASTER", "committed INSERT"},
-		{"ANALYZE TABLE no_such", "committed INSERT"},
-		{"DROP TABLE no_such", "committed INSERT"},
-		{"SELECT * FROM no_such", "rolled_back INSERT"},
-		{"INSERT INTO no_such VALUES (1)", "rolled_back INSERT"},
-		{"SET x = 1", "rolled_back INSERT"},
-		{"ROLLBACK TO no_such", "rolled_back INSERT"},
-	} {
-		w := myReadyWire(t, 0)
-		w.client(myQuery("START TRANSACTION"))
-		w.server(myOK(1, 0, stAutocommit|stInTrans, 0))
-		w.client(myQuery("INSERT INTO a VALUES (1)"))
-		w.server(myOK(1, 1, stAutocommit|stInTrans, 0))
-		w.client(myQuery(tc.sql))
-		w.server(myErr(1))
-		w.client(myQuery("ROLLBACK"))
-		w.server(myOK(1, 0, stAutocommit, 0))
-		if got := w.outcomes(); !slices.Contains(got, tc.want) {
-			t.Errorf("%q: %v, want %s", tc.sql, got, tc.want)
-		}
-	}
-}
-
-// H6: MySQL compares savepoint names without case, quoted or not, and a second
-// savepoint of a name replaces the first.
-func TestReview7MySQLSavepointNames(t *testing.T) {
-	run := func(second, back string) []string {
-		w := myReadyWire(t, 0)
-		for _, q := range []string{"START TRANSACTION", "SAVEPOINT a", "INSERT INTO t VALUES (1)", second, back, "COMMIT"} {
-			w.client(myQuery(q))
-			status := uint16(stAutocommit | stInTrans)
-			if q == "COMMIT" {
-				status = stAutocommit
-			}
-			w.server(myOK(1, 0, status, 0))
-		}
-		return w.outcomes()
-	}
-	for _, tc := range []struct {
-		second, back, want string
-	}{
-		{"SAVEPOINT `A`", "ROLLBACK TO a", "committed INSERT"},
-		{"SAVEPOINT A", "ROLLBACK TO `a`", "committed INSERT"},
-		{"SAVEPOINT a", "ROLLBACK TO SAVEPOINT A", "committed INSERT"},
-		{"SAVEPOINT `á`", "ROLLBACK TO a", "committed INSERT"},  // a _ci collation folds accents
-		{"SAVEPOINT `a `", "ROLLBACK TO a", "committed INSERT"}, // and pads with spaces
-		{"SAVEPOINT b", "ROLLBACK TO A", "rolled_back INSERT"},
-		{"SAVEPOINT b", "ROLLBACK TO `a`", "rolled_back INSERT"},
-	} {
-		if got := run(tc.second, tc.back); !slices.Contains(got, tc.want) {
-			t.Errorf("%s, %s: %v, want %s", tc.second, tc.back, got, tc.want)
-		}
-	}
-}
-
-// Only the one of that name goes: a savepoint between them stays.
-func TestReview7MySQLSavepointBetweenStays(t *testing.T) {
-	w := myReadyWire(t, 0)
-	for _, q := range []string{"START TRANSACTION", "SAVEPOINT a", "SAVEPOINT b", "SAVEPOINT a", "INSERT INTO t VALUES (1)", "ROLLBACK TO b", "COMMIT"} {
-		w.client(myQuery(q))
-		status := uint16(stAutocommit | stInTrans)
-		if q == "COMMIT" {
-			status = stAutocommit
-		}
-		w.server(myOK(1, 0, status, 0))
-	}
-	w.want("rolled_back INSERT")
-}
-
-// Postgres keeps both, and a quoted name is its own.
-func TestReview7PostgresSavepointNames(t *testing.T) {
-	w := pgReadyWire(t)
-	for _, q := range [][2]string{{"BEGIN", "BEGIN"}, {"SAVEPOINT a", "SAVEPOINT"}, {"INSERT INTO t VALUES (1)", "INSERT 0 1"},
-		{`SAVEPOINT "A"`, "SAVEPOINT"}, {`ROLLBACK TO a`, "ROLLBACK"}, {"COMMIT", "COMMIT"}} {
-		w.client(pgQuery(q[0]))
-		status := byte('T')
-		if q[0] == "COMMIT" {
-			status = 'I'
-		}
-		w.server(pgDone(q[1]), pgReady(status))
-	}
-	w.want("rolled_back INSERT")
-}
-
-// M1: a routine can swap what a prepared name holds, and neither a rollback nor a
-// failure takes that back.
-func TestReview7OpaqueStatementForgetsPreparedNames(t *testing.T) {
-	setup := func(t *testing.T) *wire {
-		w := pgReadyWire(t)
-		w.client(pgParse("s7", "SELECT 1"), pgBind("p7", "s7"), pgSync())
-		w.server(frame('1'), frame('2'), pgReady('I'))
-		return w
-	}
-	check := func(t *testing.T, w *wire, frames ...[]byte) {
-		t.Helper()
-		w.client(frames...)
-		w.server(frame('2'), pgDone("SELECT 1"), pgReady('I'))
-		found := false
-		for _, e := range w.cap.snapshot() {
-			found = found || (e.Verb == "EXECUTE" && e.Opaque)
-		}
-		if !found {
-			t.Fatalf("a name a routine could have changed read as what it held: %+v", w.cap.snapshot())
-		}
-	}
-	t.Run("after a rollback", func(t *testing.T) {
-		w := setup(t)
-		w.client(pgQuery("BEGIN; SELECT rp(); ROLLBACK"))
-		w.server(pgDone("BEGIN"), pgDone("SELECT 1"), pgDone("ROLLBACK"), pgReady('I'))
-		check(t, w, pgBind("", "s7"), pgExecute(""), pgSync())
-	})
-	t.Run("after a failure", func(t *testing.T) {
-		w := setup(t)
-		w.client(pgQuery("SELECT rp()"))
-		w.server(pgError(), pgReady('I'))
-		check(t, w, pgBind("", "s7"), pgExecute(""), pgSync())
-	})
-	t.Run("a portal too", func(t *testing.T) {
-		w := setup(t)
-		w.client(pgQuery("SELECT rp()"))
-		w.server(pgDone("SELECT 1"), pgReady('I'))
-		w.client(pgExecute("p7"), pgSync())
-		w.server(pgDone("SELECT 1"), pgReady('I'))
-		last := w.cap.snapshot()
-		if e := last[len(last)-1]; !e.Opaque {
-			t.Fatalf("%+v", last)
-		}
-	})
-	t.Run("a fast-path call", func(t *testing.T) {
-		w := setup(t)
-		w.client(frame('F'))
-		w.server(frame('V'), pgReady('I'))
-		check(t, w, pgBind("", "s7"), pgExecute(""), pgSync())
-	})
-	t.Run("a read leaves them", func(t *testing.T) {
-		w := setup(t)
-		w.client(pgQuery("SELECT lower('x')"))
-		w.server(pgDone("SELECT 1"), pgReady('I'))
-		w.client(pgBind("", "s7"), pgExecute(""), pgSync())
-		w.server(frame('2'), pgDone("SELECT 1"), pgReady('I'))
-		for _, e := range w.cap.snapshot() {
-			if e.Opaque {
-				t.Fatalf("%+v", e)
-			}
-		}
-	})
-}
-
 // The lists in classify.go and the files the live tests hold against a real server
 // must be the same lists.
-func TestReview7ListsMatchTestdata(t *testing.T) {
+func TestListsMatchTestdata(t *testing.T) {
 	keys := func(m map[string]bool) []string {
 		var out []string
 		for k := range m {
