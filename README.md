@@ -79,7 +79,7 @@ witness read before it stopped). A healthy `/proc` capture still cannot rule
 out a process shorter than its polling gap, which is why the quickstart's
 `sleep` child outlives the polling interval and why tier 2 uses the eBPF witness.
 
-Run it, Go 1.25+ on Linux, no privileges needed:
+Run it, Go 1.26+ on Linux, no privileges needed:
 
 ```
 git clone https://github.com/sprigworks/subpoena
@@ -163,7 +163,7 @@ make test-ebpf    # the eBPF witnesses against the real kernel (privileged conta
 make test-cgroup  # real-cgroup tests without root, in a delegated systemd scope
 ```
 
-Needs Go 1.25 or newer. `make check` and `make cross-self` take about 15
+Needs Go 1.26 or newer. `make check` and `make cross-self` take about 15
 minutes, because cross-examination reruns the suite once per mutant; `make test`
 takes about a minute. `make python` needs [uv](https://docs.astral.sh/uv/),
 `make test-cgroup` needs a systemd user session, and `make generate` needs

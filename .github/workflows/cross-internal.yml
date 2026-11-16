@@ -55,7 +55,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
       # -j 1: a hosted runner has 4 CPUs, and one mutant's suite uses them all.
       # GOFLAGS lifts go test's own 10-minute limit above Cross's -timeout, so a
