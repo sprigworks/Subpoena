@@ -3,6 +3,12 @@
 Each release below has a short summary. The full text of every entry is in
 [docs/releases](docs/releases/).
 
+## Unreleased
+
+- **Changed for users:** Subpoena now needs Go 1.26 or newer. Every `go.mod` says `go 1.26.0`, so a
+  module that pins Subpoena as a tool or dependency must be on Go 1.26 too. Go 1.25 no longer gets
+  upstream security fixes, and current OpenTelemetry (1.47) already requires 1.26.
+
 ## v0.1.0-alpha.5 and v0.1.0-alpha.6 (2026-11-07)
 
 Tagged `v0.1.0-alpha.5` and `v0.1.0-alpha.6` on the same commit. No Python release goes with these

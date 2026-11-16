@@ -8,7 +8,7 @@
 //
 // `make SANDBOX=1 <target>` does the same. Keep go.mod free of these replaces.
 
-go 1.25.0
+go 1.26.0
 
 use .
 

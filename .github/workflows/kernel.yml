@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
       - run: go test -c -o /tmp/cgroup.test ./pkg/cgroup && go test -c -o /tmp/gateway.test ./examples/gateway
       # Root writes /sys/fs/cgroup directly (make test-cgroup uses a delegated
@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
       - run: uname -r && ls -l /sys/kernel/btf/vmlinux
       - run: make test-ebpf
@@ -72,7 +72,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: clang --version && make generate-bpf
@@ -88,7 +88,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
       - run: make conformance
 
@@ -98,7 +98,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
       - run: make alerts
 

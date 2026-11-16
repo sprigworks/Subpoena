@@ -38,7 +38,7 @@ There is no Weaver registry, no generated names and no invgen.
 
 ## Commands
 
-From this directory (Go 1.25+, a Linux box, no privileges):
+From this directory (Go 1.26+, a Linux box, no privileges):
 
 ```
 make test     # go test ./...

@@ -1,6 +1,6 @@
 # Level 3: one platform contract, two service teams
 
-Run from the repository root with Go 1.25+ and Linux `/proc` available. The
+Run from the repository root with Go 1.26+ and Linux `/proc` available. The
 root `make check` runs this target too, so it also needs Linux `/proc`. Under
 `make SANDBOX=1` the target is skipped, because the example's modules resolve
 through the module proxy:
