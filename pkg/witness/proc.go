@@ -76,8 +76,9 @@ type ProcWitness struct {
 	mu           sync.Mutex
 	baseline     map[procKey]bool
 	tracked      map[procKey]*ProcessEvent
-	lineComm     map[procKey]string // the task name when Command's command line was read
-	inherited    map[procKey]bool   // Command is the parent's command line, seen before an exec
+	lineComm     map[procKey]string    // the task name when Command's command line was read
+	lineRead     map[procKey]time.Time // when Command's command line was read
+	inherited    map[procKey]bool      // Command is the parent's command line, seen before an exec
 	order        []procKey
 	stop         chan struct{}
 	done         chan struct{}
@@ -170,6 +171,7 @@ func (w *ProcWitness) Start() error {
 	}
 	w.tracked = map[procKey]*ProcessEvent{}
 	w.lineComm = map[procKey]string{}
+	w.lineRead = map[procKey]time.Time{}
 	w.inherited = map[procKey]bool{}
 	w.waited = map[procKey]bool{}
 	w.order = nil
@@ -617,10 +619,20 @@ func (w *ProcWitness) record(k procKey, p procInfo) {
 //
 // An exec sets the task name before the new arguments exist, so a poll can
 // land on a forked child with its new name and no line. settle gives that
-// sighting a moment to become a whole one. w.mu must be held.
+// sighting a moment to become a whole one.
+//
+// The full scan and the children walk each read a process before recording
+// it, so a scan can record a sighting older than a line the walk has already
+// stored. A sighting without a line, read before the stored line, is from
+// before that line (a forked child mid-exec, under its parent's name) and adds
+// nothing: taken as later, it reported the name as a second process. A sighting
+// with a line is still recorded, older or not. w.mu must be held.
 //
 //subpoena:enforcement_point
 func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
+	if read, ok := w.lineRead[k]; ok && s.cmdline == "" && s.readAt.Before(read) {
+		return //subpoena:enforcement
+	}
 	s = w.settle(k, s)
 	newName, oldLine := "", ""
 	switch {
@@ -634,6 +646,7 @@ func (w *ProcWitness) refresh(k procKey, ev *ProcessEvent, s *procSnap) {
 		ev.Command, ev.CommandSource = s.cmdline, CommandLine
 		if w.lineComm != nil {
 			w.lineComm[k] = s.comm
+			w.lineRead[k] = s.readAt
 		}
 	case s.comm == "":
 	case ev.Command == "":
