@@ -87,6 +87,9 @@ an unrelated host command line. Details in `../../../witnesses/README.md`.
   the target forces Docker.
 - **gcx version.** A `go install` build of OATS has no pinned gcx; the target
   passes `--gcx-version 1.0.0` (the version OATS's own `mise.toml` pins).
+- **LGTM version.** OATS pulls `grafana/otel-lgtm:latest` by default; the
+  target passes `--lgtm-version 0.41.1`. On 0.41.2 one case at a time failed
+  intermittently with Tempo answering "resource not found".
 - **Shared fixtures.** Cases with identical fixtures share one stack and see
   each other's requests; exact counts then break. The two cases here have
   different compose file lists, so each gets its own stack.

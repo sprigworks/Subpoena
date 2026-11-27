@@ -1,4 +1,4 @@
-# Run with `make oats` (OATS v0.10.0, gcx 1.0.0, grafana/otel-lgtm) on Linux
+# Run with `make oats` (OATS v0.10.0, gcx 1.0.0, grafana/otel-lgtm 0.41.1) on Linux
 # 6.17, rootful Docker, cgroup v2, BTF.
 #
 # OATS adds the Grafana LGTM stack (Grafana, Tempo, Loki, collector) as the

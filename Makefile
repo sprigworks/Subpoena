@@ -145,6 +145,9 @@ alerts:
 # Linux host with cgroup v2 and kernel BTF (the witness loads eBPF, privileged), and
 # `go install github.com/grafana/oats@latest`. A `go install` build of OATS
 # has no pinned gcx, hence GCX_VERSION (OATS's own mise.toml pins 1.0.0).
+# OATS pulls grafana/otel-lgtm:latest unless told otherwise; LGTM_VERSION pins
+# it. On 0.41.2 one of the two cases failed in 3 of 5 CI runs with Tempo
+# answering "resource not found"; every run on 0.41.1 passed.
 # --container-runtime docker: auto picks Podman when installed, and rootless
 # Podman cannot run the privileged witness. The env -u list turns off gcx's agent mode,
 # auto-detected from those variables: it switches gcx to JSON output, which
@@ -155,10 +158,11 @@ alerts:
 # volumes, so the witness-events volumes are removed afterwards.
 OATS ?= oats
 GCX_VERSION ?= 1.0.0
+LGTM_VERSION ?= 0.41.1
 oats:
 	cd examples/gateway/oats && env -u CLAUDECODE -u CLAUDE_CODE -u CURSOR_AGENT \
 	-u GITHUB_COPILOT -u AMAZON_Q -u GCX_AGENT_MODE \
-	$(OATS) --container-runtime docker --gcx-version $(GCX_VERSION) --no-cache --timeout 2m; rc=$$?; \
+	$(OATS) --container-runtime docker --gcx-version $(GCX_VERSION) --lgtm-version $(LGTM_VERSION) --no-cache --timeout 2m; rc=$$?; \
 	docker volume ls -q --filter name=_witness-events | grep '^oats-' | xargs -r docker volume rm >/dev/null; exit $$rc
 
 # Everything that runs without Docker or eBPF.
