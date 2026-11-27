@@ -773,6 +773,36 @@ func TestAStaleSightingTakesNoWait(t *testing.T) {
 	}
 }
 
+// The full scan reads a forked child mid-exec, under its parent's name; the
+// children walk then reads and records the finished line; the scan records its
+// older sighting last. One process: counted as two, it failed the gateway's
+// exactly-once test on CI (Nov 23).
+func TestAnOlderSightingWithoutALineAddsNoName(t *testing.T) {
+	w, root := freshFake(t, nil)
+	dir := filepath.Join(root, "964")
+	fakeProc(t, root, 964, 100, "264", "", "0::/")
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
+	setExe(t, dir, "/bin/sleep")
+	k := procKey{pid: 964, start: "264"}
+	stale := w.readSnap(964)
+	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), []byte("sleep\x000.15\x00"), 0o644))
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("sleep\n"), 0o644))
+	w.mu.Lock()
+	w.record(k, procInfo{pid: 964, ppid: 100, snap: w.readSnap(964)})
+	w.record(k, procInfo{pid: 964, ppid: 100, snap: stale})
+	w.mu.Unlock()
+	if evs := w.Events(); len(evs) != 1 || evs[0].Command != "sleep 0.15" || evs[0].NameOnly() {
+		t.Fatalf("want one sleep 0.15 event, got %s", brief(evs))
+	}
+	// The same name read after the line is a rename, and is kept.
+	must(t, os.WriteFile(filepath.Join(dir, "cmdline"), nil, 0o644))
+	must(t, os.WriteFile(filepath.Join(dir, "comm"), []byte("gateway\n"), 0o644))
+	w.mu.Lock()
+	w.record(k, procInfo{pid: 964, ppid: 100, snap: w.readSnap(964)})
+	w.mu.Unlock()
+	wantNameKept(t, w, "gateway")
+}
+
 // A child gone in the wait, or a zombie, or another process on the PID, has no
 // line to wait for: the wait ends at once and the name stays.
 func TestAChildThatEndsInTheWaitKeepsTheName(t *testing.T) {
